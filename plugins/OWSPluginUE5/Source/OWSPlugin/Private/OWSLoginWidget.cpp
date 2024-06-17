@@ -3,7 +3,6 @@
 #include "OWSLoginWidget.h"
 #include "OWSPlugin.h"
 #include "Runtime/Online/HTTP/Public/Http.h"
-#include "OWSPlayerController.h"
 #include "Runtime/Core/Public/Misc/ConfigCacheIni.h"
 
 UOWSLoginWidget::UOWSLoginWidget(const class FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
@@ -27,6 +26,7 @@ UOWSLoginWidget::UOWSLoginWidget(const class FObjectInitializer& ObjectInitializ
 void UOWSLoginWidget::ProcessOWS2POSTRequest(FString ApiToCall, FString PostParameters, void (UOWSLoginWidget::* InMethodPtr)(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful))
 {
 	Http = &FHttpModule::Get();
+
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = Http->CreateRequest();
 	Request->OnProcessRequestComplete().BindUObject(this, InMethodPtr);
 
@@ -98,7 +98,7 @@ void UOWSLoginWidget::OnLoginAndCreateSessionResponseReceived(FHttpRequestPtr Re
 		return;
 	}
 
-	if (!LoginAndCreateSession->Authenticated || LoginAndCreateSession->UserSessionGUID.IsEmpty())
+		if (!LoginAndCreateSession->Authenticated || LoginAndCreateSession->UserSessionGUID.IsEmpty())
 	{
 		ErrorLoginAndCreateSession("Unknown Login Error!  Make sure OWS 2 is running in debug mode in VS 2022 with docker-compose.  Then make sure your OWSAPICustomerKey in DefaultGame.ini matches your CustomerGUID in your database.");
 		return;
