@@ -229,7 +229,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
             {
                 var p = new DynamicParameters();
                 p.Add("@CustomerGUID", customerGUID);
-                p.Add("@ZoneNameTag", ZoneName);
+                p.Add("@ZoneName", ZoneName);
 
                 output = await Connection.QueryAsync<GetZoneInstancesForZone>("GetZoneInstancesOfZone",
                     p,
@@ -307,7 +307,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     p.Add("@MapID", 0);
                     p.Add("@MapName", mapName);
                     p.Add("@MapData", new byte[1]);
-                    p.Add("@ZoneNameTag", zoneName);
+                    p.Add("@ZoneName", zoneName);
                     p.Add("@WorldCompContainsFilter", worldCompContainsFilter);
                     p.Add("@WorldCompListFilter", worldCompListFilter);
                     p.Add("@SoftPlayerCap", softPlayerCap);
@@ -350,7 +350,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     p.Add("@MapID", mapId);
                     p.Add("@MapName", mapName);
                     p.Add("@MapData", new byte[1]);
-                    p.Add("@ZoneNameTag", zoneName);
+                    p.Add("@ZoneName", zoneName);
                     p.Add("@WorldCompContainsFilter", worldCompContainsFilter);
                     p.Add("@WorldCompListFilter", worldCompListFilter);
                     p.Add("@SoftPlayerCap", softPlayerCap);

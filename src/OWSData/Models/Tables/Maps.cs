@@ -12,7 +12,6 @@ namespace OWSData.Models.Tables
         public short Width { get; set; }
         public short Height { get; set; }
         public string ZoneName { get; set; }
-        public string ZoneNameTag { get; set; }
         public string WorldCompContainsFilter { get; set; }
         public string WorldCompListFilter { get; set; }
         public int MapMode { get; set; }
