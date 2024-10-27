@@ -20,10 +20,12 @@ namespace OWSData.Repositories.Implementations.MSSQL
     public class UsersRepository : IUsersRepository
     {
         private readonly IOptions<StorageOptions> _storageOptions;
+       
 
         public UsersRepository(IOptions<StorageOptions> storageOptions)
         {
             _storageOptions = storageOptions;
+            Console.WriteLine($"OWSDBConnectionString: {_storageOptions.Value.OWSDBConnectionString}");
         }
 
         public IDbConnection Connection
@@ -45,6 +47,25 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 p.Add("UserSessionGUID", userSessionGUID);
 
                 outputObject = await Connection.QueryAsync<GetAllCharacters>(GenericQueries.GetAllCharacters,
+                p,
+                commandType: CommandType.Text);
+            }
+
+            return outputObject;
+        }
+
+        // Samsara related custom code
+        public async Task<IEnumerable<GetAllSamsaraCharacters>> GetAllSamsaraCharacters(Guid customerGUID, Guid userSessionGUID)
+        {
+            IEnumerable<GetAllSamsaraCharacters> outputObject = new List<GetAllSamsaraCharacters>();
+
+            using (Connection)
+            {
+                var p = new DynamicParameters();
+                p.Add("CustomerGUID", customerGUID);
+                p.Add("UserSessionGUID", userSessionGUID);
+
+                outputObject = await Connection.QueryAsync<GetAllSamsaraCharacters>(GenericQueries.GetAllCharacters,
                 p,
                 commandType: CommandType.Text);
             }

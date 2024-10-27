@@ -444,6 +444,38 @@
             This handles the Request.
             </remarks>
         </member>
+        <member name="T:OWSPublicAPI.Requests.Users.GetAllSamsaraCharactersRequest">
+            <summary>
+            GetAllSamsaraCharactersRequest
+            </summary>
+            <remarks>
+            This request object handles requests for api/Users/GetAllSamsaraCharacters
+            </remarks>
+        </member>
+        <member name="P:OWSPublicAPI.Requests.Users.GetAllSamsaraCharactersRequest.UserSessionGUID">
+            <summary>
+            UserSessionGUID
+            </summary>
+            <remarks>
+            This is the User Session GUID to determine the User to get all Samsara Characters for.
+            </remarks>
+        </member>
+        <member name="M:OWSPublicAPI.Requests.Users.GetAllSamsaraCharactersRequest.SetData(OWSData.Repositories.Interfaces.IUsersRepository,OWSShared.Interfaces.IHeaderCustomerGUID)">
+            <summary>
+            SetData
+            </summary>
+            <remarks>
+            Used to pass dependencies to the Request object (for performance reasons).
+            </remarks>
+        </member>
+        <member name="M:OWSPublicAPI.Requests.Users.GetAllSamsaraCharactersRequest.Handle">
+            <summary>
+            Handle
+            </summary>
+            <remarks>
+            This handles the Request.
+            </remarks>
+        </member>
         <member name="T:OWSPublicAPI.Requests.Users.RegisterUserRequest">
             <summary>
             Register a User

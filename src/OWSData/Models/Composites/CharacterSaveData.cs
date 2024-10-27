@@ -8,6 +8,7 @@ namespace OWSData.Models.Composites
     public class CharacterSaveData
     {
         public bool Success { get; set; }
+
         public string ErrorMessage { get; set; }
 
         public string CharGuid { get; set; }
@@ -19,8 +20,11 @@ namespace OWSData.Models.Composites
         public IEnumerable<CharacterInventory> CharInventory { get; set; }
 
         public IEnumerable<CharacterCurrency> CharCurrency { get; set; }
-    }
 
+        public CharacterProfession PrimaryProfession { get; set; }
+
+        public IEnumerable<CharacterProfession> SecondaryProfessions { get; set; }
+    }
 
     public class CharacterStat
     {
@@ -36,7 +40,6 @@ namespace OWSData.Models.Composites
         public string CustomData { get; set; }
     }
 
-
     public class CharacterInventory
     {
         public string ItemIDTag { get; set; }
@@ -48,5 +51,14 @@ namespace OWSData.Models.Composites
     public class CharacterCurrency
     {
 
+    }
+
+    public partial class CharacterProfession
+    {
+        public int ProfessionId { get; set; }
+        public string ProfessionName { get; set; }
+        public int Level { get; set; }
+        public long Exp { get; set; }
+        public string CustomData { get; set; }
     }
 }

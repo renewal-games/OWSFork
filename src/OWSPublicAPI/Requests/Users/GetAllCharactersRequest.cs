@@ -54,4 +54,49 @@ namespace OWSPublicAPI.Requests.Users
             return new OkObjectResult(output);
         }
     }
+
+    /// <summary>
+    /// GetAllSamsaraCharactersRequest
+    /// </summary>
+    /// <remarks>
+    /// This request object handles requests for api/Users/GetAllSamsaraCharacters
+    /// </remarks>
+    public class GetAllSamsaraCharactersRequest
+    {
+        /// <summary>
+        /// UserSessionGUID
+        /// </summary>
+        /// <remarks>
+        /// This is the User Session GUID to determine the User to get all Samsara Characters for.
+        /// </remarks>
+        public Guid UserSessionGUID { get; set; }
+
+        private IEnumerable<GetAllSamsaraCharacters> output;
+        private Guid customerGUID;
+        private IUsersRepository usersRepository;
+
+        /// <summary>
+        /// SetData
+        /// </summary>
+        /// <remarks>
+        /// Used to pass dependencies to the Request object (for performance reasons).
+        /// </remarks>
+        public void SetData(IUsersRepository usersRepository, IHeaderCustomerGUID customerGuid)
+        {
+            customerGUID = customerGuid.CustomerGUID;
+            this.usersRepository = usersRepository;
+        }
+
+        /// <summary>
+        /// Handle
+        /// </summary>
+        /// <remarks>
+        /// This handles the Request.
+        /// </remarks>
+        public async Task<IActionResult> Handle()
+        {
+            output = await usersRepository.GetAllSamsaraCharacters(customerGUID, UserSessionGUID);
+            return new OkObjectResult(output);
+        }
+    }
 }

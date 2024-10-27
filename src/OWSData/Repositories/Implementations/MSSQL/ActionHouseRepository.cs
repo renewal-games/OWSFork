@@ -28,7 +28,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
         public async Task<ActionHousePlayerContainer> GetActionHousePlayerItems(Guid customerGUID, string characterName)
         {
             ActionHousePlayerContainer result = new ActionHousePlayerContainer();
-            
+
             try
             {
                 using (Connection)

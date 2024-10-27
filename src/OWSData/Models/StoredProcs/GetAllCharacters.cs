@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 
 namespace OWSData.Models.StoredProcs
 {
-    
+
     public class GetAllCharacters
     {
         public GetAllCharacters()
@@ -17,7 +17,7 @@ namespace OWSData.Models.StoredProcs
         public int CharacterId { get; set; }
         public Guid? UserGuid { get; set; }
         public string Email { get; set; }
-        
+
         [JsonPropertyName("characterName")]
         public string CharName { get; set; }
 
@@ -119,5 +119,62 @@ namespace OWSData.Models.StoredProcs
         [JsonPropertyName("createDate")]
         public DateTime CreateDate { get; set; }
         public string ClassName { get; set; }
+    }
+
+    public class GetAllSamsaraCharacters
+    {
+        public GetAllSamsaraCharacters()
+        {
+            SecondaryProfessions = new List<CharacterProfessionInfo>();
+        }
+
+        public Guid CustomerGuid { get; set; }
+        public int CharacterId { get; set; }
+        public Guid? UserGuid { get; set; }
+        public string Email { get; set; }
+
+        [JsonPropertyName("characterName")]
+        public string CharName { get; set; }
+
+        [JsonPropertyName("zoneName")]
+        public string MapName { get; set; }
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Z { get; set; }
+        public string ServerIp { get; set; }
+        public DateTime LastActivity { get; set; }
+        public double Rx { get; set; }
+        public double Ry { get; set; }
+        public double Rz { get; set; }
+        public int TeamNumber { get; set; }
+
+        [JsonPropertyName("level")]
+        public short CharacterLevel { get; set; }
+        public byte Gender { get; set; }
+        public string Description { get; set; }
+        public bool IsInternalNetworkTestUser { get; set; }
+        public int ClassId { get; set; }
+
+        // Primary Profession
+        public int? PrimaryProfessionId { get; set; }
+        public string PrimaryProfessionName { get; set; }
+        public int PrimaryProfessionLevel { get; set; }
+        public long PrimaryProfessionExp { get; set; }
+
+        // Secondary Professions
+        public List<CharacterProfessionInfo> SecondaryProfessions { get; set; }
+
+        // Misc
+        public string ClassName { get; set; }
+        public DateTime CreateDate { get; set; }
+
+        public class CharacterProfessionInfo
+        {
+            public int ProfessionId { get; set; }
+            public string ProfessionName { get; set; }
+            public int Level { get; set; }
+            public long Exp { get; set; }
+        }
+
     }
 }

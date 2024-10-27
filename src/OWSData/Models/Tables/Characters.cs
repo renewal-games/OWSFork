@@ -8,6 +8,7 @@ namespace OWSData.Models.Tables
         public Characters()
         {
             CharHasItems = new HashSet<CharHasItems>();
+            SecondaryProfessions = new HashSet<CharacterSecondaryProfession>();
         }
 
         public Guid CustomerGuid { get; set; }
@@ -30,9 +31,9 @@ namespace OWSData.Models.Tables
         public string Description { get; set; }
         public bool IsInternalNetworkTestUser { get; set; }
         public int ClassId { get; set; }
-
+        public virtual CharacterPrimaryProfession PrimaryProfession { get; set; }
+        public virtual ICollection<CharacterSecondaryProfession> SecondaryProfessions { get; set; }
         public ICollection<CharHasItems> CharHasItems { get; set; }
-
         public ICollection<CustomCharacterData> CustomCharacterData { get; set; }
     }
 }

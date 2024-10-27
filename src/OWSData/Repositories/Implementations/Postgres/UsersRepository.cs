@@ -45,6 +45,24 @@ namespace OWSData.Repositories.Implementations.Postgres
             return outputObject;
         }
 
+        public async Task<IEnumerable<GetAllSamsaraCharacters>> GetAllSamsaraCharacters(Guid customerGUID, Guid userSessionGUID)
+        {
+            IEnumerable<GetAllSamsaraCharacters> outputObject;
+
+            using (Connection)
+            {
+                var p = new DynamicParameters();
+                p.Add("CustomerGUID", customerGUID);
+                p.Add("UserSessionGUID", userSessionGUID);
+
+                outputObject = await Connection.QueryAsync<GetAllSamsaraCharacters>(GenericQueries.GetAllCharacters,
+                p,
+                commandType: CommandType.Text);
+            }
+
+            return outputObject;
+        }
+
         public async Task<CreateCharacter> CreateCharacter(Guid customerGUID, Guid userSessionGUID, string characterName, string className)
         {
             CreateCharacter outputObject = new CreateCharacter();
@@ -60,6 +78,45 @@ namespace OWSData.Repositories.Implementations.Postgres
                     p.Add("@ClassName", className);
 
                     outputObject = await Connection.QuerySingleAsync<CreateCharacter>("select * from AddCharacter(@CustomerGUID,@UserSessionGUID,@CharacterName,@ClassName)",
+                        p,
+                        commandType: CommandType.Text);
+                }
+
+                outputObject.Success = String.IsNullOrEmpty(outputObject.ErrorMessage);
+
+                return outputObject;
+            }
+            catch (Exception ex)
+            {
+                outputObject.Success = false;
+                outputObject.ErrorMessage = ex.Message;
+
+                return outputObject;
+            }
+        }
+
+        /// <summary>
+        /// Creates a new character using our custom schema.
+        /// </summary>
+        /// <remarks>
+        /// This method duplicates code from <c>CreateCharacter</c> to handle schema changes specific to our project (AddSamsaraCharacter procedure).
+        /// I chose to duplicate the code to minimize merge conflicts with ows.
+        /// </remarks>
+        public async Task<CreateCharacter> CreateSamsaraCharacter(Guid customerGUID, Guid userSessionGUID, string characterName, string className)
+        {
+            CreateCharacter outputObject = new CreateCharacter();
+
+            try
+            {
+                using (Connection)
+                {
+                    var p = new DynamicParameters();
+                    p.Add("@CustomerGUID", customerGUID);
+                    p.Add("@UserSessionGUID", userSessionGUID);
+                    p.Add("@CharacterName", characterName);
+                    p.Add("@ClassName", className);
+
+                    outputObject = await Connection.QuerySingleAsync<CreateCharacter>("select * from AddSamsaraCharacter(@CustomerGUID,@UserSessionGUID,@CharacterName,@ClassName)",
                         p,
                         commandType: CommandType.Text);
                 }

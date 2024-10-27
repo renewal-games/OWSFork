@@ -159,7 +159,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 {
                     parameters.Add("@MapInstances", outputMapInstances);
 
-                    await transaction.ExecuteAsync(PostgresQueries.RemoveCharacterFromInstances,
+                    await transaction.ExecuteAsync(PostgresQueries.RemoveCharactersFromAllInactiveInstances,
                         parameters,
                         commandType: CommandType.Text);
 
@@ -302,7 +302,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 parameters.Add("@SoftPlayerCap", outputMap.SoftPlayerCap);
                 parameters.Add("@PlayerGroupID", outputPlayerGroup.PlayerGroupId);
                 parameters.Add("@MapID", outputMap.MapId);
-                JoinMapByCharName outputJoinMapByCharName = await Connection.QuerySingleOrDefaultAsync<JoinMapByCharName>(MSSQLQueries.GetZoneInstancesByZoneAndGroup,
+                JoinMapByCharName outputJoinMapByCharName = await Connection.QuerySingleOrDefaultAsync<JoinMapByCharName>(PostgresQueries.GetZoneInstancesByZoneAndGroup,
                     parameters,
                     commandType: CommandType.Text);
 
@@ -551,7 +551,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             return outputCharacter;
         }
 
-                public async Task<IEnumerable<GetCharStatsByCharName>> GetCharStatsByCharName(Guid customerGUID, string characterName)
+        public async Task<IEnumerable<GetCharStatsByCharName>> GetCharStatsByCharName(Guid customerGUID, string characterName)
         {
             IEnumerable<GetCharStatsByCharName> outputCharacter = new List<GetCharStatsByCharName>();
 
@@ -614,7 +614,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             return outputCharacter;
         }
 
-                public async Task UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory)
+        public async Task UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory)
         {
             using (Connection)
             {
@@ -649,7 +649,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-                public async Task UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests)
+        public async Task UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests)
         {
             using (Connection)
             {
@@ -668,7 +668,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-                public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest)
+        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest)
         {
             try
             {
@@ -941,7 +941,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             return guildInfo;
         }
 
-                public async Task AddQuestListToDatabase(Guid customerGUID, IEnumerable<AddQuestListToDabase> addQuestListToDabase)
+        public async Task AddQuestListToDatabase(Guid customerGUID, IEnumerable<AddQuestListToDabase> addQuestListToDabase)
         {
             using (Connection)
             {
@@ -955,7 +955,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     parameters.Add("@QuestClassName", QuestToAdd.QuestClassName);
                     parameters.Add("@CustomData", QuestToAdd.CustomData);
 
-                    await Connection.ExecuteAsync(MSSQLQueries.AddQuestToDatabase, parameters);
+                    await Connection.ExecuteAsync(PostgresQueries.AddQuestToDatabase, parameters);
                 }
             }
         }

@@ -40,5 +40,9 @@ namespace OWSData.Models.Composites
         public int TotalCurrencyInStorage { get; set; }
 
         public int ActionHouseActionID { get; set; }
+
+        public string ErrorMessage { get; set; }
+
+        public string SuccessMessage { get; set; }
     }
 }
