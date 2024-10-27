@@ -301,7 +301,7 @@ namespace OWSData.SQL
                 )";
 
         public static readonly string UpdateCharacterZone = @"UPDATE Characters
-                SET MapName = @ZoneNameTag
+                SET MapName = @ZoneName
                 WHERE CharacterID = @CharacterID
                   AND CustomerGUID = @CustomerGUID";
 
@@ -366,9 +366,9 @@ namespace OWSData.SQL
         public static readonly string GetMapByZoneName = @"SELECT *
                 FROM Maps
                 WHERE CustomerGUID = @CustomerGUID
-                  AND ZoneNameTag = @ZoneNameTag";
+                  AND ZoneName = @ZoneName";
 
-        public static readonly string GetZoneName = @"SELECT M.ZoneNameTag
+        public static readonly string GetZoneName = @"SELECT M.ZoneName
                 FROM Maps M
                 INNER JOIN MapInstances MI ON MI.CustomerGUID = M.CustomerGUID
                                           AND MI.MapID = M.MapID

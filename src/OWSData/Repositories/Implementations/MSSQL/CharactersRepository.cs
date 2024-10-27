@@ -55,7 +55,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 if (outputCharacter.CharacterId > 0)
                 {
                     parameters.Add("@CharacterID", outputCharacter.CharacterId);
-                    parameters.Add("@ZoneNameTag", outputZone.ZoneNameTag);
+                    parameters.Add("@ZoneName", outputZone.ZoneName);
 
                     await Connection.ExecuteAsync(GenericQueries.RemoveCharacterFromAllInstances,
                         parameters,
@@ -271,7 +271,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 parameters.Add("@CustomerGUID", customerGUID);
 
                 //Lookup the Zone row by zoneName
-                parameters.Add("@ZoneNameTag", zoneName);
+                parameters.Add("@ZoneName", zoneName);
                 Maps outputMap = await Connection.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetMapByZoneName,
                     parameters,
                     commandType: CommandType.Text);
@@ -361,7 +361,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     outputObject.Port = outputJoinMapByCharName.Port;
                     outputObject.MapInstanceID = outputJoinMapByCharName.MapInstanceID;
                     outputObject.MapNameToStart = outputMap.MapName;
-                    outputObject.ZoneNameTag = outputMap.ZoneNameTag;
+                    outputObject.ZoneName = outputMap.ZoneName;
                 }
                 else
                 {
@@ -389,7 +389,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     outputObject.Port = outputMapInstance.Port;
                     outputObject.MapInstanceID = outputMapInstance.MapInstanceId;
                     outputObject.MapNameToStart = outputMap.MapName;
-                    outputObject.ZoneNameTag = outputMap.ZoneNameTag;
+                    outputObject.ZoneName = outputMap.ZoneName;
                 }
             }
 
@@ -404,7 +404,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
 
                 //Finds the Active World Server with the least number of Zone Instances running on it
                 parameters.Add("@CustomerGUID", customerGUID);
-                parameters.Add("@ZoneNameTag", zoneName);
+                parameters.Add("@ZoneName", zoneName);
                 parameters.Add("@PlayerGroupId", playerGroupId);
                 List<WorldServers> outputWorldServers = (List<WorldServers>)await Connection.QueryAsync<WorldServers>(GenericQueries.GetActiveWorldServersByLoad,
                     parameters,
@@ -430,7 +430,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                         //If the firstAvailable port is valid (greater than StartingMapInstancePort)
                         if (firstAvailable >= worldServer.StartingMapInstancePort)
                         {
-                            //Lookup the Zone row based on the ZoneNameTag
+                            //Lookup the Zone row based on the ZoneName
                             Maps outputMaps = await Connection.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetMapByZoneName,
                                 parameters,
                                 commandType: CommandType.Text);

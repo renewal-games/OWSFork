@@ -324,7 +324,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     outputObject.Port = outputJoinMapByCharName.Port;
                     outputObject.MapInstanceID = outputJoinMapByCharName.MapInstanceID;
                     outputObject.MapNameToStart = outputMap.MapName;
-                    outputObject.ZoneNameTag = outputMap.ZoneNameTag;
+                    outputObject.ZoneName = outputMap.ZoneName;
                 }
                 else
                 {
@@ -352,7 +352,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     outputObject.Port = outputMapInstance.Port;
                     outputObject.MapInstanceID = outputMapInstance.MapInstanceId;
                     outputObject.MapNameToStart = outputMap.MapName;
-                    outputObject.ZoneNameTag = outputMap.ZoneNameTag;
+                    outputObject.ZoneName = outputMap.ZoneName;
                 }
             }
 
