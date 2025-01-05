@@ -421,35 +421,30 @@ void AOWSGameMode::SaveAllPlayerLocations()
 	{
 		if (NextSaveGroupIndex == PlayerIndex % SplitSaveIntoHowManyGroups)
 		{
-			APlayerController* PlayerControllerToSave = Cast<APlayerController>(Iterator->Get());
-
-			if (PlayerControllerToSave)
+			if (APlayerController* PlayerControllerToSave = Cast<APlayerController>(Iterator->Get()))
 			{
 				APawn* MyPawn = Iterator->Get()->GetPawn();
 
 				if (MyPawn)
 				{
-					PlayerControllerToSave->LastCharacterLocation = MyPawn->GetActorLocation();
-					PlayerControllerToSave->LastCharacterRotation = MyPawn->GetActorRotation();
+					FVector PawnLocation = MyPawn->GetActorLocation();
+					FRotator PawnRotation = MyPawn->GetActorRotation();
+
+					DataToSave.Append(PlayerControllerToSave->PlayerState->GetPlayerName());
+					DataToSave.Append(":");
+					DataToSave.Append(FString::SanitizeFloat(PawnLocation.X));
+					DataToSave.Append(":");
+					DataToSave.Append(FString::SanitizeFloat(PawnLocation.Y));
+					DataToSave.Append(":");
+					DataToSave.Append(FString::SanitizeFloat(PawnLocation.Z));
+					DataToSave.Append(":");
+					DataToSave.Append(FString::SanitizeFloat(PawnRotation.Roll));
+					DataToSave.Append(":");
+					DataToSave.Append(FString::SanitizeFloat(PawnRotation.Pitch));
+					DataToSave.Append(":");
+					DataToSave.Append(FString::SanitizeFloat(PawnRotation.Yaw));
+					DataToSave.Append("|");
 				}
-
-				FVector PawnLocation = PlayerControllerToSave->LastCharacterLocation;
-				FRotator PawnRotation = PlayerControllerToSave->LastCharacterRotation;
-
-				DataToSave.Append(PlayerControllerToSave->PlayerState->GetPlayerName());
-				DataToSave.Append(":");
-				DataToSave.Append(FString::SanitizeFloat(PawnLocation.X));
-				DataToSave.Append(":");
-				DataToSave.Append(FString::SanitizeFloat(PawnLocation.Y));
-				DataToSave.Append(":");
-				DataToSave.Append(FString::SanitizeFloat(PawnLocation.Z));
-				DataToSave.Append(":");
-				DataToSave.Append(FString::SanitizeFloat(PawnRotation.Roll));
-				DataToSave.Append(":");
-				DataToSave.Append(FString::SanitizeFloat(PawnRotation.Pitch));
-				DataToSave.Append(":");
-				DataToSave.Append(FString::SanitizeFloat(PawnRotation.Yaw));
-				DataToSave.Append("|");
 			}
 		}
 
@@ -665,7 +660,7 @@ void AOWSGameMode::UpdateNumberOfPlayers()
 
 	if (ZoneInstanceID < 1)
 	{
-		UE_LOG(OWS, Error, TEXT("UpdateNumberOfPlayers: ZoneInstanceId is empty!"));
+		UE_LOG(OWS, Warning, TEXT("UpdateNumberOfPlayers: ZoneInstanceId is empty!  Ignore this warning if running from the Editor!"));
 		return;
 	}
 
