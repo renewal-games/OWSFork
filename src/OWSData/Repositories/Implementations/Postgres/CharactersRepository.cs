@@ -213,7 +213,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             return outputCustomCharacterDataRows;
         }
 
-        public async Task<JoinMapByCharName> JoinMapByCharName(Guid customerGUID, string characterName, string zoneName)
+        public async Task<JoinMapByCharName> JoinMapByCharName(Guid customerGUID, string characterName, string zoneName, int playerGroupType)
         {
             // TODO: Run Cleanup here for now. Later this can get moved to a scheduler to run periodically.
             await CleanUpInstances(customerGUID);
@@ -221,55 +221,41 @@ namespace OWSData.Repositories.Implementations.Postgres
             JoinMapByCharName outputObject = new JoinMapByCharName();
 
             string serverIp = "";
+            int? worldServerId = 0;
             string worldServerIp = "";
             int worldServerPort = 0;
             int port = 0;
             int mapInstanceID = 0;
             string mapNameToStart = "";
+            int? mapInstanceStatus = 0;
+            bool needToStartupMap = false;
+            bool enableAutoLoopback = false;
+            bool noPortForwarding = false;
 
             using (Connection)
             {
-                //Used and reused by multiple queries
                 var parameters = new DynamicParameters();
                 parameters.Add("@CustomerGUID", customerGUID);
+                parameters.Add("@CharName", characterName);
+                parameters.Add("@ZoneName", zoneName);
+                parameters.Add("@PlayerGroupType", playerGroupType);
 
-                //Lookup the Zone row by zoneName
-                parameters.Add("@ZoneNameTag", zoneName);
                 Maps outputMap = await Connection.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetMapByZoneName,
                     parameters,
                     commandType: CommandType.Text);
 
-                if (outputMap == null)
-                {
-                    //Error finding Zone: zoneName
-                    return new JoinMapByCharName() { 
-                        Success = false,
-                        ErrorMessage = $"Error finding ZoneTag: {zoneName}",
-                        ServerIP = serverIp,
-                        Port = port,
-                        WorldServerID = -1,
-                        WorldServerIP = worldServerIp,
-                        WorldServerPort = worldServerPort,
-                        MapInstanceID = mapInstanceID,
-                        MapNameToStart = mapNameToStart,
-                        MapInstanceStatus = -1,
-                        NeedToStartupMap = false
-                    };
-                }
-
-                //Lookup the Character row by characterName
-                parameters.Add("@CharName", characterName);
                 Characters outputCharacter = await Connection.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterByName,
                     parameters,
                     commandType: CommandType.Text);
 
-                //We could not find a valid character for characterName in this customerGUID
+                Customers outputCustomer = await Connection.QuerySingleOrDefaultAsync<Customers>(GenericQueries.GetCustomer,
+                    parameters,
+                    commandType: CommandType.Text);
+
                 if (outputCharacter == null)
                 {
-                    return new JoinMapByCharName()
+                    outputObject = new JoinMapByCharName()
                     {
-                        Success = false,
-                        ErrorMessage = $"Error finding Character: {characterName}",
                         ServerIP = serverIp,
                         Port = port,
                         WorldServerID = -1,
@@ -278,15 +264,18 @@ namespace OWSData.Repositories.Implementations.Postgres
                         MapInstanceID = mapInstanceID,
                         MapNameToStart = mapNameToStart,
                         MapInstanceStatus = -1,
-                        NeedToStartupMap = false
-                    }; ;
+                        NeedToStartupMap = false,
+                        EnableAutoLoopback = enableAutoLoopback,
+                        NoPortForwarding = noPortForwarding
+                    };
+
+                    return outputObject;
                 }
 
                 PlayerGroup outputPlayerGroup = new PlayerGroup();
-                if (outputMap.PlayerGroupType > 0)
+
+                if (playerGroupType > 0)
                 {
-                    parameters.Add("@PlayerGroupType", outputMap.PlayerGroupType);
-                    parameters.Add("@CharacterID", outputCharacter.CharacterId);
                     outputPlayerGroup = await Connection.QuerySingleOrDefaultAsync<PlayerGroup>(GenericQueries.GetPlayerGroupIDByType,
                         parameters,
                         commandType: CommandType.Text);
@@ -295,26 +284,21 @@ namespace OWSData.Repositories.Implementations.Postgres
                 {
                     outputPlayerGroup.PlayerGroupId = 0;
                 }
-                
 
-                //This query has the conditions required to find a Zone Instance to connect the player to
                 parameters.Add("@IsInternalNetworkTestUser", outputCharacter.IsInternalNetworkTestUser);
                 parameters.Add("@SoftPlayerCap", outputMap.SoftPlayerCap);
                 parameters.Add("@PlayerGroupID", outputPlayerGroup.PlayerGroupId);
                 parameters.Add("@MapID", outputMap.MapId);
+
                 JoinMapByCharName outputJoinMapByCharName = await Connection.QuerySingleOrDefaultAsync<JoinMapByCharName>(PostgresQueries.GetZoneInstancesByZoneAndGroup,
                     parameters,
                     commandType: CommandType.Text);
 
-                //We found a Zone Instance to connect the player to
                 if (outputJoinMapByCharName != null)
                 {
-                    outputObject.NeedToStartupMap = false; //false means that the OWS Instance Launcher will NOT be called to spin up a new Zone Instance
+                    outputObject.NeedToStartupMap = false;
                     outputObject.WorldServerID = outputJoinMapByCharName.WorldServerID;
                     outputObject.ServerIP = outputJoinMapByCharName.ServerIP;
-
-                    //If the login username has @localhost in it or if Users.IsInternalNetworkTestUser is set to true, then redirect the client IP to the InternalServerIP (usually 127.0.0.1 on a development PC)
-                    //This is useful if you want to play a game client on the same device (development PC) as the game server while still allowing players from outside the network to connect with an external IP.
                     if (outputCharacter.IsInternalNetworkTestUser)
                     {
                         outputObject.ServerIP = outputJoinMapByCharName.WorldServerIP;
@@ -324,25 +308,20 @@ namespace OWSData.Repositories.Implementations.Postgres
                     outputObject.Port = outputJoinMapByCharName.Port;
                     outputObject.MapInstanceID = outputJoinMapByCharName.MapInstanceID;
                     outputObject.MapNameToStart = outputMap.MapName;
-                    outputObject.ZoneName = outputMap.ZoneName;
                 }
                 else
                 {
-                    //We don't have a Zone Instance for the player to connect to, so spin up a new one
                     MapInstances outputMapInstance = await SpinUpInstance(customerGUID, zoneName, outputPlayerGroup.PlayerGroupId);
 
-                    //Get the World Server row by WorldServerID
                     parameters.Add("@WorldServerId", outputMapInstance.WorldServerId);
-                    WorldServers outputWorldServers =  await Connection.QuerySingleOrDefaultAsync<WorldServers>(GenericQueries.GetWorldByID,
+
+                    WorldServers outputWorldServers = await Connection.QuerySingleOrDefaultAsync<WorldServers>(GenericQueries.GetWorldByID,
                         parameters,
                         commandType: CommandType.Text);
 
-                    outputObject.NeedToStartupMap = true; //true means that the OWS Instance Launcher will be called to spin up a new Zone Instance
+                    outputObject.NeedToStartupMap = true;
                     outputObject.WorldServerID = outputMapInstance.WorldServerId;
                     outputObject.ServerIP = outputWorldServers.ServerIp;
-
-                    //If the login username has @localhost in it or if Users.IsInternalNetworkTestUser is set to true, then redirect the client IP to the InternalServerIP (usually 127.0.0.1 on a development PC)
-                    //This is useful if you want to play a game client on the same device (development PC) as the game server while still allowing players from outside the network to connect with an external IP.
                     if (outputCharacter.IsInternalNetworkTestUser)
                     {
                         outputObject.ServerIP = outputWorldServers.InternalServerIp;
@@ -352,8 +331,13 @@ namespace OWSData.Repositories.Implementations.Postgres
                     outputObject.Port = outputMapInstance.Port;
                     outputObject.MapInstanceID = outputMapInstance.MapInstanceId;
                     outputObject.MapNameToStart = outputMap.MapName;
-                    outputObject.ZoneName = outputMap.ZoneName;
                 }
+
+                if (outputCharacter.Email.Contains("@localhost") || outputCharacter.IsInternalNetworkTestUser)
+                {
+                    outputObject.ServerIP = "127.0.0.1";
+                }
+
             }
 
             return outputObject;
@@ -996,23 +980,23 @@ namespace OWSData.Repositories.Implementations.Postgres
         //     return outputGetAbilities;
         // }
 
-        // public async Task<IEnumerable<GetCharacterAbilities>> GetCharacterAbilities(Guid customerGUID, string characterName)
-        // {
-        //     IEnumerable<GetCharacterAbilities> outputGetCharacterAbilities;
+/*         public async Task<IEnumerable<GetCharacterAbilities>> GetCharacterAbilities(Guid customerGUID, string characterName)
+         {
+             IEnumerable<GetCharacterAbilities> outputGetCharacterAbilities;
 
-        //     using (Connection)
-        //     {
-        //         var parameters = new DynamicParameters();
-        //         parameters.Add("@CustomerGUID", customerGUID);
-        //         parameters.Add("@CharName", characterName);
+             using (Connection)
+             {
+                 var parameters = new DynamicParameters();
+                 parameters.Add("@CustomerGUID", customerGUID);
+                 parameters.Add("@CharName", characterName);
 
-        //         outputGetCharacterAbilities = await Connection.QueryAsync<GetCharacterAbilities>(GenericQueries.GetCharacterAbilities,
-        //             parameters,
-        //             commandType: CommandType.Text);
-        //     }
+                 outputGetCharacterAbilities = await Connection.QueryAsync<GetCharacterAbilities>(GenericQueries.GetCharacterAbilities,
+                     parameters,
+                     commandType: CommandType.Text);
+             }
 
-        //     return outputGetCharacterAbilities;
-        // }
+             return outputGetCharacterAbilities;
+        }*/
 
         // public async Task<IEnumerable<GetAbilityBars>> GetAbilityBars(Guid customerGUID, string characterName)
         // {

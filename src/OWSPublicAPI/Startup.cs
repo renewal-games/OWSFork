@@ -66,18 +66,22 @@ namespace OWSPublicAPI
 
             services.AddHttpContextAccessor();
 
-            services.AddMvcCore(config =>
-            {
+            services.AddMvcCore(config => {
                 config.EnableEndpointRouting = false;
+                //IHttpRequestStreamReaderFactory readerFactory = services.BuildServiceProvider().GetRequiredService<IHttpRequestStreamReaderFactory>();
+                //config.ModelBinderProviders.Insert(0, new Microsoft.AspNetCore.Mvc.ModelBinding.Binders.BodyModelBinderProvider(config.InputFormatters, readerFactory));
+                //config.ModelBinderProviders.Insert(0, new QueryModelBinderProvider(container));
             })
             .AddViews()
-            .AddApiExplorer();
-           
+            .AddApiExplorer()
+            .SetCompatibilityVersion(CompatibilityVersion.Version_3_0);
 
             services.AddSimpleInjector(container, options => {
                 options.AddAspNetCore()
                     .AddControllerActivation()
                     .AddViewComponentActivation();
+                //.AddPageModelActivation()
+                //.AddTagHelperActivation();
             });
 
             services.AddSwaggerGen(c => {
@@ -148,7 +152,7 @@ namespace OWSPublicAPI
                 c.RouteTemplate =
                     "api-docs/{documentName}/swagger.json";
             }*/);
-            app.UseSwaggerUI(c => 
+            app.UseSwaggerUI(c =>
             {
                 //c.RoutePrefix = "api-docs";
                 c.SwaggerEndpoint("./v1/swagger.json", "Open World Server Authentication API");
@@ -166,6 +170,10 @@ namespace OWSPublicAPI
 
                 switch (dbBackend)
                 {
+                    case "postgres":
+                        container.Register<ICharactersRepository, OWSData.Repositories.Implementations.Postgres.CharactersRepository>(Lifestyle.Transient);
+                        container.Register<IUsersRepository, OWSData.Repositories.Implementations.Postgres.UsersRepository>(Lifestyle.Transient);
+                        break;
                     default: // Default to MSSQL
                         container.Register<ICharactersRepository, OWSData.Repositories.Implementations.MSSQL.CharactersRepository>(Lifestyle.Transient);
                         container.Register<IUsersRepository, OWSData.Repositories.Implementations.MSSQL.UsersRepository>(Lifestyle.Transient);
@@ -187,7 +195,7 @@ namespace OWSPublicAPI
 
             var provider = services.BuildServiceProvider();
             container.RegisterInstance<IServiceProvider>(provider);
-            
+
             /*
             //Doesn't do anything
             var requestAssembly = typeof(IRequest).GetTypeInfo().Assembly;

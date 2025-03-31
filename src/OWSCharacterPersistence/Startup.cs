@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
@@ -57,6 +58,8 @@ namespace OWSCharacterPersistence
                 options.AddAspNetCore()
                     .AddControllerActivation()
                     .AddViewComponentActivation();
+                //.AddPageModelActivation()
+                //.AddTagHelperActivation();
             });
 
             services.AddSwaggerGen(c => {
@@ -134,6 +137,10 @@ namespace OWSCharacterPersistence
 
                 switch (dbBackend)
                 {
+                    case "postgres":
+                        container.Register<ICharactersRepository, OWSData.Repositories.Implementations.Postgres.CharactersRepository>(Lifestyle.Scoped);
+                        container.Register<IUsersRepository, OWSData.Repositories.Implementations.Postgres.UsersRepository>(Lifestyle.Scoped);
+                        break;
                     default: // Default to MSSQL
                         container.Register<ICharactersRepository, OWSData.Repositories.Implementations.MSSQL.CharactersRepository>(Lifestyle.Scoped);
                         container.Register<IUsersRepository, OWSData.Repositories.Implementations.MSSQL.UsersRepository>(Lifestyle.Scoped);
@@ -145,6 +152,5 @@ namespace OWSCharacterPersistence
             var provider = services.BuildServiceProvider();
             container.RegisterInstance<IServiceProvider>(provider);
         }
-
     }
 }

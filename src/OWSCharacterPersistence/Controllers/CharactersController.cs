@@ -117,6 +117,25 @@ namespace OWSCharacterPersistence.Controllers
         }
 
         [HttpPost]
+        [Route("GetCustomData")]
+        [Produces(typeof(CustomCharacterDataRows))]
+        public async Task<CustomCharacterDataRows> GetCustomData([FromBody] GetCustomDataRequest request)
+        {
+            request.SetData(_charactersRepository, _customerGuid);
+            return await request.Handle();
+        }
+
+        [HttpPost]
+        [Route("AddOrUpdateCustomData")]
+        public async Task AddOrUpdateCustomData([FromBody] AddOrUpdateCustomDataRequest request)
+        {
+            request.SetData(_charactersRepository, _customerGuid);
+            await request.Handle();
+
+            return;
+        }
+
+        [HttpPost]
         [Route("PlayerLogout")]
         [Produces(typeof(SuccessAndErrorMessage))]
         public async Task<SuccessAndErrorMessage> PlayerLogout([FromBody] PlayerLogoutRequest request)

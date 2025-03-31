@@ -71,6 +71,7 @@ BEGIN
         CustomerGUID UUID NOT NULL,
         CharacterID SERIAL NOT NULL,
         UserGUID UUID,
+        Email VARCHAR(50) NOT NULL,
         CharName VARCHAR(50) NOT NULL,
         CharGUID UUID,
         MapName VARCHAR(50),

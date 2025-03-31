@@ -42,7 +42,7 @@ namespace OWSPublicAPI.Requests.Users
         {
             Output = new JoinMapByCharName();
 
-            //If ZoneName is empty, look it up from the character.  This is used for the initial login.
+            //If ZoneName is empty, look it up from the character.  This is used for the inital login.
             if (String.IsNullOrEmpty(ZoneName) || ZoneName == "GETLASTZONENAME")
             {
                 GetCharByCharName character = await charactersRepository.GetCharByCharName(CustomerGUID, CharacterName);
@@ -64,7 +64,7 @@ namespace OWSPublicAPI.Requests.Users
                 return new OkObjectResult(Output);
             }
 
-            JoinMapByCharName joinMapByCharacterName = await charactersRepository.JoinMapByCharName(CustomerGUID, CharacterName, ZoneName);
+            JoinMapByCharName joinMapByCharacterName = await charactersRepository.JoinMapByCharName(CustomerGUID, CharacterName, ZoneName, PlayerGroupType);
 
             bool readyForPlayersToConnect = false;
 
@@ -140,7 +140,8 @@ namespace OWSPublicAPI.Requests.Users
             instanceManagementHttpClient.DefaultRequestHeaders.Add("Accept", "application/json");
             instanceManagementHttpClient.DefaultRequestHeaders.Add("X-CustomerGUID", CustomerGUID.ToString());
 
-            SpinUpServerInstanceRequestPayload spinUpServerInstanceRequestPayload = new SpinUpServerInstanceRequestPayload { 
+            SpinUpServerInstanceRequestPayload spinUpServerInstanceRequestPayload = new SpinUpServerInstanceRequestPayload
+            {
                 WorldServerID = worldServerID,
                 ZoneInstanceID = zoneInstanceID,
                 ZoneName = zoneName,

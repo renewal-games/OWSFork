@@ -40,7 +40,7 @@ namespace OWSInstanceManagement
         // For more information on how to configure your application, visit https://go.microsoft.com/fwlink/?LinkID=398940
         public void ConfigureServices(IServiceCollection services)
         {
-            //services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo("./temp/DataProtection-Keys"));
+            services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo("./temp/DataProtection-Keys"));
 
             services.AddHttpContextAccessor();
 
@@ -138,6 +138,11 @@ namespace OWSInstanceManagement
 
                 switch (dbBackend)
                 {
+                    case "postgres":
+                        container.Register<IInstanceManagementRepository, OWSData.Repositories.Implementations.Postgres.InstanceManagementRepository>(Lifestyle.Scoped);
+                        container.Register<ICharactersRepository, OWSData.Repositories.Implementations.Postgres.CharactersRepository>(Lifestyle.Scoped);
+                        container.Register<IUsersRepository, OWSData.Repositories.Implementations.Postgres.UsersRepository>(Lifestyle.Scoped);
+                        break;
                     default: // Default to MSSQL
                         container.Register<IInstanceManagementRepository, OWSData.Repositories.Implementations.MSSQL.InstanceManagementRepository>(Lifestyle.Scoped);
                         container.Register<ICharactersRepository, OWSData.Repositories.Implementations.MSSQL.CharactersRepository>(Lifestyle.Scoped);

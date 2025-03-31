@@ -113,6 +113,38 @@ namespace OWSData.Repositories.Implementations.MSSQL
             }
         }
 
+        public async Task<CreateCharacter> CreateSamsaraCharacter(Guid customerGUID, Guid userSessionGUID, string characterName, string className)
+        {
+            CreateCharacter outputObject = new CreateCharacter();
+
+            try
+            {
+                using (Connection)
+                {
+                    var p = new DynamicParameters();
+                    p.Add("@CustomerGUID", customerGUID);
+                    p.Add("@UserSessionGUID", userSessionGUID);
+                    p.Add("@CharacterName", characterName);
+                    p.Add("@ClassName", className);
+
+                    outputObject = await Connection.QuerySingleAsync<CreateCharacter>("select * from AddSamsaraCharacter(@CustomerGUID,@UserSessionGUID,@CharacterName,@ClassName)",
+                        p,
+                        commandType: CommandType.Text);
+                }
+
+                outputObject.Success = String.IsNullOrEmpty(outputObject.ErrorMessage);
+
+                return outputObject;
+            }
+            catch (Exception ex)
+            {
+                outputObject.Success = false;
+                outputObject.ErrorMessage = ex.Message;
+
+                return outputObject;
+            }
+        }
+
         public async Task<SuccessAndErrorMessage> CreateCharacterUsingDefaultCharacterValues(Guid customerGUID, Guid userGUID, string characterName, string defaultSetName)
         {
             SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();

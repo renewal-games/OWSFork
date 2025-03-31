@@ -75,7 +75,7 @@ namespace OWSPublicAPI.Requests.Users
                 return new OkObjectResult(createCharacterErrorMessage);
             }
 
-            Output = await usersRepository.CreateCharacter(CustomerGUID, UserSessionGUID, CharacterName, ClassName);
+            Output = await usersRepository.CreateSamsaraCharacter(CustomerGUID, UserSessionGUID, CharacterName, ClassName);
 
             return new OkObjectResult(Output);
         }

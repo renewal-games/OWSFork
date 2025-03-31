@@ -77,6 +77,9 @@ if (OWSStorageConfig.Exists())
 
     switch (dbBackend)
     {
+        case "postgres":
+            container.Register<IActionHouseRepository, OWSData.Repositories.Implementations.Postgres.ActionHouseRepository>(Lifestyle.Transient);
+            break;
         default: // Default to MSSQL
             container.Register<IActionHouseRepository, OWSData.Repositories.Implementations.MSSQL.ActionHouseRepository>(Lifestyle.Transient);
             //container.Register<IUsersRepository, OWSData.Repositories.Implementations.MSSQL.UsersRepository>(Lifestyle.Transient);

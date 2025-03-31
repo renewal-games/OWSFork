@@ -77,6 +77,63 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 throw new Exception("Database Exception in AddCharacterToMapInstanceByCharName!");
             }
         }
+
+        public async Task<IEnumerable<CustomCharacterData>> GetCustomCharacterData(Guid customerGUID, string characterName)
+        {
+            IEnumerable<CustomCharacterData> outputCustomCharacterDataRows;
+
+            using (Connection)
+            {
+                var parameters = new DynamicParameters();
+                parameters.Add("@CustomerGUID", customerGUID);
+                parameters.Add("@CharName", characterName);
+
+                outputCustomCharacterDataRows = await Connection.QueryAsync<CustomCharacterData>(GenericQueries.GetCharacterCustomDataByName,
+                    parameters,
+                    commandType: CommandType.Text);
+            }
+
+            return outputCustomCharacterDataRows;
+        }
+
+        public async Task AddOrUpdateCustomCharacterData(Guid customerGUID, AddOrUpdateCustomCharacterData addOrUpdateCustomCharacterData)
+        {
+            using (Connection)
+            {
+                var parameters = new DynamicParameters();
+                parameters.Add("@CustomerGUID", customerGUID);
+                parameters.Add("@CharName", addOrUpdateCustomCharacterData.CharacterName);
+                parameters.Add("@CustomFieldName", addOrUpdateCustomCharacterData.CustomFieldName);
+                parameters.Add("@FieldValue", addOrUpdateCustomCharacterData.FieldValue);
+
+                var outputCharacter = await Connection.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterIDByName,
+                    parameters,
+                    commandType: CommandType.Text);
+
+                if (outputCharacter.CharacterId > 0)
+                {
+                    parameters.Add("@CharacterID", outputCharacter.CharacterId);
+
+                    var hasCustomCharacterData = await Connection.QuerySingleOrDefaultAsync<int>(GenericQueries.HasCustomCharacterDataForField,
+                        parameters,
+                        commandType: CommandType.Text);
+
+                    if (hasCustomCharacterData > 0)
+                    {
+                        await Connection.ExecuteAsync(GenericQueries.UpdateCharacterCustomDataField,
+                            parameters,
+                            commandType: CommandType.Text);
+                    }
+                    else
+                    {
+                        await Connection.ExecuteAsync(GenericQueries.AddCharacterCustomDataField,
+                            parameters,
+                            commandType: CommandType.Text);
+                    }
+                }
+            }
+        }
+
         public async Task<MapInstances> CheckMapInstanceStatus(Guid customerGUID, int mapInstanceID)
         {
             using (Connection)
@@ -250,7 +307,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
 
             return outputCharacter.FirstOrDefault();
         }
-        public async Task<JoinMapByCharName> JoinMapByCharName(Guid customerGUID, string characterName, string zoneName)
+        public async Task<JoinMapByCharName> JoinMapByCharName(Guid customerGUID, string characterName, string zoneName, int playerGroupType)
         {
             // TODO: Run Cleanup here for now. Later this can get moved to a scheduler to run periodically.
             await CleanUpInstances(customerGUID);
@@ -279,9 +336,10 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 if (outputMap == null)
                 {
                     //Error finding Zone: zoneName
-                    return new JoinMapByCharName() { 
+                    return new JoinMapByCharName()
+                    {
                         Success = false,
-                        ErrorMessage = $"Error finding ZoneTag: {zoneName}",
+                        ErrorMessage = $"Error finding Zone: {zoneName}",
                         ServerIP = serverIp,
                         Port = port,
                         WorldServerID = -1,
@@ -299,6 +357,12 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 Characters outputCharacter = await Connection.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterByName,
                     parameters,
                     commandType: CommandType.Text);
+
+                /*
+                Customers outputCustomer = await Connection.QuerySingleOrDefaultAsync<Customers>(GenericQueries.GetCustomer,
+                    parameters,
+                    commandType: CommandType.Text);
+                */
 
                 //We could not find a valid character for characterName in this customerGUID
                 if (outputCharacter == null)
@@ -319,11 +383,11 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     }; ;
                 }
 
+                //If there is a playerGroupType, then look up the player group by type.  This assumes that for this playerGroupType, the player can only be in at most one Player Group
                 PlayerGroup outputPlayerGroup = new PlayerGroup();
-                if (outputMap.PlayerGroupType > 0)
+                if (playerGroupType > 0)
                 {
-                    parameters.Add("@PlayerGroupType", outputMap.PlayerGroupType);
-                    parameters.Add("@CharacterID", outputCharacter.CharacterId);
+                    parameters.Add("@PlayerGroupType", playerGroupType);
                     outputPlayerGroup = await Connection.QuerySingleOrDefaultAsync<PlayerGroup>(GenericQueries.GetPlayerGroupIDByType,
                         parameters,
                         commandType: CommandType.Text);
@@ -332,14 +396,14 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 {
                     outputPlayerGroup.PlayerGroupId = 0;
                 }
-                
 
                 //This query has the conditions required to find a Zone Instance to connect the player to
                 parameters.Add("@IsInternalNetworkTestUser", outputCharacter.IsInternalNetworkTestUser);
                 parameters.Add("@SoftPlayerCap", outputMap.SoftPlayerCap);
                 parameters.Add("@PlayerGroupID", outputPlayerGroup.PlayerGroupId);
                 parameters.Add("@MapID", outputMap.MapId);
-                JoinMapByCharName outputJoinMapByCharName = await Connection.QuerySingleOrDefaultAsync<JoinMapByCharName>(MSSQLQueries.GetZoneInstancesByZoneAndGroup,
+                JoinMapByCharName outputJoinMapByCharName = await Connection.QuerySingleOrDefaultAsync<JoinMapByCharName>(MSSQLQueries.
+                    GetZoneInstancesByZoneAndGroup,
                     parameters,
                     commandType: CommandType.Text);
 
@@ -352,7 +416,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
 
                     //If the login username has @localhost in it or if Users.IsInternalNetworkTestUser is set to true, then redirect the client IP to the InternalServerIP (usually 127.0.0.1 on a development PC)
                     //This is useful if you want to play a game client on the same device (development PC) as the game server while still allowing players from outside the network to connect with an external IP.
-                    if (outputCharacter.IsInternalNetworkTestUser)
+                    if (outputCharacter.Email.Contains("@localhost") || outputCharacter.IsInternalNetworkTestUser)
                     {
                         outputObject.ServerIP = outputJoinMapByCharName.WorldServerIP;
                     }
@@ -361,7 +425,6 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     outputObject.Port = outputJoinMapByCharName.Port;
                     outputObject.MapInstanceID = outputJoinMapByCharName.MapInstanceID;
                     outputObject.MapNameToStart = outputMap.MapName;
-                    outputObject.ZoneName = outputMap.ZoneName;
                 }
                 else
                 {
@@ -370,7 +433,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
 
                     //Get the World Server row by WorldServerID
                     parameters.Add("@WorldServerId", outputMapInstance.WorldServerId);
-                    WorldServers outputWorldServers =  await Connection.QuerySingleOrDefaultAsync<WorldServers>(GenericQueries.GetWorldByID,
+                    WorldServers outputWorldServers = await Connection.QuerySingleOrDefaultAsync<WorldServers>(GenericQueries.GetWorldByID,
                         parameters,
                         commandType: CommandType.Text);
 
@@ -380,7 +443,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
 
                     //If the login username has @localhost in it or if Users.IsInternalNetworkTestUser is set to true, then redirect the client IP to the InternalServerIP (usually 127.0.0.1 on a development PC)
                     //This is useful if you want to play a game client on the same device (development PC) as the game server while still allowing players from outside the network to connect with an external IP.
-                    if (outputCharacter.IsInternalNetworkTestUser)
+                    if (outputCharacter.Email.Contains("@localhost") || outputCharacter.IsInternalNetworkTestUser)
                     {
                         outputObject.ServerIP = outputWorldServers.InternalServerIp;
                     }
@@ -389,7 +452,6 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     outputObject.Port = outputMapInstance.Port;
                     outputObject.MapInstanceID = outputMapInstance.MapInstanceId;
                     outputObject.MapNameToStart = outputMap.MapName;
-                    outputObject.ZoneName = outputMap.ZoneName;
                 }
             }
 
