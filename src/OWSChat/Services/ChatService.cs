@@ -1,93 +1,91 @@
-﻿using Google.Protobuf.WellKnownTypes;
-using Grpc.Core;
-using Microsoft.Extensions.Logging;
-using Microsoft.IdentityModel.Tokens;
-using System;
-using System.Collections.Generic;
-using System.Threading;
+﻿using System;
+using System.Collections.Concurrent;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using ChatServiceApp.Protos;
-using OWSShared.Interfaces;
+using Grpc.Core;
+
 
 namespace OWSChat.Service
 {
     public class ChatService : ChatApp.ChatAppBase
     {
-        
-        public static List<ClientInfo> _clients = new List<ClientInfo>();
-
-        private readonly IHeaderCustomerGUID _customerGuid;
-
-        public ChatService(IHeaderCustomerGUID customerGuid)
+        private class Client
         {
-            _customerGuid = customerGuid;
+            public string Name;
+            public Channel<ServerMessage> Outbox = Channel.CreateUnbounded<ServerMessage>();
         }
 
-        public override Task RegisterMsg(LoggingMessage request, IServerStreamWriter<ServerMessage> responseStream, ServerCallContext context)
-        {
-            string id = request.UserId;
-            string userName = request.UserName;
-            _clients.Add(new ClientInfo
-            {
-                Id = id,
-                UserName = userName,
-                serverStreamWriter = responseStream
-            });
-            Func<bool> isCancelled = () => context.CancellationToken.IsCancellationRequested;
-            SpinWait.SpinUntil(isCancelled);
-            _clients.RemoveAll(x => x.Id == id);
-            return Task.CompletedTask;
-        }
+        private readonly ConcurrentDictionary<IServerStreamWriter<ServerMessage>, Client> _clients
+            = new ConcurrentDictionary<IServerStreamWriter<ServerMessage>, Client>();
 
-        public override async Task<EmptyMsg> SendMsg(ClientMessage clientMsg, ServerCallContext context)
+        public override async Task Chat(
+            IAsyncStreamReader<ClientMessage> requestStream,
+            IServerStreamWriter<ServerMessage> responseStream,
+            ServerCallContext context)
         {
+            // first message must identify user
+            if (!await requestStream.MoveNext())
+                return;
 
-            ServerMessage serverMessage = new ServerMessage
+            var first = requestStream.Current;
+            var me = new Client { Name = first.PlayerName };
+            _clients.TryAdd(responseStream, me);
+
+            // send the very first message to everyone (including self)
+            _ = BroadcastFrom(first, me);
+
+            // pump outgoing queue → writer
+            var writerLoop = Task.Run(async () =>
             {
-                MessageType = clientMsg.MesssageType,
-                PlayerName = clientMsg.PlayerName,
-                Chat = new ServerMessageChat
+                try
                 {
-                    Now = DateTime.UtcNow.ToString(),
-                    Text = clientMsg.Chat.Text,
+                    await foreach (var msg in me.Outbox.Reader.ReadAllAsync(context.CancellationToken))
+                        await responseStream.WriteAsync(msg);
+                }
+                catch { /* client disconnected */ }
+            });
+
+            // pump incoming stream → broadcast
+            try
+            {
+                await foreach (var incoming in requestStream.ReadAllAsync(context.CancellationToken))
+                    _ = BroadcastFrom(incoming, me);
+            }
+            finally
+            {
+                _clients.TryRemove(responseStream, out _);
+                me.Outbox.Writer.Complete();
+                await writerLoop;
+            }
+        }
+
+        private Task BroadcastFrom(ClientMessage incoming, Client sender)
+        {
+            var outgoing = new ServerMessage
+            {
+                // note the *double-s* – this matches the proto field name
+                MessageType = incoming.MesssageType,
+
+                PlayerName = incoming.PlayerName,
+                Chat = new ServerMessageChat          // build the nested object
+                {
+                    Now = DateTime.UtcNow.ToString("O"),
+                    Text = incoming.Chat.Text
                 }
             };
-            var tasks = new List<Task>();
-            foreach (var client in _clients)
+
+            foreach (var kv in _clients.Values)
             {
-                if (client == null || client == default)
-                {
-                    continue;
-                }
-                    switch (clientMsg.MesssageType)
-                {
-                    case ChatType.MessageTypeWhisper:
-                        if (clientMsg.Chat.RecipientName == client.UserName || client.UserName == clientMsg.PlayerName)
-                        {
-                            tasks.Add(client.serverStreamWriter.WriteAsync(serverMessage));
-                        }
-                        break;
-                    case ChatType.MessageTypeParty:
-                        tasks.Add(client.serverStreamWriter.WriteAsync(serverMessage));
-                        break;
-                    case ChatType.MessageTypeGuild:
-                        tasks.Add(client.serverStreamWriter.WriteAsync(serverMessage));
-                        break;
-                    default:
-                        tasks.Add(client.serverStreamWriter.WriteAsync(serverMessage));
-                        break;
-                }
+                bool whisper = incoming.MesssageType == ChatType.MessageTypeWhisper;
+                bool toMe = kv.Name == incoming.PlayerName;
+                bool toTarget = kv.Name == incoming.Chat.RecipientName;
+
+                if (whisper && !(toMe || toTarget)) continue;
+
+                kv.Outbox.Writer.TryWrite(outgoing);
             }
-            await Task.WhenAll(tasks);
-            return new EmptyMsg();
+            return Task.CompletedTask;
         }
     }
-
-    public class ClientInfo
-    {
-        public string Id { get; set; }
-        public string UserName { get; set; }
-        public IServerStreamWriter<ServerMessage> serverStreamWriter { get; set; }
-    }
-
 }

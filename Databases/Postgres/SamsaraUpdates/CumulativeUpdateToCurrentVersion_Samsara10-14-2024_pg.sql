@@ -774,5 +774,163 @@ BEGIN
 END
 $$
 
+CREATE OR REPLACE PROCEDURE public.removecharacter(
+    IN _CustomerGUID uuid,
+    IN _UserSessionGUID uuid,
+    IN _CharacterName varchar
+)
+LANGUAGE plpgsql
+AS $procedure$
+DECLARE
+    _UserGUID UUID;
+    _CharacterID INT;
+BEGIN
+
+    SELECT US.UserGUID
+    INTO _UserGUID
+    FROM UserSessions US
+    WHERE US.CustomerGUID = _CustomerGUID
+      AND US.UserSessionGUID = _UserSessionGUID;
+
+    IF _UserGUID IS NOT NULL THEN
+        SELECT C.CharacterID
+        INTO _CharacterID
+        FROM Characters C
+        WHERE C.CustomerGUID = _CustomerGUID
+          AND C.UserGUID = _UserGUID
+          AND C.CharName = _CharacterName;
+
+        IF _CharacterID IS NOT NULL THEN
+
+            -- CharAbilityBarAbilities
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'charabilitybarabilities';
+            IF FOUND THEN
+                DELETE FROM CharAbilityBarAbilities
+                WHERE CustomerGUID = _CustomerGUID
+                  AND CharAbilityBarID IN (
+                      SELECT CharAbilityBarID
+                      FROM CharAbilityBars
+                      WHERE CustomerGUID = _CustomerGUID AND CharacterID = _CharacterID
+                  );
+            END IF;
+
+            -- CharAbilityBars
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'charabilitybars';
+            IF FOUND THEN
+                DELETE FROM CharAbilityBars
+                WHERE CustomerGUID = _CustomerGUID AND CharacterID = _CharacterID;
+            END IF;
+
+            -- CharInventoryItems (joined through CharInventory)
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'charinventoryitems';
+            IF FOUND THEN
+                DELETE FROM CharInventoryItems
+                WHERE CustomerGUID = _CustomerGUID
+                  AND CharInventoryID IN (
+                      SELECT CharInventoryID
+                      FROM CharInventory
+                      WHERE CustomerGUID = _CustomerGUID AND CharacterID = _CharacterID
+                  );
+            END IF;
+
+            -- CharInventoryCurrency (joined through CharInventory)
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'charinventorycurrency';
+            IF FOUND THEN
+                DELETE FROM CharInventoryCurrency
+                WHERE CharInventoryID IN (
+                    SELECT CharInventoryID
+                    FROM CharInventory
+                    WHERE CustomerGUID = _CustomerGUID AND CharacterID = _CharacterID
+                );
+            END IF;
+
+            -- CharInventory
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'charinventory';
+            IF FOUND THEN
+                DELETE FROM CharInventory
+                WHERE CustomerGUID = _CustomerGUID AND CharacterID = _CharacterID;
+            END IF;
+
+            -- CharEquipmentItems
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'charequipmentitems';
+            IF FOUND THEN
+                DELETE FROM CharEquipmentItems WHERE CharacterID = _CharacterID;
+            END IF;
+
+            -- CharQuests
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'charquests';
+            IF FOUND THEN
+                DELETE FROM CharQuests WHERE CharacterID = _CharacterID;
+            END IF;
+
+            -- CharStats
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'charstats';
+            IF FOUND THEN
+                DELETE FROM CharStats WHERE CharacterID = _CharacterID;
+            END IF;
+
+            -- CharOnMapInstance
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'charonmapinstance';
+            IF FOUND THEN
+                DELETE FROM CharOnMapInstance
+                WHERE CustomerGUID = _CustomerGUID AND CharacterID = _CharacterID;
+            END IF;
+
+            -- CustomCharacterData
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'customcharacterdata';
+            IF FOUND THEN
+                DELETE FROM CustomCharacterData
+                WHERE CustomerGUID = _CustomerGUID AND CharacterID = _CharacterID;
+            END IF;
+
+            -- ChatGroupUsers
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'chatgroupusers';
+            IF FOUND THEN
+                DELETE FROM ChatGroupUsers
+                WHERE CustomerGUID = _CustomerGUID AND CharacterID = _CharacterID;
+            END IF;
+
+            -- PlayerGroupCharacters
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'playergroupcharacters';
+            IF FOUND THEN
+                DELETE FROM PlayerGroupCharacters
+                WHERE CustomerGUID = _CustomerGUID AND CharacterID = _CharacterID;
+            END IF;
+
+            -- PlayerGroupMember
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'playergroupmember';
+            IF FOUND THEN
+                DELETE FROM PlayerGroupMember
+                WHERE CharacterID = _CharacterID;
+            END IF;
+
+            -- PartyMember
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'partymember';
+            IF FOUND THEN
+                DELETE FROM PartyMember
+                WHERE CharacterID = _CharacterID;
+            END IF;
+
+            -- Party
+            PERFORM 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'party';
+            IF FOUND THEN
+                DELETE FROM Party
+                WHERE PartyID IN (
+                    SELECT PartyID FROM PartyMember WHERE CharacterID = _CharacterID
+                );
+            END IF;
+
+            -- Final character delete
+            DELETE FROM Characters
+            WHERE CustomerGUID = _CustomerGUID AND CharacterID = _CharacterID;
+
+        END IF;
+    END IF;
+
+END;
+$procedure$;
+
+
+
 COMMIT;
 

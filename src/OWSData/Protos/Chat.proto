@@ -54,10 +54,8 @@ message EmptyMsg
 
 }
 
-service ChatApp
-{
-	rpc RegisterMsg(LoggingMessage) returns (stream ServerMessage);
-	rpc SendMsg (ClientMessage) returns (EmptyMsg);
+service ChatApp {
+  rpc Chat(stream ClientMessage) returns (stream ServerMessage);
 }
 
 
