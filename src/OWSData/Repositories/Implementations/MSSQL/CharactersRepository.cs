@@ -534,18 +534,16 @@ namespace OWSData.Repositories.Implementations.MSSQL
         {
             using (Connection)
             {
-                foreach (UpdateCharacterStats stat in updateCharacterStats)
-                {
-                    var p = new DynamicParameters();
-                    p.Add("@CustomerGUID", customerGUID);
-                    p.Add("@CharName", characterName);
-                    p.Add("@StatIdentifier", stat.StatIdentifier);
-                    p.Add("@Value", stat.Value);
+                var statIds = updateCharacterStats.Select(s => s.StatIdentifier).ToArray();
+                var statVals = updateCharacterStats.Select(s => s.Value).ToArray();
 
-                    await Connection.ExecuteAsync(GenericQueries.UpdateCharacterStats,
-                        p,
-                        commandType: CommandType.Text);
-                }
+                var p = new DynamicParameters();
+                p.Add("@CustomerGUID", customerGUID);
+                p.Add("@CharName", characterName);
+                p.Add("@StatIdentifiers", statIds);
+                p.Add("@StatValues", statVals);
+
+                await Connection.ExecuteAsync(GenericQueries.UpsertManyCharacterStats, p, commandType: CommandType.Text);
             }
         }
         public async Task UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests)
@@ -959,6 +957,16 @@ namespace OWSData.Repositories.Implementations.MSSQL
 
             }
             return guildInfo;
+        }
+
+        public Task UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<IEnumerable<CharacterAbilityDto>> GetCharacterAbilities(Guid customerGUID, string characterName)
+        {
+            throw new NotImplementedException();
         }
     }
 }

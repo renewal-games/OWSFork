@@ -117,6 +117,15 @@ namespace OWSCharacterPersistence.Controllers
         }
 
         [HttpPost]
+        [Route("UpdateCharacterAbilities")]
+        [Produces(typeof(SuccessAndErrorMessage))]
+        public async Task<SuccessAndErrorMessage> UpdateCharacterAbilities([FromBody] UpdateCharacterAbilitiesRequest request)
+        {
+            request.SetData(_charactersRepository, _customerGuid);
+            return await request.Handle();
+        }
+
+        [HttpPost]
         [Route("GetCustomData")]
         [Produces(typeof(CustomCharacterDataRows))]
         public async Task<CustomCharacterDataRows> GetCustomData([FromBody] GetCustomDataRequest request)
@@ -157,6 +166,15 @@ namespace OWSCharacterPersistence.Controllers
         [Route("GetQuestsFromDatabase")]
         [Produces(typeof(GetQuestsFromDb))]
         public async Task<IActionResult> GetQuestsFromDatabase(GetQuestsFromDatabaseRequest request)
+        {
+            request.SetData(_charactersRepository, _customerGuid);
+            return await request.Handle();
+        }
+
+        [HttpPost]
+        [Route("GetAbilitiesByName")]
+        [Produces(typeof(IEnumerable<CharacterAbilityDto>))]
+        public async Task<IActionResult> GetAbilitiesByName([FromBody] GetAbilitiesByNameRequest request)
         {
             request.SetData(_charactersRepository, _customerGuid);
             return await request.Handle();

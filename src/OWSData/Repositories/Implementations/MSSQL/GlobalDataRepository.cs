@@ -29,6 +29,14 @@ namespace OWSData.Repositories.Implementations.MSSQL
             }
         }
 
+        public Task AddOrUpdateGlobalData(GlobalData globalData)
+        {
+            throw new NotImplementedException();
+        }
 
+        public Task<GlobalData> GetGlobalDataByGlobalDataKey(Guid customerGuid, string globalDataKey)
+        {
+            throw new NotImplementedException();
+        }
     }
 }

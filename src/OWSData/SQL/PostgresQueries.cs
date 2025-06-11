@@ -146,6 +146,35 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
             ActualAbilityLevel = EXCLUDED.ActualAbilityLevel,
             CustomData = EXCLUDED.CustomData";
 
+        public const string UpsertCharacterAbilitiesJson = @"
+        WITH abil AS (
+            SELECT
+                @CustomerGUID                             ::uuid   AS customerguid,
+                C.characterid                                       AS characterid,
+                J->>'abilityIdTag'                                  AS abilityidtag,
+                (J->>'currentAbilityLevel')::int4                   AS currentabilitylevel,
+                (J->>'actualAbilityLevel') ::int4                   AS actualabilitylevel,
+                COALESCE(J->>'CustomData','')                       AS customdata
+            FROM   jsonb_array_elements(@AbilitiesJson::jsonb) J
+            JOIN   characters C
+                   ON  C.customerguid = @CustomerGUID
+                   AND C.charname     = @CharName
+        )
+        INSERT INTO charabilities
+               (customerguid,
+                characterid,
+                abilityidtag,
+                currentabilitylevel,
+                actualabilitylevel,
+                customdata)
+        SELECT  *
+        FROM   abil
+        ON CONFLICT (customerguid, characterid, abilityidtag)
+        DO UPDATE
+           SET currentabilitylevel = EXCLUDED.currentabilitylevel,
+               actualabilitylevel  = EXCLUDED.actualabilitylevel,
+               customdata          = EXCLUDED.customdata;";
+
         public static readonly string AddQuestToDatabase = @"
         INSERT INTO Quest (
             CustomerGUID,

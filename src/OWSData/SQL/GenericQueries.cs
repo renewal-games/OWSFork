@@ -119,12 +119,16 @@ namespace OWSData.SQL
                   AND C.CustomerGUID = @CustomerGUID
                 ORDER BY MI.MapInstanceID DESC";
 
-        public static readonly string GetCharacterAbilities = @"SELECT CA.AbilityIDTag, CA.CurrentAbilityLevel, CA.ActualAbilityLevel, CA.CustomData, A.AbilityClassName
-                FROM CharAbilities CA
-                INNER JOIN Characters C ON C.CharacterID = CA.CharacterID AND C.CustomerGUID = CA.CustomerGUID
-                INNER JOIN Abilities A On A.AbilityIDTag = CA.AbilityIDTag AND A.CustomerGUID = CA.CustomerGUID
-                WHERE C.CustomerGUID = @CustomerGUID
-                  AND C.CharName = @CharName";
+        public static readonly string GetCharacterAbilities = @"
+                SELECT  CA.AbilityIDTag,
+                        CA.CurrentAbilityLevel,
+                        CA.ActualAbilityLevel,
+                        CA.CustomData
+                FROM    CharAbilities   CA
+                JOIN    Characters      C   ON  C.CharacterID = CA.CharacterID
+                                            AND C.CustomerGUID = CA.CustomerGUID
+                WHERE   C.CustomerGUID = @CustomerGUID
+                  AND   C.CharName     = @CharName;";
 
         public static readonly string GetCharacterAbilityByName = @"SELECT A.AbilityID, A.AbilityCustomJSON, A.AbilityName, A.AbilityTypeID, A.Class, A.CustomerGUID, A.Race, A.TextureToUseForIcon, A.GameplayAbilityClassName,
             CHA.CharHasAbilitiesID, CHA.AbilityLevel, CHA.CharHasAbilitiesCustomJSON, C.CharacterID, C.CharName 
@@ -220,34 +224,26 @@ namespace OWSData.SQL
                 WHERE CharName = @CharName
                   AND CustomerGUID = @CustomerGUID";
 
-        public static readonly string UpdateCharacterStats =
-            @"IF EXISTS(
-                SELECT * FROM Characters C INNER JOIN CharStats CS 
-                ON C.CharName = @CharName
-                AND C.CustomerGUID = @CustomerGUID    
-                Where CS.StatIdentifier = @StatIdentifier
-                AND CS.CharacterID = C.CharacterID
-                AND CS.CustomerGUID = @CustomerGUID
-                )
-                UPDATE CS 
-                SET Value = @Value
-                FROM Characters C INNER JOIN CharStats CS 
-                ON C.CharName = @CharName
-                AND C.CustomerGUID = @CustomerGUID
-                Where CS.StatIdentifier = @StatIdentifier
-                AND CS.CharacterID = C.CharacterID
-                AND CS.CustomerGUID = @CustomerGUID
-            ELSE
-                INSERT INTO CharStats
-                (
-                CustomerGUID,
-                CharacterID,
-                StatIdentifier,
-                Value
-                )
-                SELECT @CustomerGUID, CharacterID, @StatIdentifier, @Value FROM Characters C
-                WHERE C.CharName = @CharName
-                AND C.CustomerGUID = @CustomerGUID";
+        public static readonly string UpsertManyCharacterStats = @"
+            WITH targ AS (
+                SELECT characterid
+                FROM characters
+                WHERE charname     = @CharName
+                  AND customerguid = @CustomerGUID
+                LIMIT 1
+            )
+            INSERT INTO charstats (customerguid, characterid, statidentifier, value)
+            SELECT  @CustomerGUID,
+                    targ.characterid,
+                    s.statidentifier,
+                    s.statvalue
+            FROM   targ,
+                   unnest(@StatIdentifiers::varchar[], @StatValues::int[])
+                        AS s(statidentifier, statvalue)
+            ON CONFLICT (customerguid, characterid, statidentifier)
+            DO UPDATE
+            SET value = EXCLUDED.value;";
+
 
         public static readonly string UpdateCharacterQuest =
             @"IF EXISTS(

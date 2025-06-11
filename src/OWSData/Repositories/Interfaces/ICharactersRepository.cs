@@ -26,6 +26,7 @@ namespace OWSData.Repositories.Interfaces
         Task UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats);
         Task UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests);
         Task UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory);
+        Task UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities);
         Task UpdatePosition(Guid customerGUID, string characterName, string mapName, float X, float Y, float Z, float RX, float RY, float RZ);
         Task PlayerLogout(Guid customerGUID, string characterName);
         Task<MapInstances> SpinUpInstance(Guid customerGUID, string zoneName, int playerGroupId = 0);
@@ -44,7 +45,6 @@ namespace OWSData.Repositories.Interfaces
         Task<GuildToSend> GetInitialGuildSettings(Guid customerGUID, string charName);
 
         Task<GuildToSend> AddGuildAbilities(Guid customerGUID, GuildToSend guildInfo);
-
-
+        Task<IEnumerable<CharacterAbilityDto>> GetCharacterAbilities(Guid customerGUID, string characterName);
     }
 }

@@ -16,6 +16,7 @@ using OWSData.SQL;
 using OWSShared.Options;
 using PartyServiceApp.Protos;
 using GuildServiceApp.Protos;
+using System.Text.Json;
 
 namespace OWSData.Repositories.Implementations.Postgres
 {
@@ -403,18 +404,16 @@ namespace OWSData.Repositories.Implementations.Postgres
         {
             using (Connection)
             {
-                foreach (UpdateCharacterStats stat in updateCharacterStats)
-                {
-                    var p = new DynamicParameters();
-                    p.Add("@CustomerGUID", customerGUID);
-                    p.Add("@CharName", characterName);
-                    p.Add("@StatIdentifier", stat.StatIdentifier);
-                    p.Add("@Value", stat.Value);
+                var statIds = updateCharacterStats.Select(s => s.StatIdentifier).ToArray();
+                var statVals = updateCharacterStats.Select(s => s.Value).ToArray();
 
-                    await Connection.ExecuteAsync(GenericQueries.UpdateCharacterStats,
-                        p,
-                        commandType: CommandType.Text);
-                }
+                var p = new DynamicParameters();
+                p.Add("@CustomerGUID", customerGUID);
+                p.Add("@CharName", characterName);
+                p.Add("@StatIdentifiers", statIds, dbType: DbType.Object, direction: ParameterDirection.Input);
+                p.Add("@StatValues", statVals, dbType: DbType.Object, direction: ParameterDirection.Input);
+
+                await Connection.ExecuteAsync(GenericQueries.UpsertManyCharacterStats, p, commandType: CommandType.Text);
             }
         }
 
@@ -631,6 +630,28 @@ namespace OWSData.Repositories.Implementations.Postgres
                         commandType: CommandType.Text);
                 }
             }
+        }
+
+        public async Task<SuccessAndErrorMessage> UpdateCharacterAbilities(Guid customerGUID, string charName, string abilitiesJson)
+        {
+            using (Connection)
+            {
+                var p = new DynamicParameters();
+                p.Add("@CustomerGUID", customerGUID);
+                p.Add("@CharName", charName);
+                p.Add("@AbilitiesJson", abilitiesJson);
+
+                await Connection.ExecuteAsync(
+                    PostgresQueries.UpsertCharacterAbilitiesJson,
+                    p,
+                    commandType: CommandType.Text);
+            }
+
+            return new SuccessAndErrorMessage
+            {
+                Success = true,
+                ErrorMessage = string.Empty
+            };
         }
 
         public async Task UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests)
@@ -980,23 +1001,23 @@ namespace OWSData.Repositories.Implementations.Postgres
         //     return outputGetAbilities;
         // }
 
-/*         public async Task<IEnumerable<GetCharacterAbilities>> GetCharacterAbilities(Guid customerGUID, string characterName)
-         {
-             IEnumerable<GetCharacterAbilities> outputGetCharacterAbilities;
+        public async Task<IEnumerable<CharacterAbilityDto>> GetCharacterAbilities(Guid customerGUID, string characterName)
+        {
+            IEnumerable<CharacterAbilityDto> outputGetCharacterAbilities;
 
-             using (Connection)
-             {
-                 var parameters = new DynamicParameters();
-                 parameters.Add("@CustomerGUID", customerGUID);
-                 parameters.Add("@CharName", characterName);
+            using (Connection)
+            {
+                var parameters = new DynamicParameters();
+                parameters.Add("@CustomerGUID", customerGUID);
+                parameters.Add("@CharName", characterName);
 
-                 outputGetCharacterAbilities = await Connection.QueryAsync<GetCharacterAbilities>(GenericQueries.GetCharacterAbilities,
-                     parameters,
-                     commandType: CommandType.Text);
-             }
+                outputGetCharacterAbilities = await Connection.QueryAsync<CharacterAbilityDto>(GenericQueries.GetCharacterAbilities,
+                    parameters,
+                    commandType: CommandType.Text);
+            }
 
-             return outputGetCharacterAbilities;
-        }*/
+            return outputGetCharacterAbilities;
+        }
 
         // public async Task<IEnumerable<GetAbilityBars>> GetAbilityBars(Guid customerGUID, string characterName)
         // {
@@ -1064,6 +1085,11 @@ namespace OWSData.Repositories.Implementations.Postgres
 
                 await Connection.ExecuteAsync(PostgresQueries.UpdateAbilityOnCharacter, parameters);
             }
+        }
+
+        Task ICharactersRepository.UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities)
+        {
+            return UpdateCharacterAbilities(customerGUID, characterName, characterAbilities);
         }
     }
 }
