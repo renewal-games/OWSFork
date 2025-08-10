@@ -1,73 +1,70 @@
-﻿// Program.cs  –  .NET 8 minimal‑hosting style
+﻿using System;
+using System.IO;
 using Grpc.AspNetCore.Server;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.OpenApi.Models;
 using SimpleInjector;
+using SimpleInjector.Integration.ServiceCollection;
+using SimpleInjector.Integration.AspNetCore;
 using OWSChat.Service;
-using OWSShared.Middleware;
 using OWSShared.Implementations;
 using OWSShared.Interfaces;
-using Microsoft.OpenApi.Models;
-using System.IO;
-using Microsoft.AspNetCore.Builder;
-using System;
-using Microsoft.Extensions.DependencyInjection;
-using OWSChat;
-using Microsoft.AspNetCore.Hosting;
-using ProtoBuf.Grpc.Server;
-using Microsoft.AspNetCore.DataProtection;
-
-var container = new Container();
+using OWSShared.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
 
-
 builder.Services.AddDataProtection()
-                .PersistKeysToFileSystem(new DirectoryInfo("./temp/DataProtection-Keys"));
+    .PersistKeysToFileSystem(new DirectoryInfo("./temp/DataProtection-Keys"));
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpContextAccessor();
-builder.Services.AddMvcCore(o => o.EnableEndpointRouting = false)
-                .AddViews()
-                .AddApiExplorer();
-
-builder.Services.AddGrpc();             
+builder.Services.AddControllers();
+builder.Services.AddGrpc();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "Chat Auth API", Version = "v1" });
 });
-builder.Services.AddSimpleInjector(container, o => o.AddAspNetCore()
-                                                    .AddControllerActivation());
+builder.Services.AddScoped<IHeaderCustomerGUID, HeaderCustomerGUID>();
 
-builder.Services.AddCodeFirstGrpc();
-builder.Services.AddSingleton(typeof(IGrpcServiceActivator<>),
-                               typeof(GrpcSimpleInjectorActivator<>));
-
+var container = new Container();
+builder.Services.AddSimpleInjector(container, options =>
+{
+    options.AddAspNetCore()
+           .AddControllerActivation();
+});
 
 container.RegisterSingleton<ChatService>();
 container.Register<IHeaderCustomerGUID, HeaderCustomerGUID>(Lifestyle.Scoped);
 
-
-builder.WebHost.ConfigureKestrel(k =>
+builder.WebHost.ConfigureKestrel(options =>
 {
-    k.ListenAnyIP(50051, o =>
-    {
-        o.Protocols = HttpProtocols.Http2; 
-    });
+    options.ListenAnyIP(50051, lo => lo.Protocols = HttpProtocols.Http2);
 });
 
+builder.Services.AddScoped<StoreCustomerGUIDMiddleware>();
 
 var app = builder.Build();
-container.RegisterInstance<IServiceProvider>(app.Services);
-app.Services.UseSimpleInjector(container);
 
-app.UseMiddleware<StoreCustomerGUIDMiddleware>(container);
+((IApplicationBuilder)app).UseSimpleInjector(container);
 
 app.UseRouting();
-app.UseMvc();          
 app.UseSwagger();
-app.UseSwaggerUI(c => c.SwaggerEndpoint("./v1/swagger.json", "Chat Auth API"));
+app.UseSwaggerUI(c =>
+{
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Chat Auth API v1");
+});
+app.UseMiddleware<StoreCustomerGUIDMiddleware>();
 
-app.MapGrpcService<ChatService>();
-app.MapGet("/", () => "gRPC server is running ‑ connect with UE client");
+app.UseEndpoints(endpoints =>
+{
+    endpoints.MapGrpcService<ChatService>();
+    endpoints.MapControllers();
+    endpoints.MapGet("/", () => "gRPC server is running ‑ connect with UE client");
+});
 
 container.Verify();
 app.Run();

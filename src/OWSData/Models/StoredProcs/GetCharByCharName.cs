@@ -17,6 +17,7 @@ namespace OWSData.Models.StoredProcs
         public Guid CustomerGuid { get; set; }
         public int CharacterId { get; set; }
         public Guid? UserGuid { get; set; }
+        public Guid CharacterGuid { get; set; }
         public string Email { get; set; }
         public bool IsAdmin { get; set; }
         public bool IsModerator { get; set; }

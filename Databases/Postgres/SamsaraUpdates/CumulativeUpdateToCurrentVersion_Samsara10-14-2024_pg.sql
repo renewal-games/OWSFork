@@ -627,11 +627,11 @@ BEGIN
             _ClassID := CURRVAL(PG_GET_SERIAL_SEQUENCE('class', 'classid'));
 
             INSERT INTO Characters (
-                CustomerGUID, ClassID, UserGUID, CharName, MapName, X, Y, Z,
+                CustomerGUID, ClassID, UserGUID, Email, CharName, MapName, X, Y, Z,
                 RX, RY, RZ, TeamNumber, Gender, Description
             )
             SELECT
-                _CustomerGUID, _ClassID, _UserGUID, _CharacterName, StartingMapName,
+                _CustomerGUID, _ClassID, _UserGUID, _Email, _CharacterName, StartingMapName,
                 X, Y, Z, RX, RY, RZ, TeamNumber, Gender, Description
             FROM Class
             WHERE ClassID = _ClassID;

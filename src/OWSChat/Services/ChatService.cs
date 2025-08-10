@@ -16,8 +16,8 @@ namespace OWSChat.Service
             public Channel<ServerMessage> Outbox = Channel.CreateUnbounded<ServerMessage>();
         }
 
-        private readonly ConcurrentDictionary<IServerStreamWriter<ServerMessage>, Client> _clients
-            = new ConcurrentDictionary<IServerStreamWriter<ServerMessage>, Client>();
+        private static readonly ConcurrentDictionary<IServerStreamWriter<ServerMessage>, Client> _clients
+           = new ConcurrentDictionary<IServerStreamWriter<ServerMessage>, Client>();
 
         public override async Task Chat(
             IAsyncStreamReader<ClientMessage> requestStream,

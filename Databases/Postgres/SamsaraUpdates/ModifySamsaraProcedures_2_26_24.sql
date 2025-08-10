@@ -169,7 +169,7 @@ BEGIN
 
     -- Fallback to defaults if not found
     IF _StartMapName IS NULL THEN
-        _StartMapName := 'TestLevel';
+        _StartMapName := 'L_MVP_2';
         _X := 0.0; _Y := 0.0; _Z := 0.0;
         _RX := 0.0; _RY := 0.0; _RZ := 0.0;
     END IF;
