@@ -2,7 +2,9 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.Common;
 using Npgsql;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
 using OWSData.Models;
@@ -25,7 +27,14 @@ namespace OWSData.Repositories.Implementations.Postgres
             this._storageOptions = storageOptions;
         }
 
-        private IDbConnection Connection => new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+        private readonly AsyncLocal<ScopedDbConnection> _scopedConnection = new AsyncLocal<ScopedDbConnection>();
+
+        private DbConnection CreateConnection()
+        {
+            return new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+        }
+
+        private DbConnection Connection => _scopedConnection.Value ??= new ScopedDbConnection(CreateConnection(), () => _scopedConnection.Value = null);
 
         public async Task<IEnumerable<GetAllCharacters>> GetAllCharacters(Guid customerGUID, Guid userSessionGUID)
         {
@@ -138,7 +147,7 @@ namespace OWSData.Repositories.Implementations.Postgres
         {
             SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();
 
-            IDbConnection conn = Connection;
+            using IDbConnection conn = CreateConnection();
             conn.Open();
             using IDbTransaction transaction = conn.BeginTransaction();
             try
@@ -149,13 +158,15 @@ namespace OWSData.Repositories.Implementations.Postgres
                 parameters.Add("CharacterName", characterName);
                 parameters.Add("DefaultSetName", defaultSetName);
 
-                int outputCharacterId = await Connection.QuerySingleOrDefaultAsync<int>(PostgresQueries.AddCharacterUsingDefaultCharacterValues,
+                int outputCharacterId = await conn.QuerySingleOrDefaultAsync<int>(PostgresQueries.AddCharacterUsingDefaultCharacterValues,
                     parameters,
+                    transaction: transaction,
                     commandType: CommandType.Text);
 
                 parameters.Add("CharacterID", outputCharacterId);
-                await Connection.ExecuteAsync(GenericQueries.AddDefaultCustomCharacterData,
+                await conn.ExecuteAsync(GenericQueries.AddDefaultCustomCharacterData,
                     parameters,
+                    transaction: transaction,
                     commandType: CommandType.Text);
                 transaction.Commit();
             }
@@ -271,11 +282,18 @@ namespace OWSData.Repositories.Implementations.Postgres
             User user;
             Characters character;
 
-            using (Connection)
+            using (IDbConnection userSessionConnection = CreateConnection())
             {
-                userSession = await Connection.QueryFirstOrDefaultAsync<UserSessions>(PostgresQueries.GetUserSessionOnlySQL, new { @CustomerGUID = customerGUID, @UserSessionGUID = userSessionGUID });
-                var userTask = Connection.QueryFirstOrDefaultAsync<User>(PostgresQueries.GetUserSQL, new { @CustomerGUID = customerGUID, @UserGUID = userSession.UserGuid });
-                var characterTask = Connection.QueryFirstOrDefaultAsync<Characters>(PostgresQueries.GetCharacterByNameSQL, new { @CustomerGUID = customerGUID, @CharacterName = userSession.SelectedCharacterName });
+                userSession = await userSessionConnection.QueryFirstOrDefaultAsync<UserSessions>(PostgresQueries.GetUserSessionOnlySQL, new { @CustomerGUID = customerGUID, @UserSessionGUID = userSessionGUID });
+            }
+
+            using (IDbConnection userConnection = CreateConnection())
+            using (IDbConnection characterConnection = CreateConnection())
+            {
+                var userTask = userConnection.QueryFirstOrDefaultAsync<User>(PostgresQueries.GetUserSQL, new { @CustomerGUID = customerGUID, @UserGUID = userSession.UserGuid });
+                var characterTask = characterConnection.QueryFirstOrDefaultAsync<Characters>(PostgresQueries.GetCharacterByNameSQL, new { @CustomerGUID = customerGUID, @CharacterName = userSession.SelectedCharacterName });
+
+                await Task.WhenAll(userTask, characterTask);
 
                 user = await userTask;
                 character = await characterTask;

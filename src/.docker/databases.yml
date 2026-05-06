@@ -12,9 +12,9 @@ services:
     ports:
       - "1433:1433"
     volumes:
-      - database:/var/opt/mssql/data
-      - database:/var/opt/mssql/log
-      - database:/var/opt/mssql/secrets
+      - mssql-data:/var/opt/mssql/data
+      - mssql-data:/var/opt/mssql/log
+      - mssql-data:/var/opt/mssql/secrets
     container_name: MSSQL
 
   ### PostgreSQL Database
@@ -26,7 +26,7 @@ services:
     ports:
       - "15432:5432"
     volumes:
-      - database:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     container_name: PostgreSQL
 
   ### MySql Database
@@ -38,5 +38,10 @@ services:
     ports:
       - "3306:3306"
     volumes:
-      - database:/var/lib/mysql
+      - mysql-data:/var/lib/mysql
     container_name: MySql
+
+volumes:
+  mssql-data:
+  postgres-data:
+  mysql-data:

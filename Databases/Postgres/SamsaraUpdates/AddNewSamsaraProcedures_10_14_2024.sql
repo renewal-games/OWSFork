@@ -19,7 +19,6 @@ DECLARE
     _ClassID INT;
     _CharacterName VARCHAR(50) := 'Test';
     _CharacterID INT;
-    _CharGUID UUID := gen_random_uuid();
 BEGIN
     INSERT INTO Customers (CustomerGUID, CustomerName, CustomerEmail, CustomerPhone, CustomerNotes, EnableDebugLogging)
     VALUES (_CustomerGUID, _CustomerName, _Email, '', '', TRUE);
@@ -33,6 +32,8 @@ BEGIN
 
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
     VALUES
+        (_CustomerGUID, 'L_MVP_2', 'L_MVP_2', NULL, 1, 1),
+        (_CustomerGUID, 'L_Foraas', 'L_Foraas', NULL, 1, 1),
         (_CustomerGUID, 'ThirdPersonExampleMap', 'ThirdPersonExampleMap', NULL, 1, 1),
         (_CustomerGUID, 'Map2', 'Map2', NULL, 1, 1),
         (_CustomerGUID, 'DungeonMap', 'DungeonMap', NULL, 1, 1),
@@ -40,19 +41,22 @@ BEGIN
         (_CustomerGUID, 'FourZoneMap', 'Zone2', NULL, 1, 1);
 
     INSERT INTO Class (CustomerGUID, ClassName, StartingMapName, X, Y, Z, RX, RY, RZ, TeamNumber, Gender, Description)
-    VALUES (_CustomerGUID, 'Wanderer', 'ThirdPersonExampleMap', 0, 0, 250, 0, 0, 0, 1, 1, '');
+    VALUES (_CustomerGUID, 'Wanderer', 'L_MVP_2', -14319.548852, -3045.964828, 2151.217753, 0, 0, 0, 1, 1, '');
+
+    INSERT INTO Class (CustomerGUID, ClassName, StartingMapName, X, Y, Z, RX, RY, RZ, TeamNumber, Gender, Description)
+    VALUES (_CustomerGUID, 'Apprentice', 'L_MVP_2', -14319.548852, -3045.964828, 2151.217753, 0, 0, 0, 1, 1, '');
 
     _ClassID := CURRVAL(PG_GET_SERIAL_SEQUENCE('class', 'classid'));
 
     INSERT INTO Characters (
-        CustomerGUID, ClassID, UserGUID, CharName, CharGUID, MapName,
+        CustomerGUID, ClassID, UserGUID, Email, CharName, MapName,
         X, Y, Z, ServerIP, LastActivity, RX, RY, RZ,
-        TeamNumber, Gender, Description, IsAdmin, IsModerator
+        TeamNumber, Gender, Description, IsAdmin, IsModerator, IsInternalNetworkTestUser
     )
     SELECT
-        _CustomerGUID, _ClassID, _UserGUID, _CharacterName, _CharGUID, StartingMapName,
+        _CustomerGUID, _ClassID, _UserGUID, _Email, _CharacterName, StartingMapName,
         X, Y, Z, '', NOW(), RX, RY, RZ,
-        TeamNumber, Gender, Description, FALSE, FALSE
+        TeamNumber, Gender, Description, FALSE, FALSE, FALSE
     FROM Class
     WHERE ClassID = _ClassID;
 
@@ -82,11 +86,11 @@ BEGIN
         _ErrorRaised           BOOLEAN = FALSE;
         _SupportUnicode        BOOLEAN = FALSE;
         _UserGUID              UUID;
+        _Email                 VARCHAR(100);
         _ClassID               INT;
         _CharacterID           INT;
         _CountOfCharNamesFound INT     = 0;
         _InvalidCharacters     INT;
-        _CharGUID              UUID;
 
     BEGIN
         CREATE TEMP TABLE IF NOT EXISTS temp_table
@@ -107,13 +111,24 @@ BEGIN
 
         SELECT C.SupportUnicode INTO _SupportUnicode FROM Customers C WHERE C.CustomerGUID = _CustomerGUID;
 
-        SELECT US.UserGUID
+        SELECT US.UserGUID, U.Email
         FROM UserSessions US
+        INNER JOIN Users U ON U.CustomerGUID = US.CustomerGUID AND U.UserGUID = US.UserGUID
         WHERE US.CustomerGUID = _CustomerGUID
         AND US.UserSessionGUID = _UserSessionGUID
-        INTO _UserGUID;
+        INTO _UserGUID, _Email;
 
-        SELECT C.ClassID INTO _ClassID FROM Class C WHERE C.CustomerGUID = _CustomerGUID AND C.ClassName = _ClassName;
+        SELECT C.ClassID
+        INTO _ClassID
+        FROM Class C
+        WHERE C.CustomerGUID = _CustomerGUID
+        AND C.ClassName = _ClassName
+        ORDER BY C.ClassID
+        LIMIT 1;
+
+        _CharacterName := TRIM(_CharacterName);
+        _CharacterName := REGEXP_REPLACE(_CharacterName, '\s+', ' ', 'g');
+        _InvalidCharacters := CASE WHEN _CharacterName ~ '[^a-zA-Z0-9_ ]' THEN 1 ELSE 0 END;
 
         SELECT COUNT(*)
         FROM Characters C
@@ -121,13 +136,9 @@ BEGIN
         AND C.CharName = _CharacterName
         INTO _CountOfCharNamesFound;
 
-        _CharacterName := TRIM(_CharacterName);
-        _CharacterName := REGEXP_REPLACE(_CharacterName, '\s+', ' ', 'g');
-        _InvalidCharacters := CASE WHEN _CharacterName ~ '[^a-zA-Z0-9 ]' THEN 1 ELSE 0 END;
-
         IF _InvalidCharacters > 0 AND _SupportUnicode = FALSE THEN
             INSERT INTO temp_table
-            VALUES ('Character Name can only contain letters, numbers, and spaces', '', '', '', 0, 0, 0, 0, 0, 0, 0, 0);
+            VALUES ('Character Name can only contain letters, numbers, spaces, and underscores', '', '', '', 0, 0, 0, 0, 0, 0, 0, 0);
             _ErrorRaised := TRUE;
         END IF;
 
@@ -150,17 +161,15 @@ BEGIN
         END IF;
 
         IF _ErrorRaised = FALSE THEN
-            _CharGUID := gen_random_uuid();
-
             INSERT INTO Characters (
-                CustomerGUID, ClassID, UserGUID, CharName, CharGUID, MapName,
+                CustomerGUID, ClassID, UserGUID, Email, CharName, MapName,
                 X, Y, Z, ServerIP, LastActivity, RX, RY, RZ,
-                TeamNumber, Gender, Description, IsAdmin, IsModerator
+                TeamNumber, Gender, Description, IsAdmin, IsModerator, IsInternalNetworkTestUser
             )
             SELECT
-                _CustomerGUID, _ClassID, _UserGUID, _CharacterName, _CharGUID, CL.StartingMapName,
+                _CustomerGUID, _ClassID, _UserGUID, _Email, _CharacterName, CL.StartingMapName,
                 CL.X, CL.Y, CL.Z, '', NOW(), CL.RX, CL.RY, CL.RZ,
-                CL.TeamNumber, CL.Gender, CL.Description, FALSE, FALSE
+                CL.TeamNumber, CL.Gender, CL.Description, FALSE, FALSE, FALSE
             FROM Class CL
             WHERE CL.ClassID = _ClassID AND CL.CustomerGUID = _CustomerGUID;
 
@@ -185,7 +194,7 @@ BEGIN
     END
     $function$;
 END
-$$
+$$;
 
 DO $$
 BEGIN

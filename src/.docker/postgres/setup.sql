@@ -283,18 +283,14 @@ CREATE TABLE CharInventory
 
 CREATE TABLE CharInventoryItems
 (
-    CustomerGUID          UUID                           NOT NULL,
-    CharInventoryID       INT                            NOT NULL,
-    CharInventoryItemID   SERIAL                         NOT NULL,
-    ItemID                INT                            NOT NULL,
-    InSlotNumber          INT                            NOT NULL,
-    Quantity              INT                            NOT NULL,
-    NumberOfUsesLeft      INT  DEFAULT 0                 NOT NULL,
-    Condition             INT  DEFAULT 100               NOT NULL,
-    CharInventoryItemGUID UUID DEFAULT gen_random_uuid() NOT NULL,
-    CustomData            TEXT                           NULL,
+    CustomerGUID    UUID        NOT NULL,
+    CharInventoryID INT         NOT NULL,
+    ItemIDTag       VARCHAR(50) NOT NULL,
+    Quantity        INT         NOT NULL,
+    InSlotNumber    INT         NOT NULL,
+    CustomData      TEXT        NULL,
     CONSTRAINT PK_CharInventoryItems
-        PRIMARY KEY (CustomerGUID, CharInventoryID, CharInventoryItemID)
+        PRIMARY KEY (CustomerGUID, CharInventoryID, InSlotNumber)
 );
 
 CREATE TABLE CharOnMapInstance
@@ -1125,11 +1121,11 @@ raise notice '_ClassID: %', _ClassID;
     INTO _CountOfCharNamesFound;
     _CharacterName := TRIM(BOTH FROM _CharacterName);
     _CharacterName := REPLACE(REPLACE(REPLACE(_CharacterName, ' ', '<>'), '><', ''), '<>', ' ');
-    _InvalidCharacters := LENGTH(ARRAY_TO_STRING(REGEXP_MATCHES(_CharacterName, '[^a-zA-Z0-9 ]'), ''));
+    _InvalidCharacters := LENGTH(ARRAY_TO_STRING(REGEXP_MATCHES(_CharacterName, '[^a-zA-Z0-9_ ]'), ''));
 
     IF _InvalidCharacters > 0 AND _SupportUnicode = FALSE THEN
         INSERT INTO temp_table
-        VALUES ('Character Name can only contain letters, numbers, and spaces', '', '', 0, '', 0, 0, 0, 0, 0, 0, 0, 0,
+        VALUES ('Character Name can only contain letters, numbers, spaces, and underscores', '', '', 0, '', 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         _ErrorRaised := TRUE;
     END IF;
@@ -1518,11 +1514,17 @@ BEGIN
     SELECT UserGUID FROM AddUser(_CustomerGUID, _FirstName, _LastName, _Email, _Password, 'Developer') INTO _UserGUID;
 
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
+    VALUES (_CustomerGUID, 'L_MVP_2', 'L_MVP_2', NULL, 1, 1);
+    INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
+    VALUES (_CustomerGUID, 'L_Foraas', 'L_Foraas', NULL, 1, 1);
+    INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
     VALUES (_CustomerGUID, 'ThirdPersonExampleMap', 'ThirdPersonExampleMap', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
     VALUES (_CustomerGUID, 'Map2', 'Map2', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
     VALUES (_CustomerGUID, 'DungeonMap', 'DungeonMap', NULL, 1, 1);
+    INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
+    VALUES (_CustomerGUID, 'L_Gullwing_Cave_01', 'L_Gullwing_Cave_01', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
     VALUES (_CustomerGUID, 'FourZoneMap', 'Zone1', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
@@ -1538,7 +1540,22 @@ BEGIN
                        Defense, Dodge, Parry, Avoidance, Versatility, Multishot, Initiative, NaturalArmor,
                        PhysicalArmor, BonusArmor, ForceArmor, MagicArmor, Resistance, ReloadSpeed, RANGE, Speed, Silver,
                        Copper, FreeCurrency, PremiumCurrency, Fame, ALIGNMENT, Description)
-    VALUES (_CustomerGUID, 'MaleWarrior', 'ThirdPersonExampleMap', 0, 0, 250, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+    VALUES (_CustomerGUID, 'MaleWarrior', 'L_MVP_2', -14319.548852, -3045.964828, 2151.217753, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+            1, 1, 0, 10, 0, 1, 0, 100, 50, 1, 100, 0, 1, 100, 0, 5, 100, 0, 1, 0, 0, 0, 0, 0, 0, 10, 10, 10, 10, 10, 10,
+            0, 1, 1, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            '');
+
+    INSERT INTO CLASS (CustomerGUID, ClassName, StartingMapName, X, Y, Z, Perception, Acrobatics, Climb, Stealth, RX,
+                       RY, RZ, Spirit, Magic, TeamNumber, Thirst, Hunger, Gold, Score, CharacterLevel, Gender, XP,
+                       HitDie, Wounds, Size, weight, MaxHealth, Health, HealthRegenRate, MaxMana, Mana, ManaRegenRate,
+                       MaxEnergy, Energy, EnergyRegenRate, MaxFatigue, Fatigue, FatigueRegenRate, MaxStamina, Stamina,
+                       StaminaRegenRate, MaxEndurance, Endurance, EnduranceRegenRate, Strength, Dexterity, Constitution,
+                       Intellect, Wisdom, Charisma, Agility, Fortitude, Reflex, Willpower, BaseAttack, BaseAttackBonus,
+                       AttackPower, AttackSpeed, CritChance, CritMultiplier, Haste, SpellPower, SpellPenetration,
+                       Defense, Dodge, Parry, Avoidance, Versatility, Multishot, Initiative, NaturalArmor,
+                       PhysicalArmor, BonusArmor, ForceArmor, MagicArmor, Resistance, ReloadSpeed, RANGE, Speed, Silver,
+                       Copper, FreeCurrency, PremiumCurrency, Fame, ALIGNMENT, Description)
+    VALUES (_CustomerGUID, 'Apprentice', 'L_MVP_2', -14319.548852, -3045.964828, 2151.217753, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
             1, 1, 0, 10, 0, 1, 0, 100, 50, 1, 100, 0, 1, 100, 0, 5, 100, 0, 1, 0, 0, 0, 0, 0, 0, 10, 10, 10, 10, 10, 10,
             0, 1, 1, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             '');
@@ -3410,11 +3427,17 @@ BEGIN
         SELECT UserGUID FROM AddUser(_CustomerGUID, _FirstName, _LastName, _Email, _Password, 'Developer') INTO _UserGUID;
 
         INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
+        VALUES (_CustomerGUID, 'L_MVP_2', 'L_MVP_2', NULL, 1, 1);
+        INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
+        VALUES (_CustomerGUID, 'L_Foraas', 'L_Foraas', NULL, 1, 1);
+        INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
         VALUES (_CustomerGUID, 'ThirdPersonExampleMap', 'ThirdPersonExampleMap', NULL, 1, 1);
         INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
         VALUES (_CustomerGUID, 'Map2', 'Map2', NULL, 1, 1);
         INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
         VALUES (_CustomerGUID, 'DungeonMap', 'DungeonMap', NULL, 1, 1);
+        INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
+        VALUES (_CustomerGUID, 'L_Gullwing_Cave_01', 'L_Gullwing_Cave_01', NULL, 1, 1);
         INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
         VALUES (_CustomerGUID, 'FourZoneMap', 'Zone1', NULL, 1, 1);
         INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
@@ -3430,7 +3453,22 @@ BEGIN
                            Defense, Dodge, Parry, Avoidance, Versatility, Multishot, Initiative, NaturalArmor,
                            PhysicalArmor, BonusArmor, ForceArmor, MagicArmor, Resistance, ReloadSpeed, RANGE, Speed, Silver,
                            Copper, FreeCurrency, PremiumCurrency, Fame, ALIGNMENT, Description)
-        VALUES (_CustomerGUID, 'MaleWarrior', 'ThirdPersonExampleMap', 0, 0, 250, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+        VALUES (_CustomerGUID, 'MaleWarrior', 'L_MVP_2', -14319.548852, -3045.964828, 2151.217753, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+                1, 1, 0, 10, 0, 1, 0, 100, 50, 1, 100, 0, 1, 100, 0, 5, 100, 0, 1, 0, 0, 0, 0, 0, 0, 10, 10, 10, 10, 10, 10,
+                0, 1, 1, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                '');
+
+        INSERT INTO CLASS (CustomerGUID, ClassName, StartingMapName, X, Y, Z, Perception, Acrobatics, Climb, Stealth, RX,
+                           RY, RZ, Spirit, Magic, TeamNumber, Thirst, Hunger, Gold, Score, CharacterLevel, Gender, XP,
+                           HitDie, Wounds, Size, weight, MaxHealth, Health, HealthRegenRate, MaxMana, Mana, ManaRegenRate,
+                           MaxEnergy, Energy, EnergyRegenRate, MaxFatigue, Fatigue, FatigueRegenRate, MaxStamina, Stamina,
+                           StaminaRegenRate, MaxEndurance, Endurance, EnduranceRegenRate, Strength, Dexterity, Constitution,
+                           Intellect, Wisdom, Charisma, Agility, Fortitude, Reflex, Willpower, BaseAttack, BaseAttackBonus,
+                           AttackPower, AttackSpeed, CritChance, CritMultiplier, Haste, SpellPower, SpellPenetration,
+                           Defense, Dodge, Parry, Avoidance, Versatility, Multishot, Initiative, NaturalArmor,
+                           PhysicalArmor, BonusArmor, ForceArmor, MagicArmor, Resistance, ReloadSpeed, RANGE, Speed, Silver,
+                           Copper, FreeCurrency, PremiumCurrency, Fame, ALIGNMENT, Description)
+        VALUES (_CustomerGUID, 'Apprentice', 'L_MVP_2', -14319.548852, -3045.964828, 2151.217753, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
                 1, 1, 0, 10, 0, 1, 0, 100, 50, 1, 100, 0, 1, 100, 0, 5, 100, 0, 1, 0, 0, 0, 0, 0, 0, 10, 10, 10, 10, 10, 10,
                 0, 1, 1, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 '');

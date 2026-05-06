@@ -9,10 +9,10 @@ CREATE TABLE IF NOT EXISTS public.defaultsamsaracharactervalues
     classID      int  NOT NULL,
     statIdentifier varchar(50) NOT NULL,
     statValue int NOT NULL,
-    startingmapname varchar(50) DEFAULT 'TestLevel' NOT NULL,
-    x float8 DEFAULT 0.0 NOT NULL,
-    y float8 DEFAULT 0.0 NOT NULL,
-    z float8 DEFAULT 0.0 NOT NULL,
+    startingmapname varchar(50) DEFAULT 'L_MVP_2' NOT NULL,
+    x float8 DEFAULT -14319.548852 NOT NULL,
+    y float8 DEFAULT -3045.964828 NOT NULL,
+    z float8 DEFAULT 2151.217753 NOT NULL,
     rx float8 DEFAULT 0.0 NOT NULL,
     ry float8 DEFAULT 0.0 NOT NULL,
     rz float8 DEFAULT 0.0 NOT NULL
@@ -36,12 +36,12 @@ CREATE TABLE CustomCharacterData
 );
 
 
-------------------------------------------------------------------------
--- 2) Insert base (non-derived) stats for Wanderer (classID=2).
+-- 2) Insert base (non-derived) stats for Wanderer and Apprentice.
 ------------------------------------------------------------------------
 DO $$
 DECLARE
     v_customerGUID UUID;
+    v_class record;
 BEGIN
     -- Lookup CustomerGUID by unique customer name
     SELECT customerguid INTO v_customerGUID
@@ -52,30 +52,65 @@ BEGIN
         RAISE EXCEPTION 'Customer not found.';
     END IF;
 
-    -- Insert default values for classID 2
-    INSERT INTO public.defaultsamsaracharactervalues (customerGUID, classID, statIdentifier, statValue)
-    VALUES
-        (v_customerGUID, 2, 'Health',                100),
-        (v_customerGUID, 2, 'MaxHealth',             100),
-        (v_customerGUID, 2, 'Mana',                  50),
-        (v_customerGUID, 2, 'MaxMana',               50),
-        (v_customerGUID, 2, 'Might',                 1),
-        (v_customerGUID, 2, 'Dexterity',             1),
-        (v_customerGUID, 2, 'Agility',               1),
-        (v_customerGUID, 2, 'Endurance',             1),
-        (v_customerGUID, 2, 'Intelligence',          1),
-        (v_customerGUID, 2, 'Concentration',         1),
-        (v_customerGUID, 2, 'AttackSpeed',           1),
-        (v_customerGUID, 2, 'BaseLevel',             1),
-        (v_customerGUID, 2, 'BaseExperienceRequired', 100);
+    FOR v_class IN
+        SELECT c.classid
+        FROM class c
+        WHERE c.customerguid = v_customerGUID
+          AND c.classname IN ('Wanderer', 'Apprentice')
+    LOOP
+        INSERT INTO public.defaultsamsaracharactervalues (customerGUID, classID, statIdentifier, statValue)
+        SELECT v_customerGUID, v_class.classid, v.statidentifier, v.statvalue
+        FROM (
+            VALUES
+                ('Health', 100),
+                ('MaxHealth', 100),
+                ('Mana', 50),
+                ('MaxMana', 50),
+                ('Might', 1),
+                ('Dexterity', 1),
+                ('Agility', 1),
+                ('Endurance', 1),
+                ('Intelligence', 1),
+                ('Concentration', 1),
+                ('AttackSpeed', 1),
+                ('BaseLevel', 1),
+                ('BaseExperienceRequired', 100)
+        ) AS v(statidentifier, statvalue)
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM public.defaultsamsaracharactervalues d
+            WHERE d.customerguid = v_customerGUID
+              AND d.classid = v_class.classid
+              AND d.statidentifier = v.statidentifier
+        );
+    END LOOP;
 END $$;
 
 ALTER TABLE defaultsamsaracharactervalues
 ADD CONSTRAINT uq_defaults_customer_class_stat UNIQUE (customerGUID, classID, statIdentifier);
 
-ALTER TABLE Characters
-  RENAME COLUMN "IsInternalNetworkTestUser" 
-              TO isinternalnetworktestuser;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'characters'
+          AND column_name = 'IsInternalNetworkTestUser'
+    ) THEN
+        ALTER TABLE Characters
+            RENAME COLUMN "IsInternalNetworkTestUser" TO isinternalnetworktestuser;
+    ELSIF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'characters'
+          AND column_name = 'isinternalnetworktestuser'
+    ) THEN
+        ALTER TABLE Characters
+            ADD COLUMN IsInternalNetworkTestUser BOOLEAN DEFAULT FALSE NOT NULL;
+    END IF;
+END $$;
 
 ------------------------------------------------------------------------
 -- 3) Update addsamsaracharacter function to use the new defaults table.
@@ -94,7 +129,6 @@ DECLARE
     _CharacterID INT;
     _CountOfCharNamesFound INT = 0;
     _InvalidCharacters INT;
-    _CharGUID UUID;
     _StartMapName VARCHAR(50);
     _X FLOAT8;
     _Y FLOAT8;
@@ -140,14 +174,51 @@ BEGIN
      WHERE CC.CustomerGUID = _CustomerGUID
        AND CC.ClassName = _ClassName;
 
+    _charactername := TRIM(_charactername);
+    _charactername := REGEXP_REPLACE(_charactername, '\s+', ' ', 'g');
+    _InvalidCharacters := CASE WHEN _charactername ~ '[^a-zA-Z0-9_ ]' THEN 1 ELSE 0 END;
+
     SELECT COUNT(*)
       INTO _CountOfCharNamesFound
       FROM Characters Ch
      WHERE Ch.CustomerGUID = _CustomerGUID
        AND Ch.CharName = _charactername;
 
+    IF _InvalidCharacters > 0 AND _SupportUnicode = FALSE THEN
+        INSERT INTO temp_table (
+            ErrorMessage, CharacterName, ClassName, StartingMapName,
+            X, Y, Z, RX, RY, RZ, TeamNumber, Gender
+        )
+        VALUES (
+            'Character Name can only contain letters, numbers, spaces, and underscores', '', '', '', 0, 0, 0, 0, 0, 0, 0, 0
+        );
+        _ErrorRaised := TRUE;
+    END IF;
+
+    IF _ErrorRaised = FALSE AND _UserGUID IS NULL THEN
+        INSERT INTO temp_table (
+            ErrorMessage, CharacterName, ClassName, StartingMapName,
+            X, Y, Z, RX, RY, RZ, TeamNumber, Gender
+        )
+        VALUES (
+            'Invalid User Session', '', '', '', 0, 0, 0, 0, 0, 0, 0, 0
+        );
+        _ErrorRaised := TRUE;
+    END IF;
+
+    IF _ErrorRaised = FALSE AND _ClassID IS NULL THEN
+        INSERT INTO temp_table (
+            ErrorMessage, CharacterName, ClassName, StartingMapName,
+            X, Y, Z, RX, RY, RZ, TeamNumber, Gender
+        )
+        VALUES (
+            'Invalid Class Name', '', '', '', 0, 0, 0, 0, 0, 0, 0, 0
+        );
+        _ErrorRaised := TRUE;
+    END IF;
+
     -- Block duplicate character names
-    IF _CountOfCharNamesFound > 0 THEN
+    IF _ErrorRaised = FALSE AND _CountOfCharNamesFound > 0 THEN
         INSERT INTO temp_table (
             ErrorMessage, CharacterName, ClassName, StartingMapName,
             X, Y, Z, RX, RY, RZ, TeamNumber, Gender
@@ -155,8 +226,7 @@ BEGIN
         VALUES (
             'Character Name Already Exists', '', '', '', 0, 0, 0, 0, 0, 0, 0, 0
         );
-        RETURN QUERY SELECT * FROM temp_table;
-        RETURN;
+        _ErrorRaised := TRUE;
     END IF;
 
     -- Fetch default map location values for this class
@@ -170,24 +240,22 @@ BEGIN
     -- Fallback to defaults if not found
     IF _StartMapName IS NULL THEN
         _StartMapName := 'L_MVP_2';
-        _X := 0.0; _Y := 0.0; _Z := 0.0;
+        _X := -14319.548852; _Y := -3045.964828; _Z := 2151.217753;
         _RX := 0.0; _RY := 0.0; _RZ := 0.0;
     END IF;
 
     IF NOT _ErrorRaised THEN
-        _CharGUID := gen_random_uuid();
-
         -- Determine internal network test user flag
         _IsInternalNetworkTestUser := RIGHT(_charactername, 4) = '_NTU';
 
         -- Insert new character
         INSERT INTO Characters (
-            CustomerGUID, ClassID, UserGUID, CharName, CharGUID, MapName,
+            CustomerGUID, ClassID, UserGUID, CharName, MapName,
             X, Y, Z, ServerIP, LastActivity, RX, RY, RZ,
             TeamNumber, Gender, Description, IsAdmin, IsModerator, Email, IsInternalNetworkTestUser
         )
         VALUES (
-            _CustomerGUID, _ClassID, _UserGUID, _charactername, _CharGUID, _StartMapName,
+            _CustomerGUID, _ClassID, _UserGUID, _charactername, _StartMapName,
             _X, _Y, _Z, '', NOW(), _RX, _RY, _RZ,
             1, 1, '', FALSE, FALSE, _Email, _IsInternalNetworkTestUser
         );

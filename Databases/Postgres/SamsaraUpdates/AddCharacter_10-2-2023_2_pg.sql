@@ -22,7 +22,6 @@ DECLARE
     v_UserGUID UUID;
     v_ClassID INT;
     v_CharacterID INT;
-    v_CharacterGUID UUID;
     v_SupportUnicode BOOLEAN;
     v_InvalidCharacters INT;
     v_CountOfCharNamesFound INT;
@@ -32,10 +31,10 @@ BEGIN
     p_CharacterName := TRIM(p_CharacterName);
     p_CharacterName := REGEXP_REPLACE(p_CharacterName, '\s+', ' ', 'g');
 
-    v_InvalidCharacters := CASE WHEN p_CharacterName ~ '[^a-z0-9 ]' THEN 1 ELSE 0 END;
+    v_InvalidCharacters := CASE WHEN p_CharacterName ~ '[^a-zA-Z0-9_ ]' THEN 1 ELSE 0 END;
 
     IF (v_InvalidCharacters > 0 AND NOT v_SupportUnicode) THEN
-        RETURN QUERY SELECT 'Character Name can only contain letters, numbers, and spaces'::VARCHAR(100), ''::VARCHAR(50), ''::VARCHAR(50), ''::VARCHAR(50), 0::FLOAT, 0::FLOAT, 0::FLOAT, 0::FLOAT, 0::FLOAT, 0::FLOAT, 0::INT, 0::INT;
+        RETURN QUERY SELECT 'Character Name can only contain letters, numbers, spaces, and underscores'::VARCHAR(100), ''::VARCHAR(50), ''::VARCHAR(50), ''::VARCHAR(50), 0::FLOAT, 0::FLOAT, 0::FLOAT, 0::FLOAT, 0::FLOAT, 0::FLOAT, 0::INT, 0::INT;
         RETURN;
     END IF;
 
@@ -48,12 +47,11 @@ BEGIN
             SELECT COUNT(*) INTO v_CountOfCharNamesFound FROM Characters WHERE CustomerGUID = p_CustomerGUID AND CharName = p_CharacterName;
 
             IF (v_CountOfCharNamesFound < 1) THEN
-                v_CharacterGUID := gen_random_uuid();
-
                 WITH inserted AS (
-                    INSERT INTO Characters (CustomerGUID, ClassID, UserGUID, CharGUID, CharName, MapName, X, Y, Z, ServerIP, LastActivity, RX, RY, RZ, TeamNumber, Gender, Description)
-                    SELECT p_CustomerGUID, v_ClassID, v_UserGUID, v_CharacterGUID, p_CharacterName, StartingMapName, X, Y, Z, '', CURRENT_TIMESTAMP, RX, RY, RZ, TeamNumber, Gender, Description
+                    INSERT INTO Characters (CustomerGUID, ClassID, UserGUID, Email, CharName, MapName, X, Y, Z, ServerIP, LastActivity, RX, RY, RZ, TeamNumber, Gender, Description, IsAdmin, IsModerator, IsInternalNetworkTestUser)
+                    SELECT p_CustomerGUID, v_ClassID, v_UserGUID, U.Email, p_CharacterName, StartingMapName, X, Y, Z, '', CURRENT_TIMESTAMP, RX, RY, RZ, TeamNumber, Gender, Description, FALSE, FALSE, FALSE
                     FROM Class
+                    INNER JOIN Users U ON U.CustomerGUID = p_CustomerGUID AND U.UserGUID = v_UserGUID
                     WHERE ClassID = v_ClassID AND CustomerGUID = p_CustomerGUID
                     RETURNING CharacterID, MapName, X, Y, Z, RX, RY, RZ, TeamNumber, Gender
                 )

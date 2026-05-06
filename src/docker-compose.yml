@@ -236,8 +236,12 @@ volumes:
     name: "ows2-setup"
   elasticsearch:
     name: "ows2-elasticsearch"
-  database:
-    name: "ows2-database"
+  mssql-data:
+    name: "ows2-mssql-data"
+  postgres-data:
+    name: "ows2-postgres-data"
+  mysql-data:
+    name: "ows2-mysql-data"
   messaging:
     name: "ows2-messaging"
   matchmakingcache:
