@@ -1072,11 +1072,11 @@ BEGIN
 
     SET _CharacterName = TRIM(BOTH FROM _CharacterName);
     SET _CharacterName = REPLACE(REPLACE(REPLACE(_CharacterName, ' ', '<>'), '><', ''), '<>', ' ');
-    SELECT _CharacterName REGEXP '[^a-zA-Z0-9 ]' INTO _InvalidCharacters;
+    SELECT _CharacterName REGEXP '[^a-zA-Z0-9_ ]' INTO _InvalidCharacters;
 
     IF _InvalidCharacters > 0 AND _SupportUnicode = FALSE THEN
         INSERT INTO tmp_AddCharacter
-        VALUES ('Character Name can only contain letters, numbers, and spaces', '', '', 0, '', 0, 0, 0, 0, 0, 0, 0, 0,
+        VALUES ('Character Name can only contain letters, numbers, spaces, and underscores', '', '', 0, '', 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         SET _ErrorRaised = TRUE;
     END IF;
@@ -1453,6 +1453,8 @@ BEGIN
     VALUES (_CustomerGUID, 'Map2', 'Map2', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
     VALUES (_CustomerGUID, 'DungeonMap', 'DungeonMap', NULL, 1, 1);
+    INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
+    VALUES (_CustomerGUID, 'L_Gullwing_Cave_01', 'L_Gullwing_Cave_01', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
     VALUES (_CustomerGUID, 'FourZoneMap', 'Zone1', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)

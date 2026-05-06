@@ -77,7 +77,9 @@ namespace OWSData.Repositories.Implementations.Postgres
             {
                 if (disposing)
                 {
-                    _innerConnection.Dispose();
+                    // Close returns the physical connection to the pool without making nested
+                    // re-entrancy on the same async-local wrapper permanently unusable.
+                    _innerConnection.Close();
                 }
             }
             finally

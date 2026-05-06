@@ -68,7 +68,19 @@ namespace OWSPublicAPI.Requests.Users
 
             bool readyForPlayersToConnect = false;
 
-            if (joinMapByCharacterName == null || joinMapByCharacterName.WorldServerID < 1)
+            if (joinMapByCharacterName == null)
+            {
+                Output.Success = false;
+                Output.ErrorMessage = "GetServerToConnectTo: No response was returned when looking up the destination zone.";
+                return new OkObjectResult(Output);
+            }
+
+            if (!joinMapByCharacterName.Success && !String.IsNullOrEmpty(joinMapByCharacterName.ErrorMessage))
+            {
+                return new OkObjectResult(joinMapByCharacterName);
+            }
+
+            if (joinMapByCharacterName.WorldServerID < 1)
             {
                 Output.Success = false;
                 Output.ErrorMessage = "GetServerToConnectTo: WorldServerID is less than 1.  Make sure you setup at least one valid World Server and that it is currently running!";

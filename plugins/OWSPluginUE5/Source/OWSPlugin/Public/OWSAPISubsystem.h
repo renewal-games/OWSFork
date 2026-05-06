@@ -53,6 +53,9 @@ public:
 		FString OWS2GlobalDataAPIPath = "";
 
 	UPROPERTY(BlueprintReadWrite, Category = "Config")
+		FString OWS2ChatAPIPath = "";
+
+	UPROPERTY(BlueprintReadWrite, Category = "Config")
 		FString OWSEncryptionKey = "";
 
 protected:

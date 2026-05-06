@@ -40,6 +40,13 @@ void UOWSAPISubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		OWS2GlobalDataAPIPath,
 		GGameIni
 	);
+
+	GConfig->GetString(
+		TEXT("/Script/EngineSettings.GeneralProjectSettings"),
+		TEXT("OWS2ChatAPIPath"),
+		OWS2ChatAPIPath,
+		GGameIni
+	);
 }
 
 void UOWSAPISubsystem::Deinitialize()
@@ -95,6 +102,10 @@ void UOWSAPISubsystem::ProcessOWS2POSTRequest(FString ApiModuleToCall, FString A
 	{
 		OWS2APIPathToUse = OWS2GlobalDataAPIPath;
 	}
+	else if (ApiModuleToCall == "ChatAPI")
+	{
+		OWS2APIPathToUse = OWS2ChatAPIPath;
+	}
 	else //When an ApiModuleToCall is not specified, use the PublicAPI
 	{
 		OWS2APIPathToUse = OWS2APIPath;
@@ -132,6 +143,10 @@ void UOWSAPISubsystem::ProcessOWS2GETRequest(FString ApiModuleToCall, FString Ap
 	else if (ApiModuleToCall == "GlobalDataAPI")
 	{
 		OWS2APIPathToUse = OWS2GlobalDataAPIPath;
+	}
+	else if (ApiModuleToCall == "ChatAPI")
+	{
+		OWS2APIPathToUse = OWS2ChatAPIPath;
 	}
 	else //When an ApiModuleToCall is not specified, use the PublicAPI
 	{

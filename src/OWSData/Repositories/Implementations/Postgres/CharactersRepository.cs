@@ -259,6 +259,26 @@ namespace OWSData.Repositories.Implementations.Postgres
                     parameters,
                     commandType: CommandType.Text);
 
+                if (outputMap == null)
+                {
+                    return new JoinMapByCharName()
+                    {
+                        Success = false,
+                        ErrorMessage = $"Error finding Zone: {zoneName}",
+                        ServerIP = serverIp,
+                        Port = port,
+                        WorldServerID = -1,
+                        WorldServerIP = worldServerIp,
+                        WorldServerPort = worldServerPort,
+                        MapInstanceID = mapInstanceID,
+                        MapNameToStart = mapNameToStart,
+                        MapInstanceStatus = -1,
+                        NeedToStartupMap = false,
+                        EnableAutoLoopback = enableAutoLoopback,
+                        NoPortForwarding = noPortForwarding
+                    };
+                }
+
                 Characters outputCharacter = await Connection.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterByName,
                     parameters,
                     commandType: CommandType.Text);
@@ -348,7 +368,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     outputObject.MapNameToStart = outputMap.MapName;
                 }
 
-                if (outputCharacter.Email.Contains("@localhost") || outputCharacter.IsInternalNetworkTestUser)
+                if ((outputCharacter.Email?.Contains("@localhost") ?? false) || outputCharacter.IsInternalNetworkTestUser)
                 {
                     outputObject.ServerIP = "127.0.0.1";
                 }
