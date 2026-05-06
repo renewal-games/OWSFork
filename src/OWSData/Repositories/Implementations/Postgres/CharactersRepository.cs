@@ -2,8 +2,10 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.Common;
 using System.Linq;
 using Npgsql;
+using System.Threading;
 using System.Threading.Tasks;
 using Dapper.Transaction;
 using Microsoft.Extensions.Options;
@@ -29,11 +31,18 @@ namespace OWSData.Repositories.Implementations.Postgres
             _storageOptions = storageOptions;
         }
 
-        private IDbConnection Connection => new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+        private readonly AsyncLocal<ScopedDbConnection> _scopedConnection = new AsyncLocal<ScopedDbConnection>();
+
+        private DbConnection CreateConnection()
+        {
+            return new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+        }
+
+        private DbConnection Connection => _scopedConnection.Value ??= new ScopedDbConnection(CreateConnection(), () => _scopedConnection.Value = null);
 
         public async Task AddCharacterToMapInstanceByCharName(Guid customerGUID, string characterName, int mapInstanceID)
         {
-            IDbConnection conn = Connection;
+            using IDbConnection conn = CreateConnection();
             conn.Open();
             using IDbTransaction transaction = conn.BeginTransaction();
             try
@@ -43,12 +52,14 @@ namespace OWSData.Repositories.Implementations.Postgres
                 parameters.Add("@CharName", characterName);
                 parameters.Add("@MapInstanceID", mapInstanceID);
 
-                var outputCharacter = await Connection.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterIDByName,
+                var outputCharacter = await conn.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterIDByName,
                     parameters,
+                    transaction: transaction,
                     commandType: CommandType.Text);
 
-                var outputZone = await Connection.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetZoneName,
+                var outputZone = await conn.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetZoneName,
                     parameters,
+                    transaction: transaction,
                     commandType: CommandType.Text);
 
                 if (outputCharacter.CharacterId > 0)
@@ -56,16 +67,19 @@ namespace OWSData.Repositories.Implementations.Postgres
                     parameters.Add("@CharacterID", outputCharacter.CharacterId);
                     parameters.Add("@ZoneName", outputZone.ZoneName);
 
-                    await Connection.ExecuteAsync(GenericQueries.RemoveCharacterFromAllInstances,
+                    await conn.ExecuteAsync(GenericQueries.RemoveCharacterFromAllInstances,
                         parameters,
+                        transaction: transaction,
                         commandType: CommandType.Text);
 
-                    await Connection.ExecuteAsync(GenericQueries.AddCharacterToInstance,
+                    await conn.ExecuteAsync(GenericQueries.AddCharacterToInstance,
                         parameters,
+                        transaction: transaction,
                         commandType: CommandType.Text);
 
-                    await Connection.ExecuteAsync(GenericQueries.UpdateCharacterZone,
+                    await conn.ExecuteAsync(GenericQueries.UpdateCharacterZone,
                         parameters,
+                        transaction: transaction,
                         commandType: CommandType.Text);
                 }
                 transaction.Commit();
@@ -138,7 +152,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task CleanUpInstances(Guid customerGUID)
         {
-            IDbConnection conn = Connection;
+            using IDbConnection conn = CreateConnection();
             conn.Open();
             using IDbTransaction transaction = conn.BeginTransaction();
             try

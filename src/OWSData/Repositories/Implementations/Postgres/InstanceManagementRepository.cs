@@ -2,7 +2,9 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.Common;
 using Npgsql;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
 using OWSData.Models;
@@ -23,7 +25,14 @@ namespace OWSData.Repositories.Implementations.Postgres
             _storageOptions = storageOptions;
         }
 
-        private IDbConnection Connection => new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+        private readonly AsyncLocal<ScopedDbConnection> _scopedConnection = new AsyncLocal<ScopedDbConnection>();
+
+        private DbConnection CreateConnection()
+        {
+            return new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+        }
+
+        private DbConnection Connection => _scopedConnection.Value ??= new ScopedDbConnection(CreateConnection(), () => _scopedConnection.Value = null);
 
         public async Task<GetServerInstanceFromPort> GetZoneInstance(Guid customerGUID, int zoneInstanceId)
         {
@@ -121,7 +130,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task<SuccessAndErrorMessage> ShutDownWorldServer(Guid customerGUID, int worldServerID)
         {
-            IDbConnection conn = Connection;
+            using IDbConnection conn = CreateConnection();
             conn.Open();
             using IDbTransaction transaction = conn.BeginTransaction();
             try
@@ -131,16 +140,19 @@ namespace OWSData.Repositories.Implementations.Postgres
                 parameter.Add("@WorldServerID", worldServerID);
                 parameter.Add("@ServerStatus", 0);
 
-                await Connection.ExecuteAsync(GenericQueries.RemoveAllCharactersFromAllInstancesByWorldID,
+                await conn.ExecuteAsync(GenericQueries.RemoveAllCharactersFromAllInstancesByWorldID,
                     parameter,
+                    transaction: transaction,
                     commandType: CommandType.Text);
 
-                await Connection.ExecuteAsync(GenericQueries.RemoveAllMapInstancesForWorldServer,
+                await conn.ExecuteAsync(GenericQueries.RemoveAllMapInstancesForWorldServer,
                     parameter,
+                    transaction: transaction,
                     commandType: CommandType.Text);
 
-                await Connection.ExecuteAsync(GenericQueries.UpdateWorldServerStatus,
+                await conn.ExecuteAsync(GenericQueries.UpdateWorldServerStatus,
                     parameter,
+                    transaction: transaction,
                     commandType: CommandType.Text);
 
                 transaction.Commit();

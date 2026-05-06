@@ -2,8 +2,10 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.Common;
 using System.Linq;
 using Npgsql;
+using System.Threading;
 using System.Threading.Tasks;
 using Dapper.Transaction;
 using Microsoft.Extensions.Options;
@@ -26,7 +28,14 @@ namespace OWSData.Repositories.Implementations.Postgres
             _storageOptions = storageOptions;
         }
 
-        private IDbConnection Connection => new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+        private readonly AsyncLocal<ScopedDbConnection> _scopedConnection = new AsyncLocal<ScopedDbConnection>();
+
+        private DbConnection CreateConnection()
+        {
+            return new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+        }
+
+        private DbConnection Connection => _scopedConnection.Value ??= new ScopedDbConnection(CreateConnection(), () => _scopedConnection.Value = null);
 
         public async Task AddOrUpdateGlobalData(GlobalData globalData)
         {
