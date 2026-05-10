@@ -360,6 +360,7 @@ MigrationBackup/
 # Docker temp files
 temp/
 docker-compose.override.yml
+src/.env.hetzner-dev
 
 # Log Files
 Buffer.bookmark

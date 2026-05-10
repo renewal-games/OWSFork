@@ -1,0 +1,174 @@
+x-ows-common-env: &ows-common-env
+  ASPNETCORE_ENVIRONMENT: "${ASPNETCORE_ENVIRONMENT:-Production}"
+  ASPNETCORE_URLS: "http://+:80"
+  OWSStorageConfig__OWSDBBackend: "postgres"
+  OWSStorageConfig__OWSDBConnectionString: "${DATABASE_CONNECTION_STRING}"
+  OWSAPIPathConfig__InternalPublicApiURL: "http://owspublicapi/"
+  OWSAPIPathConfig__InternalInstanceManagementApiURL: "http://owsinstancemanagement/"
+  OWSAPIPathConfig__InternalCharacterPersistenceApiURL: "http://owscharacterpersistence/"
+  RabbitMQOptions__RabbitMQHostName: "messaging"
+  RabbitMQOptions__RabbitMQPort: "5672"
+  RabbitMQOptions__RabbitMQUserName: "${RABBITMQ_DEFAULT_USER}"
+  RabbitMQOptions__RabbitMQPassword: "${RABBITMQ_DEFAULT_PASS}"
+  Serilog__MinimumLevel__Default: "Information"
+  Serilog__MinimumLevel__Override__Microsoft: "Warning"
+  Serilog__MinimumLevel__Override__System: "Warning"
+  Serilog__WriteTo__1__Name: "Console"
+  Logging__LogLevel__Default: "Information"
+  Logging__LogLevel__Microsoft: "Warning"
+  Logging__LogLevel__System: "Warning"
+
+services:
+  database:
+    build:
+      context: .docker/postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: "${DATABASE_PASSWORD}"
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=128MB"
+      - "-c"
+      - "max_connections=40"
+      - "-c"
+      - "work_mem=4MB"
+      - "-c"
+      - "maintenance_work_mem=64MB"
+    volumes:
+      - hetzner-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-15432}:5432"
+    mem_limit: "${DATABASE_MEM_LIMIT:-768m}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  messaging:
+    image: rabbitmq:3.9.0-management-alpine
+    restart: unless-stopped
+    volumes:
+      - hetzner-rabbitmq-data:/var/lib/rabbitmq
+      - ./.docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    ports:
+      - "127.0.0.1:${RABBITMQ_HOST_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_HOST_PORT:-15672}:15672"
+    mem_limit: "${RABBITMQ_MEM_LIMIT:-384m}"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  owspublicapi:
+    image: ${REGISTRY:-ows}/owspublicapi:${PLATFORM:-linux}-${TAG:-latest}
+    build:
+      context: .
+      dockerfile: OWSPublicAPI/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *ows-common-env
+    ports:
+      - "${OWS_PUBLIC_API_PORT:-44302}:80"
+    mem_limit: "${OWS_PUBLIC_API_MEM_LIMIT:-384m}"
+    depends_on:
+      database:
+        condition: service_healthy
+      messaging:
+        condition: service_healthy
+
+  owsinstancemanagement:
+    image: ${REGISTRY:-ows}/owsinstancemanagement:${PLATFORM:-linux}-${TAG:-latest}
+    build:
+      context: .
+      dockerfile: OWSInstanceManagement/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *ows-common-env
+    ports:
+      - "127.0.0.1:${OWS_INSTANCE_MANAGEMENT_HOST_PORT:-44328}:80"
+    mem_limit: "${OWS_INSTANCE_MANAGEMENT_MEM_LIMIT:-384m}"
+    depends_on:
+      database:
+        condition: service_healthy
+      messaging:
+        condition: service_healthy
+
+  owscharacterpersistence:
+    image: ${REGISTRY:-ows}/owscharacterpersistence:${PLATFORM:-linux}-${TAG:-latest}
+    build:
+      context: .
+      dockerfile: OWSCharacterPersistence/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *ows-common-env
+    ports:
+      - "127.0.0.1:${OWS_CHARACTER_PERSISTENCE_HOST_PORT:-44323}:80"
+    mem_limit: "${OWS_CHARACTER_PERSISTENCE_MEM_LIMIT:-384m}"
+    depends_on:
+      database:
+        condition: service_healthy
+      messaging:
+        condition: service_healthy
+
+  owsglobaldata:
+    image: ${REGISTRY:-ows}/owsglobaldata:${PLATFORM:-linux}-${TAG:-latest}
+    build:
+      context: .
+      dockerfile: OWSGlobalData/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *ows-common-env
+    ports:
+      - "${OWS_GLOBAL_DATA_PORT:-44325}:80"
+    mem_limit: "${OWS_GLOBAL_DATA_MEM_LIMIT:-256m}"
+    depends_on:
+      database:
+        condition: service_healthy
+      messaging:
+        condition: service_healthy
+
+  owschat:
+    image: ${REGISTRY:-ows}/owschat:${PLATFORM:-linux}-${TAG:-latest}
+    build:
+      context: .
+      dockerfile: OWSChat/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *ows-common-env
+      ASPNETCORE_URLS: "http://+:50051"
+      Kestrel__EndpointDefaults__Protocols: "Http2"
+    ports:
+      - "${OWS_CHAT_GRPC_PORT:-50051}:50051"
+    mem_limit: "${OWS_CHAT_MEM_LIMIT:-256m}"
+    depends_on:
+      database:
+        condition: service_healthy
+      messaging:
+        condition: service_healthy
+
+  owsparty:
+    image: ${REGISTRY:-ows}/owsparty:${PLATFORM:-linux}-${TAG:-latest}
+    build:
+      context: .
+      dockerfile: OWSParty/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *ows-common-env
+    ports:
+      - "${OWS_PARTY_HTTP_PORT:-44306}:80"
+      - "${OWS_PARTY_GRPC_PORT:-44364}:50051"
+    mem_limit: "${OWS_PARTY_MEM_LIMIT:-384m}"
+    depends_on:
+      database:
+        condition: service_healthy
+      messaging:
+        condition: service_healthy
+
+volumes:
+  hetzner-postgres-data:
+    name: "${COMPOSE_PROJECT_NAME:-ows-hetzner-dev}-postgres-data"
+  hetzner-rabbitmq-data:
+    name: "${COMPOSE_PROJECT_NAME:-ows-hetzner-dev}-rabbitmq-data"

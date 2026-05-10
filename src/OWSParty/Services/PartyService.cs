@@ -1,7 +1,9 @@
-﻿using Grpc.Core;
+using Grpc.Core;
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using PartyServiceApp.Protos;
@@ -9,17 +11,12 @@ using OWSData.Repositories.Interfaces;
 using OWSShared.Interfaces;
 using Google.Protobuf.WellKnownTypes;
 using OWSParty.Requests.Party;
-using OWSData.Models.StoredProcs;
-using MySqlX.XDevAPI;
-using System.Linq;
-using OWSData.Models.Tables;
 
 namespace OWSParty.Service
 {
     public class PartyService : PartyApp.PartyAppBase
     {
-
-        public static List<ClientInfo> _partyClients = new List<ClientInfo>();
+        public static ConcurrentDictionary<string, ClientInfo> _partyClients = new ConcurrentDictionary<string, ClientInfo>(StringComparer.OrdinalIgnoreCase);
 
         private readonly ICharactersRepository _charactersRepository;
         private readonly IHeaderCustomerGUID _customerGuid;
@@ -30,135 +27,459 @@ namespace OWSParty.Service
             _charactersRepository = charactersRepository;
             _customerGuid = customerGuid;
         }
+
         public override async Task RegisterParty(PartyRegister request, IServerStreamWriter<PartyToSend> responseStream, ServerCallContext context)
         {
-            if (Guid.Parse(request.CustomerGuid) == Guid.Empty)
+            if (!Guid.TryParse(request.CustomerGuid, out Guid parsedCustomerGuid) || parsedCustomerGuid == Guid.Empty)
             {
                 return;
             }
 
             string id = request.UserId;
-            string userName = request.UserName;
+            string userName = request.UserName?.Trim();
 
-            _partyClients.Add(new ClientInfo
+            if (string.IsNullOrWhiteSpace(userName))
+            {
+                return;
+            }
+
+            ClientInfo clientInfo = new ClientInfo
             {
                 Id = id,
                 UserName = userName,
-                serverStreamWriter = responseStream
-            });
+                ServerStreamWriter = responseStream
+            };
 
-            _customerGuid.CustomerGUID = Guid.Parse(request.CustomerGuid);
-            GetInitialPartySettingsRequest getInitalPartySettings = new GetInitialPartySettingsRequest();
-            getInitalPartySettings.SetData(_charactersRepository, _customerGuid, userName);
+            _partyClients.AddOrUpdate(userName, clientInfo, (_, _) => clientInfo);
 
-            PartyToSend partyInformation = await getInitalPartySettings.Handle();
-
-            if(partyInformation != null && partyInformation != default && partyInformation.PartyMembers.Count != 0)
+            try
             {
-                await responseStream.WriteAsync(partyInformation);
-            }
+                _customerGuid.CustomerGUID = parsedCustomerGuid;
+                GetInitialPartySettingsRequest getInitalPartySettings = new GetInitialPartySettingsRequest();
+                getInitalPartySettings.SetData(_charactersRepository, _customerGuid, userName);
 
-            Func<bool> isCancelled = () => context.CancellationToken.IsCancellationRequested;
-            SpinWait.SpinUntil(isCancelled);
-            _partyClients.RemoveAll(x => x.Id == id);
-            return;
+                PartyToSend partyInformation = await getInitalPartySettings.Handle();
+
+                if (partyInformation != null && partyInformation != default && partyInformation.PartyMembers.Count != 0)
+                {
+                    await responseStream.WriteAsync(partyInformation);
+                }
+
+                await Task.Delay(Timeout.Infinite, context.CancellationToken);
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+            {
+            }
+            finally
+            {
+                if (_partyClients.TryGetValue(userName, out ClientInfo registeredClient) && ReferenceEquals(registeredClient, clientInfo))
+                {
+                    _partyClients.TryRemove(userName, out _);
+                }
+            }
         }
 
         public override async Task<Empty> SendPartyMsg(PartyToSend request, ServerCallContext context)
         {
-            ClientInfo client = null;
-            List<Task> PartyTasks = new List<Task>();
+            if (request == null)
+            {
+                ThrowInvalidArgument("Party request is required.");
+            }
+
             switch (request.PartyAction)
             {
                 case PartyAction.MessageTypeAsk:
-
-                    client = _partyClients.Find(client => client.UserName == request.PartyMembers[1].CharName);
-                    if (client == null || client == default)
-                    {
-                        break;
-                    }
-                    PartyTasks.Add(client.serverStreamWriter.WriteAsync(request));
-                    await Task.WhenAll(PartyTasks);
+                    await ExecutePartyAction(() => HandleAsk(request));
                     break;
+
                 case PartyAction.MessageTypeCreate:
                 case PartyAction.MessageTypeAdd:
-                    _customerGuid.CustomerGUID = Guid.Parse(request.CustomerGuid);
-                    CreatePartyOrAddMemberRequest createPartyOrAddMemberRequest = new CreatePartyOrAddMemberRequest();
-                    createPartyOrAddMemberRequest.SetData(_charactersRepository, _customerGuid, request);
-
-                    PartyToSend partyInformation = await createPartyOrAddMemberRequest.Handle();
-
-                    foreach (var partyMember in partyInformation.PartyMembers)
-                    {
-                        client = _partyClients.Find(client => client.UserName == partyMember.CharName);
-                        if(client == null || client == default)
-                        {
-                            continue;
-                        }
-                        PartyTasks.Add(client.serverStreamWriter.WriteAsync(partyInformation));
-                    }
-                    await Task.WhenAll(PartyTasks);
+                    await ExecutePartyAction(() => HandleCreateOrAdd(request));
                     break;
+
                 case PartyAction.MessageTypeKick:
                 case PartyAction.MessageTypeLeave:
-                    _customerGuid.CustomerGUID = Guid.Parse(request.CustomerGuid);
-                    LeavePartyRequest leavePartyRequest = new LeavePartyRequest();
-                    leavePartyRequest.SetData(_charactersRepository, _customerGuid, request);
-                    
-                    PartyToSend Party = await leavePartyRequest.Handle();
-                    if(Party == request)
-                    {
-                        break;
-                    }
-
-                    PartyToSend LeaveParty = new PartyToSend();
-                    LeaveParty.PartyAction = request.PartyAction;
-                    foreach (var partyMember in request.PartyMembers)
-                    {
-                        client = _partyClients.Find(client => client.UserName == partyMember.CharName);
-                        if (client == null || client == default)
-                        {
-                            continue;
-                        }
-                        PartyTasks.Add(client.serverStreamWriter.WriteAsync(LeaveParty));
-                    }
-
-                    foreach (var partyMember in Party.PartyMembers)
-                    {
-                        client = _partyClients.Find(client => client.UserName == partyMember.CharName);
-                        if (client == null || client == default)
-                        {
-                            continue;
-                        }
-                        PartyTasks.Add(client.serverStreamWriter.WriteAsync(Party));
-                    }
-                    await Task.WhenAll(PartyTasks);
+                case PartyAction.MessageTypeDismiss:
+                    await ExecutePartyAction(() => HandleRemoveOrDismiss(request));
                     break;
 
                 case PartyAction.MessageTypeMakeLead:
-                    _customerGuid.CustomerGUID = Guid.Parse(request.CustomerGuid);
-                    ChangePartyLeaderRequest changePartyLeaderRequest = new ChangePartyLeaderRequest();
-                    changePartyLeaderRequest.SetData(_charactersRepository, _customerGuid, request);
-                    
-                    PartyToSend PartyLeaderChanged = await changePartyLeaderRequest.Handle();
+                    await ExecutePartyAction(() => HandleMakeLeader(request));
+                    break;
 
-                    foreach (var partyMember in PartyLeaderChanged.PartyMembers)
-                    {
-                        client = _partyClients.Find(client => client.UserName == partyMember.CharName);
-                        if (client == null || client == default)
-                        {
-                            continue;
-                        }
-                        PartyTasks.Add(client.serverStreamWriter.WriteAsync(PartyLeaderChanged));
-                    }
-                    await Task.WhenAll(PartyTasks);
-                    break;
                 case PartyAction.MessageTypeRaid:
+                case PartyAction.MessageTypeLoot:
+                    ThrowInvalidArgument($"{request.PartyAction} is not implemented.");
                     break;
-                case PartyAction.MessageTypeLoot: 
+
+                default:
+                    ThrowInvalidArgument($"Unsupported party action: {request.PartyAction}.");
                     break;
             }
+
             return new Empty();
+        }
+
+        private async Task HandleAsk(PartyToSend request)
+        {
+            ValidateAsk(request);
+
+            PartyMemberInfo target = request.PartyMembers[1];
+            if (!_partyClients.TryGetValue(target.CharName, out ClientInfo client) || client == null)
+            {
+                return;
+            }
+
+            await client.ServerStreamWriter.WriteAsync(request);
+        }
+
+        private async Task HandleCreateOrAdd(PartyToSend request)
+        {
+            Guid customerGuid = ValidateCustomerGuid(request);
+
+            if (request.PartyAction == PartyAction.MessageTypeCreate)
+            {
+                ValidateCreate(request);
+            }
+            else
+            {
+                ValidateAdd(request);
+            }
+
+            _customerGuid.CustomerGUID = customerGuid;
+            CreatePartyOrAddMemberRequest createPartyOrAddMemberRequest = new CreatePartyOrAddMemberRequest();
+            createPartyOrAddMemberRequest.SetData(_charactersRepository, _customerGuid, request);
+
+            PartyToSend partyInformation = await createPartyOrAddMemberRequest.Handle();
+            await BroadcastToMembers(partyInformation.PartyMembers, partyInformation);
+        }
+
+        private async Task HandleRemoveOrDismiss(PartyToSend request)
+        {
+            Guid customerGuid = ValidateCustomerGuid(request);
+
+            switch (request.PartyAction)
+            {
+                case PartyAction.MessageTypeKick:
+                    ValidateKick(request);
+                    break;
+                case PartyAction.MessageTypeLeave:
+                    ValidateLeave(request);
+                    break;
+                case PartyAction.MessageTypeDismiss:
+                    ValidateDismiss(request);
+                    break;
+            }
+
+            _customerGuid.CustomerGUID = customerGuid;
+            LeavePartyRequest leavePartyRequest = new LeavePartyRequest();
+            leavePartyRequest.SetData(_charactersRepository, _customerGuid, request);
+
+            PartyToSend party = await leavePartyRequest.Handle();
+            PartyToSend removedParty = new PartyToSend
+            {
+                PartyAction = request.PartyAction
+            };
+
+            IEnumerable<PartyMemberInfo> removedPartyMembers = request.PartyAction switch
+            {
+                PartyAction.MessageTypeDismiss => party.PartyMembers,
+                PartyAction.MessageTypeKick => request.PartyMembers.Where(partyMember => !partyMember.PartyLeader),
+                _ => request.PartyMembers
+            };
+
+            await BroadcastToMembers(removedPartyMembers, removedParty);
+
+            if (request.PartyAction == PartyAction.MessageTypeDismiss)
+            {
+                return;
+            }
+
+            await BroadcastToMembers(party.PartyMembers, party);
+        }
+
+        private async Task HandleMakeLeader(PartyToSend request)
+        {
+            Guid customerGuid = ValidateCustomerGuid(request);
+            ValidateMakeLeader(request);
+
+            _customerGuid.CustomerGUID = customerGuid;
+            ChangePartyLeaderRequest changePartyLeaderRequest = new ChangePartyLeaderRequest();
+            changePartyLeaderRequest.SetData(_charactersRepository, _customerGuid, request);
+
+            PartyToSend partyLeaderChanged = await changePartyLeaderRequest.Handle();
+            await BroadcastToMembers(partyLeaderChanged.PartyMembers, partyLeaderChanged);
+        }
+
+        private static async Task ExecutePartyAction(Func<Task> action)
+        {
+            try
+            {
+                await action();
+            }
+            catch (RpcException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsValidationException(ex))
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument, GetClientSafeValidationMessage(ex)));
+            }
+            catch
+            {
+                throw new RpcException(new Status(StatusCode.Internal, "Party action failed."));
+            }
+        }
+
+        private static async Task BroadcastToMembers(IEnumerable<PartyMemberInfo> partyMembers, PartyToSend message)
+        {
+            await BroadcastPartyUpdate(partyMembers, message);
+        }
+
+        public static async Task BroadcastPartyUpdate(IEnumerable<PartyMemberInfo> partyMembers, PartyToSend message)
+        {
+            List<Task> partyTasks = new List<Task>();
+
+            foreach (PartyMemberInfo partyMember in partyMembers)
+            {
+                if (string.IsNullOrWhiteSpace(partyMember.CharName))
+                {
+                    continue;
+                }
+
+                if (!_partyClients.TryGetValue(partyMember.CharName, out ClientInfo client) || client == null)
+                {
+                    continue;
+                }
+
+                partyTasks.Add(client.ServerStreamWriter.WriteAsync(message));
+            }
+
+            await Task.WhenAll(partyTasks);
+        }
+
+        private static Guid ValidateCustomerGuid(PartyToSend request)
+        {
+            if (!Guid.TryParse(request.CustomerGuid, out Guid customerGuid) || customerGuid == Guid.Empty)
+            {
+                ThrowInvalidArgument("A valid customer_guid is required.");
+            }
+
+            return customerGuid;
+        }
+
+        private static void ValidatePartyGuid(PartyToSend request)
+        {
+            if (request.PartyInfo == null || !Guid.TryParse(request.PartyInfo.PartyGuid, out Guid partyGuid) || partyGuid == Guid.Empty)
+            {
+                ThrowInvalidArgument("A valid party_info.party_guid is required.");
+            }
+        }
+
+        private static void ValidateAsk(PartyToSend request)
+        {
+            if (request.PartyMembers.Count < 2)
+            {
+                ThrowInvalidArgument("Ask requires requester and target party members.");
+            }
+
+            RequireMemberName(request.PartyMembers[0], "requester");
+            RequireMemberName(request.PartyMembers[1], "target");
+        }
+
+        private static void ValidateCreate(PartyToSend request)
+        {
+            ValidateCustomerGuid(request);
+
+            PartyMemberInfo leader = GetLeader(request);
+            if (leader == null)
+            {
+                ThrowInvalidArgument("Create requires a party member with party_leader set to true.");
+            }
+
+            RequireMemberName(leader, "leader");
+            RequireDistinctMemberNames(request.PartyMembers);
+        }
+
+        private static void ValidateAdd(PartyToSend request)
+        {
+            ValidateCustomerGuid(request);
+            ValidatePartyGuid(request);
+
+            PartyMemberInfo leader = GetLeader(request);
+            if (leader == null)
+            {
+                ThrowInvalidArgument("Add requires the acting leader with party_leader set to true.");
+            }
+
+            RequireMemberName(leader, "leader");
+
+            List<PartyMemberInfo> targets = GetNonLeaderMembers(request).ToList();
+            if (!targets.Any())
+            {
+                ThrowInvalidArgument("Add requires at least one target member.");
+            }
+
+            foreach (PartyMemberInfo target in targets)
+            {
+                RequireMemberName(target, "target");
+                RequireDifferentCharacters(leader, target, "Leader cannot add themself.");
+            }
+
+            RequireDistinctMemberNames(request.PartyMembers);
+        }
+
+        private static void ValidateKick(PartyToSend request)
+        {
+            ValidateCustomerGuid(request);
+            ValidatePartyGuid(request);
+
+            PartyMemberInfo leader = GetLeader(request);
+            if (leader == null)
+            {
+                ThrowInvalidArgument("Kick requires the acting leader with party_leader set to true.");
+            }
+
+            RequireMemberName(leader, "leader");
+
+            List<PartyMemberInfo> targets = GetNonLeaderMembers(request).ToList();
+            if (!targets.Any())
+            {
+                ThrowInvalidArgument("Kick requires at least one target member.");
+            }
+
+            foreach (PartyMemberInfo target in targets)
+            {
+                RequireMemberName(target, "target");
+                RequireDifferentCharacters(leader, target, "Leader cannot kick themself.");
+            }
+
+            RequireDistinctMemberNames(request.PartyMembers);
+        }
+
+        private static void ValidateLeave(PartyToSend request)
+        {
+            ValidateCustomerGuid(request);
+            ValidatePartyGuid(request);
+
+            if (request.PartyMembers.Count != 1)
+            {
+                ThrowInvalidArgument("Leave requires exactly the leaving member.");
+            }
+
+            RequireMemberName(request.PartyMembers[0], "member");
+        }
+
+        private static void ValidateDismiss(PartyToSend request)
+        {
+            ValidateCustomerGuid(request);
+            ValidatePartyGuid(request);
+
+            PartyMemberInfo leader = GetLeader(request);
+            if (leader == null)
+            {
+                ThrowInvalidArgument("Dismiss requires the acting leader with party_leader set to true.");
+            }
+
+            RequireMemberName(leader, "leader");
+        }
+
+        private static void ValidateMakeLeader(PartyToSend request)
+        {
+            ValidateCustomerGuid(request);
+            ValidatePartyGuid(request);
+
+            PartyMemberInfo leader = GetLeader(request);
+            if (leader == null)
+            {
+                ThrowInvalidArgument("Make leader requires the current leader with party_leader set to true.");
+            }
+
+            RequireMemberName(leader, "leader");
+
+            List<PartyMemberInfo> targets = GetNonLeaderMembers(request).ToList();
+            if (targets.Count != 1)
+            {
+                ThrowInvalidArgument("Make leader requires exactly one target member.");
+            }
+
+            PartyMemberInfo target = targets[0];
+            RequireMemberName(target, "target");
+            RequireDifferentCharacters(leader, target, "Leader cannot grant leader to themself.");
+            RequireDistinctMemberNames(request.PartyMembers);
+        }
+
+        private static PartyMemberInfo GetLeader(PartyToSend request)
+        {
+            return request.PartyMembers.FirstOrDefault(partyMember => partyMember.PartyLeader);
+        }
+
+        private static IEnumerable<PartyMemberInfo> GetNonLeaderMembers(PartyToSend request)
+        {
+            return request.PartyMembers.Where(partyMember => !partyMember.PartyLeader);
+        }
+
+        private static void RequireMemberName(PartyMemberInfo member, string role)
+        {
+            if (member == null || string.IsNullOrWhiteSpace(member.CharName))
+            {
+                ThrowInvalidArgument($"A valid {role} char_name is required.");
+            }
+        }
+
+        private static void RequireDifferentCharacters(PartyMemberInfo actor, PartyMemberInfo target, string message)
+        {
+            if (string.Equals(actor.CharName, target.CharName, StringComparison.OrdinalIgnoreCase))
+            {
+                ThrowInvalidArgument(message);
+            }
+        }
+
+        private static void RequireDistinctMemberNames(IEnumerable<PartyMemberInfo> partyMembers)
+        {
+            bool hasDuplicate = partyMembers
+                .Where(partyMember => !string.IsNullOrWhiteSpace(partyMember.CharName))
+                .GroupBy(partyMember => partyMember.CharName, StringComparer.OrdinalIgnoreCase)
+                .Any(group => group.Count() > 1);
+
+            if (hasDuplicate)
+            {
+                ThrowInvalidArgument("Party member char_name values must be unique within the request.");
+            }
+        }
+
+        private static bool IsValidationException(Exception ex)
+        {
+            if (ex is ArgumentException || ex is InvalidOperationException)
+            {
+                return true;
+            }
+
+            string exceptionName = ex.GetType().FullName;
+            if (!string.Equals(exceptionName, "Npgsql.PostgresException", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            string sqlState = ex.GetType().GetProperty("SqlState")?.GetValue(ex)?.ToString();
+            return sqlState == "P0001" || sqlState == "23505";
+        }
+
+        private static string GetClientSafeValidationMessage(Exception ex)
+        {
+            string message = ex.Message;
+            int detailStart = message.IndexOf("DETAIL:", StringComparison.OrdinalIgnoreCase);
+            if (detailStart > 0)
+            {
+                message = message.Substring(0, detailStart).Trim();
+            }
+
+            return string.IsNullOrWhiteSpace(message) ? "Invalid party request." : message;
+        }
+
+        private static void ThrowInvalidArgument(string message)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, message));
         }
     }
 
@@ -166,7 +487,6 @@ namespace OWSParty.Service
     {
         public string Id { get; set; }
         public string UserName { get; set; }
-        public IServerStreamWriter<PartyToSend> serverStreamWriter { get; set; }
+        public IServerStreamWriter<PartyToSend> ServerStreamWriter { get; set; }
     }
-
 }

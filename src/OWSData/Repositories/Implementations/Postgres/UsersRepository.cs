@@ -440,16 +440,151 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                using (Connection)
-                {
-                    var p = new DynamicParameters();
-                    p.Add("@CustomerGUID", customerGUID);
-                    p.Add("@UserSessionGUID", userSessionGUID);
-                    p.Add("@CharacterName", characterName);
+                using DbConnection connection = CreateConnection();
+                await connection.OpenAsync();
+                using IDbTransaction transaction = connection.BeginTransaction();
 
-                    await Connection.ExecuteAsync("call RemoveCharacter(@CustomerGUID,@UserSessionGUID,@CharacterName)",
-                        p,
-                        commandType: CommandType.Text);
+                async Task DeleteFromOptionalTable(string tableName, string whereClause, object parameters)
+                {
+                    bool tableExists = await connection.QuerySingleAsync<bool>(
+                        "SELECT to_regclass(@TableName) IS NOT NULL",
+                        new { TableName = $"public.{tableName.ToLowerInvariant()}" },
+                        transaction);
+
+                    if (!tableExists)
+                    {
+                        return;
+                    }
+
+                    await connection.ExecuteAsync($"DELETE FROM {tableName} WHERE {whereClause};", parameters, transaction);
+                }
+
+                try
+                {
+                    int? characterId = await connection.QuerySingleOrDefaultAsync<int?>(
+                        @"SELECT C.CharacterID
+                        FROM Characters C
+                        INNER JOIN UserSessions US ON US.CustomerGUID = C.CustomerGUID AND US.UserGUID = C.UserGUID
+                        WHERE C.CustomerGUID = @CustomerGUID
+                            AND US.UserSessionGUID = @UserSessionGUID
+                            AND C.CharName = @CharacterName",
+                        new { CustomerGUID = customerGUID, UserSessionGUID = userSessionGUID, CharacterName = characterName },
+                        transaction);
+
+                    if (characterId != null)
+                    {
+                        var partyMemberships = await connection.QueryAsync(
+                            @"SELECT PartyID, PartyLeader
+                            FROM PartyMember
+                            WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                            new { CustomerGUID = customerGUID, CharacterID = characterId.Value },
+                            transaction);
+
+                        foreach (var membership in partyMemberships)
+                        {
+                            int partyId = membership.partyid;
+                            bool wasLeader = membership.partyleader;
+
+                            await connection.ExecuteAsync(
+                                @"DELETE FROM PartyMember
+                                WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID AND CharacterID = @CharacterID",
+                                new { CustomerGUID = customerGUID, PartyID = partyId, CharacterID = characterId.Value },
+                                transaction);
+
+                            int remainingCount = await connection.QuerySingleAsync<int>(
+                                @"SELECT COUNT(*)
+                                FROM PartyMember
+                                WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                                new { CustomerGUID = customerGUID, PartyID = partyId },
+                                transaction);
+
+                            if (remainingCount == 0)
+                            {
+                                await connection.ExecuteAsync(
+                                    @"DELETE FROM Party
+                                    WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                                    new { CustomerGUID = customerGUID, PartyID = partyId },
+                                    transaction);
+                            }
+                            else if (wasLeader)
+                            {
+                                int nextLeaderId = await connection.QuerySingleAsync<int>(
+                                    @"SELECT CharacterID
+                                    FROM PartyMember
+                                    WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID
+                                    ORDER BY CharacterID
+                                    LIMIT 1",
+                                    new { CustomerGUID = customerGUID, PartyID = partyId },
+                                    transaction);
+
+                                await connection.ExecuteAsync(
+                                    @"UPDATE PartyMember
+                                    SET PartyLeader = CharacterID = @NextLeaderID,
+                                        PartyRole = CASE WHEN CharacterID = @NextLeaderID THEN 2 ELSE 0 END
+                                    WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                                    new { CustomerGUID = customerGUID, PartyID = partyId, NextLeaderID = nextLeaderId },
+                                    transaction);
+                            }
+                        }
+
+                        await DeleteFromOptionalTable(
+                            "CharInventoryCurrency",
+                            @"CharInventoryID IN (
+                                SELECT CharInventoryID FROM CharInventory
+                                WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                            )",
+                            new { CustomerGUID = customerGUID, CharacterID = characterId.Value });
+
+                        await DeleteFromOptionalTable(
+                            "CharEquipmentItems",
+                            "CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                            new { CustomerGUID = customerGUID, CharacterID = characterId.Value });
+
+                        await DeleteFromOptionalTable(
+                            "CharacterPrimaryProfession",
+                            "CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                            new { CustomerGUID = customerGUID, CharacterID = characterId.Value });
+
+                        await DeleteFromOptionalTable(
+                            "CharacterSecondaryProfession",
+                            "CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                            new { CustomerGUID = customerGUID, CharacterID = characterId.Value });
+
+                        await connection.ExecuteAsync(
+                            @"DELETE FROM CharAbilityBarAbilities
+                            WHERE CustomerGUID = @CustomerGUID
+                                AND CharAbilityBarID IN (
+                                    SELECT CharAbilityBarID FROM CharAbilityBars
+                                    WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                                );
+                            DELETE FROM CharAbilityBars WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID;
+                            DELETE FROM CharInventoryItems
+                            WHERE CustomerGUID = @CustomerGUID
+                                AND CharInventoryID IN (
+                                    SELECT CharInventoryID FROM CharInventory
+                                    WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                                );
+                            DELETE FROM CharInventory WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID;
+                            DELETE FROM CharQuests WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID;
+                            DELETE FROM CharStats WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID;
+                            DELETE FROM CharOnMapInstance WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID;
+                            DELETE FROM CustomCharacterData WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID;
+                            DELETE FROM CharHasAbilities WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID;
+                            DELETE FROM CharAbilities WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID;
+                            DELETE FROM ChatGroupUsers WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID;
+                            DELETE FROM PlayerGroupCharacters WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID;
+                            DELETE FROM PlayerGroupMember WHERE CharacterID = @CharacterID;
+                            DELETE FROM Characters WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID;",
+                            new { CustomerGUID = customerGUID, CharacterID = characterId.Value },
+                            transaction);
+                    }
+
+                    transaction.Commit();
+                }
+                catch
+                {
+                    transaction.Rollback();
+                    throw;
                 }
 
                 outputObject.Success = true;

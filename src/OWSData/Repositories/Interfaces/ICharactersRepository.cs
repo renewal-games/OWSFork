@@ -39,6 +39,11 @@ namespace OWSData.Repositories.Interfaces
         Task<PartyToSend> LeaveParty(Guid customerGUID, PartyToSend partyRequest);
 
         Task<PartyToSend> ChangePartyLeader(Guid customerGUID, PartyToSend partyRequest);
+        Task<bool> IsPartyNameAvailable(Guid customerGUID, string partyName);
+        Task<string> GenerateAvailablePartyName(Guid customerGUID);
+        Task<PartyToSend> UpdatePartyDescription(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, string partyDescription);
+        Task<PartyToSend> UpdatePartyExpDistribution(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, int expDistributionMode);
+        Task<PartyToSend> UpdatePartyLootDistribution(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, int lootDistributionMode);
 
         Task<GuildToSend> CreateGuildOrAddMember(Guid customerGUID, GuildToSend guildRequest);
 

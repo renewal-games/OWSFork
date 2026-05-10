@@ -16,6 +16,7 @@ enum PartyAction
   MESSAGE_TYPE_RAID = 6;
   MESSAGE_TYPE_LOOT = 7;
   MESSAGE_TYPE_DISMISS = 8;
+  MESSAGE_TYPE_UPDATE_INFO = 9;
 }
 
 message PartyRegister
@@ -29,6 +30,10 @@ message PartyInfo
 {
 	string party_guid = 1;
 	bool raiding_party = 2;
+	string party_name = 3;
+	string party_description = 4;
+	int32 exp_distribution_mode = 5;
+	int32 loot_distribution_mode = 6;
 }
 
 message PartyMemberInfo

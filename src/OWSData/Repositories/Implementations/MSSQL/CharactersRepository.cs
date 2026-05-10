@@ -825,6 +825,62 @@ namespace OWSData.Repositories.Implementations.MSSQL
             return party;
         }
 
+        public async Task<bool> IsPartyNameAvailable(Guid customerGUID, string partyName)
+        {
+            string normalizedPartyName = PartyNameGenerator.Normalize(partyName);
+            if (!PartyNameGenerator.IsValid(normalizedPartyName))
+            {
+                return false;
+            }
+
+            using IDbConnection connection = Connection;
+            int existingNameCount = await connection.QuerySingleAsync<int>(
+                @"SELECT COUNT(*)
+                FROM Party
+                WHERE CustomerGUID = @CustomerGUID
+                    AND LOWER(PartyName) = LOWER(@PartyName)
+                    AND DisbandedAt IS NULL",
+                new { CustomerGUID = customerGUID, PartyName = normalizedPartyName },
+                commandType: CommandType.Text);
+
+            return existingNameCount == 0;
+        }
+
+        public async Task<string> GenerateAvailablePartyName(Guid customerGUID)
+        {
+            for (int attempt = 0; attempt < 40; attempt++)
+            {
+                string candidate = PartyNameGenerator.CreateCandidate(attempt);
+                if (await IsPartyNameAvailable(customerGUID, candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            string fallback = PartyNameGenerator.CreateFallback();
+            if (await IsPartyNameAvailable(customerGUID, fallback))
+            {
+                return fallback;
+            }
+
+            throw new InvalidOperationException("Unable to generate a unique party name.");
+        }
+
+        public Task<PartyToSend> UpdatePartyDescription(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, string partyDescription)
+        {
+            throw new NotSupportedException("Party description updates require the Phase 2 party model for this DB backend.");
+        }
+
+        public Task<PartyToSend> UpdatePartyExpDistribution(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, int expDistributionMode)
+        {
+            throw new NotSupportedException("Party exp distribution updates require the Phase 2 party model for this DB backend.");
+        }
+
+        public Task<PartyToSend> UpdatePartyLootDistribution(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, int lootDistributionMode)
+        {
+            throw new NotSupportedException("Party loot distribution updates require the Phase 2 party model for this DB backend.");
+        }
+
         public async Task<GuildToSend> CreateGuildOrAddMember(Guid customerGUID, GuildToSend guildRequest)
         {
             try

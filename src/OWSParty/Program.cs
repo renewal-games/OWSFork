@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.OpenApi.Models;
 using SimpleInjector;
@@ -29,6 +31,12 @@ builder.Configuration
     .AddEnvironmentVariables()
     .Build();
 
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.ListenAnyIP(80, lo => lo.Protocols = HttpProtocols.Http1);
+    options.ListenAnyIP(50051, lo => lo.Protocols = HttpProtocols.Http2);
+});
+
 builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo("./temp/DataProtection-Keys"));
 
 builder.Services.AddMemoryCache();
@@ -42,7 +50,7 @@ builder.Services.AddMvcCore(config =>
 .AddViews()
 .AddApiExplorer();
 
-builder.Services.AddCodeFirstGrpc();
+builder.Services.AddGrpc();
 builder.Services.AddSingleton(typeof(IGrpcServiceActivator<>),
             typeof(GrpcSimpleInjectorActivator<>));
 

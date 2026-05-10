@@ -40,6 +40,152 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         private DbConnection Connection => _scopedConnection.Value ??= new ScopedDbConnection(CreateConnection(), () => _scopedConnection.Value = null);
 
+        private sealed class PartyStateRow
+        {
+            public string PartyGuid { get; set; }
+            public bool RaidingParty { get; set; }
+            public string PartyName { get; set; }
+            public string PartyDescription { get; set; }
+            public int ExpDistributionMode { get; set; }
+            public int LootDistributionMode { get; set; }
+            public string CharGuid { get; set; }
+            public string CharName { get; set; }
+            public bool PartyLeader { get; set; }
+        }
+
+        private static Guid? TryParseGuid(string value)
+        {
+            return Guid.TryParse(value, out Guid parsed) ? parsed : null;
+        }
+
+        private static PartyMemberInfo GetActorMember(PartyToSend partyRequest)
+        {
+            return partyRequest.PartyMembers.FirstOrDefault(member => member.PartyLeader)
+                ?? partyRequest.PartyMembers.FirstOrDefault();
+        }
+
+        private static PartyToSend BuildPartyToSend(Guid customerGUID, PartyAction action, IEnumerable<PartyStateRow> rows)
+        {
+            PartyToSend party = new PartyToSend
+            {
+                CustomerGuid = customerGUID.ToString(),
+                PartyAction = action,
+                PartyInfo = new PartyInfo()
+            };
+
+            PartyStateRow firstRow = rows.FirstOrDefault();
+            if (firstRow == null)
+            {
+                return party;
+            }
+
+            party.PartyInfo.PartyGuid = firstRow.PartyGuid;
+            party.PartyInfo.RaidingParty = firstRow.RaidingParty;
+            party.PartyInfo.PartyName = firstRow.PartyName ?? string.Empty;
+            party.PartyInfo.PartyDescription = firstRow.PartyDescription ?? string.Empty;
+            party.PartyInfo.ExpDistributionMode = firstRow.ExpDistributionMode;
+            party.PartyInfo.LootDistributionMode = firstRow.LootDistributionMode;
+
+            foreach (PartyStateRow row in rows)
+            {
+                party.PartyMembers.Add(new PartyMemberInfo
+                {
+                    CharGuid = row.CharGuid ?? string.Empty,
+                    CharName = row.CharName ?? string.Empty,
+                    PartyLeader = row.PartyLeader
+                });
+            }
+
+            return party;
+        }
+
+        private static async Task<IEnumerable<PartyStateRow>> GetPartyState(DbConnection connection, IDbTransaction transaction, Guid customerGUID, Guid partyGuid)
+        {
+            return await connection.QueryAsync<PartyStateRow>(
+                @"SELECT
+                    p.PartyGuid::TEXT AS PartyGuid,
+                    p.RaidingParty AS RaidingParty,
+                    p.PartyName AS PartyName,
+                    p.PartyDescription AS PartyDescription,
+                    p.ExpDistributionMode AS ExpDistributionMode,
+                    p.LootDistributionMode AS LootDistributionMode,
+                    c.CharGuid::TEXT AS CharGuid,
+                    c.CharName::TEXT AS CharName,
+                    pm.PartyLeader AS PartyLeader
+                FROM Party p
+                INNER JOIN PartyMember pm ON pm.CustomerGUID = p.CustomerGUID AND pm.PartyID = p.PartyID
+                INNER JOIN Characters c ON c.CustomerGUID = pm.CustomerGUID AND c.CharacterID = pm.CharacterID
+                WHERE p.CustomerGUID = @CustomerGUID AND p.PartyGuid = @PartyGuid
+                ORDER BY pm.PartyLeader DESC, c.CharName",
+                new { CustomerGUID = customerGUID, PartyGuid = partyGuid },
+                transaction);
+        }
+
+        private static async Task<int?> GetCharacterId(DbConnection connection, IDbTransaction transaction, Guid customerGUID, Guid? charGuid, string charName)
+        {
+            return await connection.QuerySingleOrDefaultAsync<int?>(
+                @"SELECT CharacterID
+                FROM Characters
+                WHERE CustomerGUID = @CustomerGUID
+                    AND (
+                        (@CharGuid IS NOT NULL AND CharGuid = @CharGuid)
+                        OR (@CharName IS NOT NULL AND CharName = @CharName)
+                    )
+                LIMIT 1",
+                new { CustomerGUID = customerGUID, CharGuid = charGuid, CharName = charName },
+                transaction);
+        }
+
+        private static async Task<int?> GetPartyId(DbConnection connection, IDbTransaction transaction, Guid customerGUID, Guid partyGuid)
+        {
+            return await connection.QuerySingleOrDefaultAsync<int?>(
+                @"SELECT PartyID
+                FROM Party
+                WHERE CustomerGUID = @CustomerGUID AND PartyGuid = @PartyGuid",
+                new { CustomerGUID = customerGUID, PartyGuid = partyGuid },
+                transaction);
+        }
+
+        private static async Task<bool> IsPartyNameAvailable(DbConnection connection, IDbTransaction transaction, Guid customerGUID, string partyName)
+        {
+            string normalizedPartyName = PartyNameGenerator.Normalize(partyName);
+            if (!PartyNameGenerator.IsValid(normalizedPartyName))
+            {
+                return false;
+            }
+
+            int existingNameCount = await connection.QuerySingleAsync<int>(
+                @"SELECT COUNT(*)
+                FROM Party
+                WHERE CustomerGUID = @CustomerGUID
+                    AND LOWER(PartyName) = LOWER(@PartyName)
+                    AND DisbandedAt IS NULL",
+                new { CustomerGUID = customerGUID, PartyName = normalizedPartyName },
+                transaction);
+
+            return existingNameCount == 0;
+        }
+
+        private static async Task<string> GenerateAvailablePartyName(DbConnection connection, IDbTransaction transaction, Guid customerGUID)
+        {
+            for (int attempt = 0; attempt < 40; attempt++)
+            {
+                string candidate = PartyNameGenerator.CreateCandidate(attempt);
+                if (await IsPartyNameAvailable(connection, transaction, customerGUID, candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            string fallback = PartyNameGenerator.CreateFallback();
+            if (await IsPartyNameAvailable(connection, transaction, customerGUID, fallback))
+            {
+                return fallback;
+            }
+
+            throw new InvalidOperationException("Unable to generate a unique party name.");
+        }
+
         public async Task AddCharacterToMapInstanceByCharName(Guid customerGUID, string characterName, int mapInstanceID)
         {
             using IDbConnection conn = CreateConnection();
@@ -709,141 +855,672 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest)
         {
+            if (partyRequest == null)
+            {
+                throw new ArgumentNullException(nameof(partyRequest));
+            }
+
+            PartyMemberInfo actor = GetActorMember(partyRequest);
+            if (actor == null || string.IsNullOrWhiteSpace(actor.CharName))
+            {
+                throw new InvalidOperationException("A party actor is required.");
+            }
+
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync();
+            using IDbTransaction transaction = connection.BeginTransaction();
+
             try
             {
-                using (Connection)
+                Guid partyGuid;
+                string actorName = actor.CharName;
+                int? actorCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(actor.CharGuid), actor.CharName);
+                if (actorCharacterId == null)
                 {
-                    var p = new DynamicParameters();
-                    p.Add("@CustomerGUID", customerGUID);
-
-                    if (partyRequest.PartyAction == PartyAction.MessageTypeCreate)
-                    {
-                        partyRequest.PartyInfo = await Connection.QuerySingleAsync<PartyInfo>("AddNewParty",
-                        p,
-                        commandType: CommandType.StoredProcedure);
-                    }
-                   
-                    p.Add("@PartyGuid", Guid.Parse(partyRequest.PartyInfo.PartyGuid));
-                        
-                    IEnumerable<PartyMemberInfo> PartyMembersToAdd = partyRequest.PartyMembers.Clone();
-                    PartyMemberInfo LastPartyMember = partyRequest.PartyMembers.LastOrDefault();
-                    partyRequest.PartyMembers.Clear();
-
-                    foreach (PartyMemberInfo Party in PartyMembersToAdd)
-                    {
-                        p.Add("@CharacterName", Party.CharName);
-                        p.Add("@CharacterGUID", Guid.Parse(Party.CharGuid));
-                        p.Add("@PartyLeader", Party.PartyLeader);
-
-                        if (Party.Equals(LastPartyMember))
-                        {
-                            partyRequest.PartyMembers.Add(await Connection.QueryAsync<PartyMemberInfo>("AddNewPartyMember",
-                            p,
-                            commandType: CommandType.StoredProcedure));
-                            break;
-                        }
-
-                        await Connection.QueryAsync<PartyMemberInfo>("AddNewPartyMember",
-                            p,
-                            commandType: CommandType.StoredProcedure);
-                    }
-
+                    throw new InvalidOperationException("Party actor character was not found.");
                 }
-                
+
+                if (partyRequest.PartyAction == PartyAction.MessageTypeCreate)
+                {
+                    int existingPartyCount = await connection.QuerySingleAsync<int>(
+                        @"SELECT COUNT(*) FROM PartyMember WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                        new { CustomerGUID = customerGUID, CharacterID = actorCharacterId.Value },
+                        transaction);
+
+                    if (existingPartyCount > 0)
+                    {
+                        throw new InvalidOperationException("Character is already in a party.");
+                    }
+
+                    string partyName = PartyNameGenerator.Normalize(partyRequest.PartyInfo?.PartyName);
+                    if (string.IsNullOrWhiteSpace(partyName))
+                    {
+                        partyName = await GenerateAvailablePartyName(connection, transaction, customerGUID);
+                    }
+                    else if (!await IsPartyNameAvailable(connection, transaction, customerGUID, partyName))
+                    {
+                        throw new InvalidOperationException("Party name is already in use.");
+                    }
+
+                    string partyDescription = string.IsNullOrWhiteSpace(partyRequest.PartyInfo?.PartyDescription)
+                        ? null
+                        : partyRequest.PartyInfo.PartyDescription.Trim();
+
+                    int expDistributionMode = partyRequest.PartyInfo?.ExpDistributionMode ?? 0;
+                    if (expDistributionMode != 0 && expDistributionMode != 1)
+                    {
+                        throw new InvalidOperationException("Exp distribution mode must be 0 (Individual) or 1 (Shared).");
+                    }
+
+                    int lootDistributionMode = partyRequest.PartyInfo?.LootDistributionMode ?? 0;
+                    if (lootDistributionMode < 0 || lootDistributionMode > 3)
+                    {
+                        throw new InvalidOperationException("Loot distribution mode must be 0 (Individual), 1 (Shared), 2 (Leader), or 3 (Keep valuables).");
+                    }
+
+                    var createdParty = await connection.QuerySingleAsync(
+                        @"INSERT INTO Party (CustomerGUID, PartyGuid, RaidingParty, PartyName, PartyDescription, ExpDistributionMode, LootDistributionMode)
+                        VALUES (@CustomerGUID, gen_random_uuid(), @RaidingParty, @PartyName, @PartyDescription, CAST(@ExpDistributionMode AS SMALLINT), CAST(@LootDistributionMode AS SMALLINT))
+                        RETURNING PartyID, PartyGuid",
+                        new { CustomerGUID = customerGUID, RaidingParty = partyRequest.PartyInfo?.RaidingParty ?? false, PartyName = partyName, PartyDescription = partyDescription, ExpDistributionMode = expDistributionMode, LootDistributionMode = lootDistributionMode },
+                        transaction);
+
+                    int partyId = createdParty.partyid;
+                    partyGuid = createdParty.partyguid;
+
+                    await connection.ExecuteAsync(
+                        @"INSERT INTO PartyMember (CustomerGUID, PartyID, CharacterID, PartyLeader, PartyRole)
+                        VALUES (@CustomerGUID, @PartyID, @CharacterID, TRUE, 2)",
+                        new { CustomerGUID = customerGUID, PartyID = partyId, CharacterID = actorCharacterId.Value },
+                        transaction);
+
+                    foreach (PartyMemberInfo member in partyRequest.PartyMembers.Where(member => !string.Equals(member.CharName, actorName, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        await AddPartyMember(connection, transaction, customerGUID, partyId, member);
+                    }
+
+                    IEnumerable<PartyStateRow> createRows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
+                    transaction.Commit();
+                    return BuildPartyToSend(customerGUID, partyRequest.PartyAction, createRows);
+                }
+
+                if (partyRequest.PartyInfo == null || !Guid.TryParse(partyRequest.PartyInfo.PartyGuid, out partyGuid))
+                {
+                    throw new InvalidOperationException("A valid party GUID is required.");
+                }
+
+                int? existingPartyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                if (existingPartyId == null)
+                {
+                    throw new InvalidOperationException("Party was not found.");
+                }
+
+                int actorLeaderCount = await connection.QuerySingleAsync<int>(
+                    @"SELECT COUNT(*)
+                    FROM PartyMember
+                    WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID AND CharacterID = @CharacterID AND PartyLeader = TRUE",
+                    new { CustomerGUID = customerGUID, PartyID = existingPartyId.Value, CharacterID = actorCharacterId.Value },
+                    transaction);
+
+                if (actorLeaderCount == 0)
+                {
+                    throw new InvalidOperationException("Only the party leader can add members.");
+                }
+
+                foreach (PartyMemberInfo member in partyRequest.PartyMembers.Where(member => !string.Equals(member.CharName, actorName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    await AddPartyMember(connection, transaction, customerGUID, existingPartyId.Value, member);
+                }
+
+                IEnumerable<PartyStateRow> addRows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
+                transaction.Commit();
+                return BuildPartyToSend(customerGUID, partyRequest.PartyAction, addRows);
             }
-            catch (Exception ex)
+            catch
             {
+                transaction.Rollback();
+                throw;
             }
-            return partyRequest;
         }
+
+        private static async Task AddPartyMember(DbConnection connection, IDbTransaction transaction, Guid customerGUID, int partyId, PartyMemberInfo member)
+        {
+            int? memberCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(member.CharGuid), member.CharName);
+            if (memberCharacterId == null)
+            {
+                throw new InvalidOperationException("Party member character was not found.");
+            }
+
+            int? existingMemberPartyId = await connection.QuerySingleOrDefaultAsync<int?>(
+                @"SELECT PartyID FROM PartyMember WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                new { CustomerGUID = customerGUID, CharacterID = memberCharacterId.Value },
+                transaction);
+
+            if (existingMemberPartyId != null)
+            {
+                if (existingMemberPartyId == partyId)
+                {
+                    return;
+                }
+
+                throw new InvalidOperationException("Character is already in another party.");
+            }
+
+            var partyCapacity = await connection.QuerySingleAsync(
+                @"SELECT COUNT(pm.CharacterID) AS MemberCount, MAX(p.MaxMembers) AS MaxMembers
+                FROM Party p
+                LEFT JOIN PartyMember pm ON pm.CustomerGUID = p.CustomerGUID AND pm.PartyID = p.PartyID
+                WHERE p.CustomerGUID = @CustomerGUID AND p.PartyID = @PartyID",
+                new { CustomerGUID = customerGUID, PartyID = partyId },
+                transaction);
+
+            int memberCount = Convert.ToInt32(partyCapacity.membercount);
+            int maxMembers = Convert.ToInt32(partyCapacity.maxmembers);
+            if (memberCount >= maxMembers)
+            {
+                throw new InvalidOperationException("Party is full.");
+            }
+
+            await connection.ExecuteAsync(
+                @"INSERT INTO PartyMember (CustomerGUID, PartyID, CharacterID, PartyLeader, PartyRole)
+                VALUES (@CustomerGUID, @PartyID, @CharacterID, FALSE, 0)",
+                new { CustomerGUID = customerGUID, PartyID = partyId, CharacterID = memberCharacterId.Value },
+                transaction);
+        }
+
         public async Task<PartyToSend> GetInitialPartySettings(Guid customerGUID, string charName)
         {
-            PartyToSend partyRequest = new PartyToSend();
-            partyRequest.PartyAction = PartyAction.MessageTypeCreate;
-            try
-            {
-                using (Connection)
+            using DbConnection connection = CreateConnection();
+
+            IEnumerable<PartyStateRow> rows = await connection.QueryAsync<PartyStateRow>(
+                @"SELECT
+                    p.PartyGuid::TEXT AS PartyGuid,
+                    p.RaidingParty AS RaidingParty,
+                    p.PartyName AS PartyName,
+                    p.PartyDescription AS PartyDescription,
+                    p.ExpDistributionMode AS ExpDistributionMode,
+                    p.LootDistributionMode AS LootDistributionMode,
+                    c.CharGuid::TEXT AS CharGuid,
+                    c.CharName::TEXT AS CharName,
+                    pm.PartyLeader AS PartyLeader
+                FROM PartyMember actorPm
+                INNER JOIN Characters actor ON actor.CustomerGUID = actorPm.CustomerGUID AND actor.CharacterID = actorPm.CharacterID
+                INNER JOIN Party p ON p.CustomerGUID = actorPm.CustomerGUID AND p.PartyID = actorPm.PartyID
+                INNER JOIN PartyMember pm ON pm.CustomerGUID = p.CustomerGUID AND pm.PartyID = p.PartyID
+                INNER JOIN Characters c ON c.CustomerGUID = pm.CustomerGUID AND c.CharacterID = pm.CharacterID
+                WHERE actorPm.CustomerGUID = @CustomerGUID AND actor.CharName = @CharName
+                ORDER BY pm.PartyLeader DESC, c.CharName",
+                new
                 {
-                    var p = new DynamicParameters();
-                    p.Add("@CustomerGUID", customerGUID);
-                    p.Add("@CharName", charName);
+                    CustomerGUID = customerGUID,
+                    CharName = charName
+                },
+                commandType: CommandType.Text);
 
-                    int partyId = await Connection.QuerySingleAsync<int>(GenericQueries.GetPartyId,
-                    p,
-                    commandType: CommandType.Text);
-
-                    p = new DynamicParameters();
-                    p.Add("@CustomerGUID", customerGUID);
-                    p.Add("@PartyID", partyId);
-
-                    partyRequest.PartyMembers.Add(await Connection.QueryAsync<PartyMemberInfo>("GetInitialPartyMembers",
-                                                p,
-                                                commandType: CommandType.StoredProcedure));
-
-                    partyRequest.PartyInfo = await Connection.QuerySingleAsync<PartyInfo>("GetInitialPartySettings",
-                    p,
-                    commandType: CommandType.StoredProcedure);
-                }
-            }
-            catch (Exception ex)
-            {
-            }
-            return partyRequest;
+            return BuildPartyToSend(customerGUID, PartyAction.MessageTypeCreate, rows);
         }
+
         public async Task<PartyToSend> LeaveParty(Guid customerGUID, PartyToSend partyRequest)
         {
-            PartyToSend party = partyRequest.Clone();
+            if (partyRequest == null)
+            {
+                throw new ArgumentNullException(nameof(partyRequest));
+            }
+
+            if (partyRequest.PartyInfo == null || !Guid.TryParse(partyRequest.PartyInfo.PartyGuid, out Guid partyGuid))
+            {
+                throw new InvalidOperationException("A valid party GUID is required.");
+            }
+
+            PartyMemberInfo actor = partyRequest.PartyAction switch
+            {
+                PartyAction.MessageTypeKick or PartyAction.MessageTypeDismiss => partyRequest.PartyMembers.FirstOrDefault(member => member.PartyLeader),
+                PartyAction.MessageTypeLeave when partyRequest.PartyMembers.Count == 1 => partyRequest.PartyMembers[0],
+                PartyAction.MessageTypeLeave => throw new InvalidOperationException("Leave requires exactly the leaving member."),
+                _ => GetActorMember(partyRequest)
+            };
+            if (actor == null || string.IsNullOrWhiteSpace(actor.CharName))
+            {
+                throw new InvalidOperationException("A party actor is required.");
+            }
+
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync();
+            using IDbTransaction transaction = connection.BeginTransaction();
+
             try
             {
-                using (Connection)
+                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                if (partyId == null)
                 {
-                    var p = new DynamicParameters();
-                    p.Add("@CustomerGUID", customerGUID);
-                    p.Add("@PartyGuid", Guid.Parse(partyRequest.PartyInfo.PartyGuid));
-                    foreach (PartyMemberInfo partyMember in partyRequest.PartyMembers)
-                    {
-                        p.Add("@CharName", partyMember.CharName);
-                        p.Add("@PartyLeader", partyMember.PartyLeader);
-
-                        party.PartyMembers.Clear();
-                        party.PartyMembers.Add(await Connection.QueryAsync<PartyMemberInfo>("LeaveParty",
-                                                    p,
-                                                    commandType: CommandType.StoredProcedure));
-                    }
+                    throw new InvalidOperationException("Party was not found.");
                 }
+
+                int? actorCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(actor.CharGuid), actor.CharName);
+                if (actorCharacterId == null)
+                {
+                    throw new InvalidOperationException("Party actor character was not found.");
+                }
+
+                bool actorIsLeader = await connection.QuerySingleAsync<bool>(
+                    @"SELECT EXISTS (
+                        SELECT 1 FROM PartyMember
+                        WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID AND CharacterID = @CharacterID AND PartyLeader = TRUE
+                    )",
+                    new { CustomerGUID = customerGUID, PartyID = partyId.Value, CharacterID = actorCharacterId.Value },
+                    transaction);
+
+                if (partyRequest.PartyAction == PartyAction.MessageTypeDismiss)
+                {
+                    if (!actorIsLeader)
+                    {
+                        throw new InvalidOperationException("Only the party leader can disband the party.");
+                    }
+
+                    IEnumerable<PartyStateRow> disbandRows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
+                    await connection.ExecuteAsync("DELETE FROM PartyMember WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                        new { CustomerGUID = customerGUID, PartyID = partyId.Value }, transaction);
+                    await connection.ExecuteAsync("DELETE FROM Party WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                        new { CustomerGUID = customerGUID, PartyID = partyId.Value }, transaction);
+                    transaction.Commit();
+                    return BuildPartyToSend(customerGUID, partyRequest.PartyAction, disbandRows);
+                }
+
+                IEnumerable<PartyMemberInfo> membersToRemove = partyRequest.PartyAction switch
+                {
+                    PartyAction.MessageTypeKick => partyRequest.PartyMembers.Where(member => !member.PartyLeader),
+                    PartyAction.MessageTypeLeave => new[] { actor },
+                    _ => partyRequest.PartyMembers
+                };
+
+                IEnumerable<PartyStateRow> rows = Enumerable.Empty<PartyStateRow>();
+                foreach (PartyMemberInfo member in membersToRemove)
+                {
+                    if (string.IsNullOrWhiteSpace(member.CharName))
+                    {
+                        continue;
+                    }
+
+                    int? memberCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(member.CharGuid), member.CharName);
+                    if (memberCharacterId == null)
+                    {
+                        throw new InvalidOperationException("Party member character was not found.");
+                    }
+
+                    if (partyRequest.PartyAction == PartyAction.MessageTypeKick && !actorIsLeader)
+                    {
+                        throw new InvalidOperationException("Only the party leader can remove other members.");
+                    }
+
+                    bool removedMemberWasLeader = await connection.QuerySingleAsync<bool>(
+                        @"SELECT COALESCE((
+                            SELECT PartyLeader FROM PartyMember
+                            WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID AND CharacterID = @CharacterID
+                        ), FALSE)",
+                        new { CustomerGUID = customerGUID, PartyID = partyId.Value, CharacterID = memberCharacterId.Value },
+                        transaction);
+
+                    await connection.ExecuteAsync(
+                        @"DELETE FROM PartyMember
+                        WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID AND CharacterID = @CharacterID",
+                        new { CustomerGUID = customerGUID, PartyID = partyId.Value, CharacterID = memberCharacterId.Value },
+                        transaction);
+
+                    int remainingCount = await connection.QuerySingleAsync<int>(
+                        "SELECT COUNT(*) FROM PartyMember WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                        new { CustomerGUID = customerGUID, PartyID = partyId.Value },
+                        transaction);
+
+                    if (remainingCount == 0)
+                    {
+                        await connection.ExecuteAsync("DELETE FROM Party WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                            new { CustomerGUID = customerGUID, PartyID = partyId.Value }, transaction);
+                        rows = Enumerable.Empty<PartyStateRow>();
+                        continue;
+                    }
+
+                    if (removedMemberWasLeader)
+                    {
+                        int nextLeaderId = await connection.QuerySingleAsync<int>(
+                            @"SELECT CharacterID
+                            FROM PartyMember
+                            WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID
+                            ORDER BY CharacterID
+                            LIMIT 1",
+                            new { CustomerGUID = customerGUID, PartyID = partyId.Value },
+                            transaction);
+
+                        await connection.ExecuteAsync(
+                            @"UPDATE PartyMember
+                            SET PartyLeader = CharacterID = @NextLeaderID,
+                                PartyRole = CASE WHEN CharacterID = @NextLeaderID THEN 2 ELSE 0 END
+                            WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                            new { CustomerGUID = customerGUID, PartyID = partyId.Value, NextLeaderID = nextLeaderId },
+                            transaction);
+                    }
+
+                    rows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
+                }
+
+                transaction.Commit();
+                return BuildPartyToSend(customerGUID, partyRequest.PartyAction, rows);
             }
-            catch (Exception ex)
+            catch
             {
+                transaction.Rollback();
+                throw;
             }
-            return party;
         }
+
         public async Task<PartyToSend> ChangePartyLeader(Guid customerGUID, PartyToSend partyRequest)
         {
-            PartyToSend party = partyRequest.Clone();
+            if (partyRequest == null)
+            {
+                throw new ArgumentNullException(nameof(partyRequest));
+            }
+
+            if (partyRequest.PartyInfo == null || !Guid.TryParse(partyRequest.PartyInfo.PartyGuid, out Guid partyGuid))
+            {
+                throw new InvalidOperationException("A valid party GUID is required.");
+            }
+
+            PartyMemberInfo actor = partyRequest.PartyMembers.FirstOrDefault(member => member.PartyLeader);
+            PartyMemberInfo newLeader = partyRequest.PartyMembers.FirstOrDefault(member => !member.PartyLeader) ?? partyRequest.PartyMembers.FirstOrDefault();
+
+            if (actor == null || newLeader == null || string.IsNullOrWhiteSpace(actor.CharName) || string.IsNullOrWhiteSpace(newLeader.CharName))
+            {
+                throw new InvalidOperationException("Current leader and new leader are required.");
+            }
+
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync();
+            using IDbTransaction transaction = connection.BeginTransaction();
+
             try
             {
-                using (Connection)
+                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                if (partyId == null)
                 {
-                    var p = new DynamicParameters();
-                    p.Add("@CustomerGUID", customerGUID);
-                    p.Add("@PartyGuid", Guid.Parse(partyRequest.PartyInfo.PartyGuid));
-                    PartyMemberInfo partyMember = partyRequest.PartyMembers.ElementAt(0);
-                    if(partyMember != null && partyMember != default) 
-                    {
-                        p.Add("@CharName", partyMember.CharName);
-                        
-                        party.PartyMembers.Clear();
-                        party.PartyMembers.Add(await Connection.QueryAsync<PartyMemberInfo>("ChangePartyLeader",
-                                                    p,
-                                                    commandType: CommandType.StoredProcedure));
-                    }
-                    
+                    throw new InvalidOperationException("Party was not found.");
                 }
+
+                int? actorCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(actor.CharGuid), actor.CharName);
+                int? newLeaderCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(newLeader.CharGuid), newLeader.CharName);
+
+                if (actorCharacterId == null || newLeaderCharacterId == null)
+                {
+                    throw new InvalidOperationException("Current leader and new leader are required.");
+                }
+
+                bool actorIsLeader = await connection.QuerySingleAsync<bool>(
+                    @"SELECT EXISTS (
+                        SELECT 1 FROM PartyMember
+                        WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID AND CharacterID = @CharacterID AND PartyLeader = TRUE
+                    )",
+                    new { CustomerGUID = customerGUID, PartyID = partyId.Value, CharacterID = actorCharacterId.Value },
+                    transaction);
+
+                if (!actorIsLeader)
+                {
+                    throw new InvalidOperationException("Only the party leader can change party leader.");
+                }
+
+                bool newLeaderInParty = await connection.QuerySingleAsync<bool>(
+                    @"SELECT EXISTS (
+                        SELECT 1 FROM PartyMember
+                        WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID AND CharacterID = @CharacterID
+                    )",
+                    new { CustomerGUID = customerGUID, PartyID = partyId.Value, CharacterID = newLeaderCharacterId.Value },
+                    transaction);
+
+                if (!newLeaderInParty)
+                {
+                    throw new InvalidOperationException("New party leader is not in this party.");
+                }
+
+                await connection.ExecuteAsync(
+                    @"UPDATE PartyMember
+                    SET PartyLeader = CharacterID = @NewLeaderID,
+                        PartyRole = CASE WHEN CharacterID = @NewLeaderID THEN 2 ELSE 0 END
+                    WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                    new { CustomerGUID = customerGUID, PartyID = partyId.Value, NewLeaderID = newLeaderCharacterId.Value },
+                    transaction);
+
+                IEnumerable<PartyStateRow> rows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
+                transaction.Commit();
+                return BuildPartyToSend(customerGUID, partyRequest.PartyAction, rows);
             }
-            catch (Exception ex)
+            catch
             {
+                transaction.Rollback();
+                throw;
             }
-            return party;
+        }
+
+        public async Task<bool> IsPartyNameAvailable(Guid customerGUID, string partyName)
+        {
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync();
+            return await IsPartyNameAvailable(connection, null, customerGUID, partyName);
+        }
+
+        public async Task<string> GenerateAvailablePartyName(Guid customerGUID)
+        {
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync();
+            return await GenerateAvailablePartyName(connection, null, customerGUID);
+        }
+
+        public async Task<PartyToSend> UpdatePartyDescription(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, string partyDescription)
+        {
+            if (partyGuid == Guid.Empty)
+            {
+                throw new InvalidOperationException("A valid party GUID is required.");
+            }
+
+            if (string.IsNullOrWhiteSpace(actorCharName) && string.IsNullOrWhiteSpace(actorCharGuid))
+            {
+                throw new InvalidOperationException("An acting character is required.");
+            }
+
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync();
+            using IDbTransaction transaction = connection.BeginTransaction();
+
+            try
+            {
+                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                if (partyId == null)
+                {
+                    throw new InvalidOperationException("Party was not found.");
+                }
+
+                int? actorCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(actorCharGuid), actorCharName);
+                if (actorCharacterId == null)
+                {
+                    throw new InvalidOperationException("Party actor character was not found.");
+                }
+
+                bool actorIsLeader = await connection.QuerySingleAsync<bool>(
+                    @"SELECT EXISTS (
+                        SELECT 1
+                        FROM PartyMember
+                        WHERE CustomerGUID = @CustomerGUID
+                            AND PartyID = @PartyID
+                            AND CharacterID = @CharacterID
+                            AND PartyLeader = TRUE
+                    )",
+                    new { CustomerGUID = customerGUID, PartyID = partyId.Value, CharacterID = actorCharacterId.Value },
+                    transaction);
+
+                if (!actorIsLeader)
+                {
+                    throw new InvalidOperationException("Only the party leader can update party description.");
+                }
+
+                string normalizedDescription = string.IsNullOrWhiteSpace(partyDescription)
+                    ? null
+                    : partyDescription.Trim();
+
+                await connection.ExecuteAsync(
+                    @"UPDATE Party
+                    SET PartyDescription = @PartyDescription,
+                        UpdatedAt = CURRENT_TIMESTAMP
+                    WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                    new { CustomerGUID = customerGUID, PartyID = partyId.Value, PartyDescription = normalizedDescription },
+                    transaction);
+
+                IEnumerable<PartyStateRow> rows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
+                transaction.Commit();
+                return BuildPartyToSend(customerGUID, PartyAction.MessageTypeUpdateInfo, rows);
+            }
+            catch
+            {
+                transaction.Rollback();
+                throw;
+            }
+        }
+
+        public async Task<PartyToSend> UpdatePartyExpDistribution(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, int expDistributionMode)
+        {
+            if (partyGuid == Guid.Empty)
+            {
+                throw new InvalidOperationException("A valid party GUID is required.");
+            }
+
+            if (string.IsNullOrWhiteSpace(actorCharName) && string.IsNullOrWhiteSpace(actorCharGuid))
+            {
+                throw new InvalidOperationException("An acting character is required.");
+            }
+
+            if (expDistributionMode != 0 && expDistributionMode != 1)
+            {
+                throw new InvalidOperationException("Exp distribution mode must be 0 (Individual) or 1 (Shared).");
+            }
+
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync();
+            using IDbTransaction transaction = connection.BeginTransaction();
+
+            try
+            {
+                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                if (partyId == null)
+                {
+                    throw new InvalidOperationException("Party was not found.");
+                }
+
+                int? actorCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(actorCharGuid), actorCharName);
+                if (actorCharacterId == null)
+                {
+                    throw new InvalidOperationException("Party actor character was not found.");
+                }
+
+                bool actorIsLeader = await connection.QuerySingleAsync<bool>(
+                    @"SELECT EXISTS (
+                        SELECT 1
+                        FROM PartyMember
+                        WHERE CustomerGUID = @CustomerGUID
+                            AND PartyID = @PartyID
+                            AND CharacterID = @CharacterID
+                            AND PartyLeader = TRUE
+                    )",
+                    new { CustomerGUID = customerGUID, PartyID = partyId.Value, CharacterID = actorCharacterId.Value },
+                    transaction);
+
+                if (!actorIsLeader)
+                {
+                    throw new InvalidOperationException("Only the party leader can update exp distribution.");
+                }
+
+                await connection.ExecuteAsync(
+                    @"UPDATE Party
+                    SET ExpDistributionMode = CAST(@ExpDistributionMode AS SMALLINT),
+                        UpdatedAt = CURRENT_TIMESTAMP
+                    WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                    new { CustomerGUID = customerGUID, PartyID = partyId.Value, ExpDistributionMode = expDistributionMode },
+                    transaction);
+
+                IEnumerable<PartyStateRow> rows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
+                transaction.Commit();
+                return BuildPartyToSend(customerGUID, PartyAction.MessageTypeUpdateInfo, rows);
+            }
+            catch
+            {
+                transaction.Rollback();
+                throw;
+            }
+        }
+
+        public async Task<PartyToSend> UpdatePartyLootDistribution(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, int lootDistributionMode)
+        {
+            if (partyGuid == Guid.Empty)
+            {
+                throw new InvalidOperationException("A valid party GUID is required.");
+            }
+
+            if (string.IsNullOrWhiteSpace(actorCharName) && string.IsNullOrWhiteSpace(actorCharGuid))
+            {
+                throw new InvalidOperationException("An acting character is required.");
+            }
+
+            if (lootDistributionMode < 0 || lootDistributionMode > 3)
+            {
+                throw new InvalidOperationException("Loot distribution mode must be 0 (Individual), 1 (Shared), 2 (Leader), or 3 (Keep valuables).");
+            }
+
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync();
+            using IDbTransaction transaction = connection.BeginTransaction();
+
+            try
+            {
+                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                if (partyId == null)
+                {
+                    throw new InvalidOperationException("Party was not found.");
+                }
+
+                int? actorCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(actorCharGuid), actorCharName);
+                if (actorCharacterId == null)
+                {
+                    throw new InvalidOperationException("Party actor character was not found.");
+                }
+
+                bool actorIsLeader = await connection.QuerySingleAsync<bool>(
+                    @"SELECT EXISTS (
+                        SELECT 1
+                        FROM PartyMember
+                        WHERE CustomerGUID = @CustomerGUID
+                            AND PartyID = @PartyID
+                            AND CharacterID = @CharacterID
+                            AND PartyLeader = TRUE
+                    )",
+                    new { CustomerGUID = customerGUID, PartyID = partyId.Value, CharacterID = actorCharacterId.Value },
+                    transaction);
+
+                if (!actorIsLeader)
+                {
+                    throw new InvalidOperationException("Only the party leader can update loot distribution.");
+                }
+
+                await connection.ExecuteAsync(
+                    @"UPDATE Party
+                    SET LootDistributionMode = CAST(@LootDistributionMode AS SMALLINT),
+                        UpdatedAt = CURRENT_TIMESTAMP
+                    WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                    new { CustomerGUID = customerGUID, PartyID = partyId.Value, LootDistributionMode = lootDistributionMode },
+                    transaction);
+
+                IEnumerable<PartyStateRow> rows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
+                transaction.Commit();
+                return BuildPartyToSend(customerGUID, PartyAction.MessageTypeUpdateInfo, rows);
+            }
+            catch
+            {
+                transaction.Rollback();
+                throw;
+            }
         }
 
         public async Task<GuildToSend> CreateGuildOrAddMember(Guid customerGUID, GuildToSend guildRequest)

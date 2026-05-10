@@ -202,8 +202,8 @@ services:
       - OWSStorageConfig__OWSDBBackend=${DATABASE}
       - OWSStorageConfig__OWSDBConnectionString=${DATABASE_CONNECTION_STRING}
     ports:
-      - "44364:80"
-      - "44365:443"
+      - "44306:80"
+      - "44364:50051"
     depends_on:
       - database
       - messaging
