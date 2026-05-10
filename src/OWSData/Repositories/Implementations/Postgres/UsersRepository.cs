@@ -111,7 +111,7 @@ namespace OWSData.Repositories.Implementations.Postgres
         /// This method duplicates code from <c>CreateCharacter</c> to handle schema changes specific to our project (AddSamsaraCharacter procedure).
         /// I chose to duplicate the code to minimize merge conflicts with ows.
         /// </remarks>
-        public async Task<CreateCharacter> CreateSamsaraCharacter(Guid customerGUID, Guid userSessionGUID, string characterName, string className)
+        public async Task<CreateCharacter> CreateSamsaraCharacter(Guid customerGUID, Guid userSessionGUID, string characterName, string className, string initialPersistentData = null)
         {
             CreateCharacter outputObject = new CreateCharacter();
 
@@ -125,9 +125,20 @@ namespace OWSData.Repositories.Implementations.Postgres
                     p.Add("@CharacterName", characterName);
                     p.Add("@ClassName", className);
 
-                    outputObject = await Connection.QuerySingleAsync<CreateCharacter>("select * from AddSamsaraCharacter(@CustomerGUID,@UserSessionGUID,@CharacterName,@ClassName)",
-                        p,
-                        commandType: CommandType.Text);
+                    if (String.IsNullOrWhiteSpace(initialPersistentData))
+                    {
+                        outputObject = await Connection.QuerySingleAsync<CreateCharacter>("select * from AddSamsaraCharacter(@CustomerGUID,@UserSessionGUID,@CharacterName,@ClassName)",
+                            p,
+                            commandType: CommandType.Text);
+                    }
+                    else
+                    {
+                        p.Add("@InitialPersistentData", initialPersistentData);
+
+                        outputObject = await Connection.QuerySingleAsync<CreateCharacter>("select * from AddSamsaraCharacter(@CustomerGUID,@UserSessionGUID,@CharacterName,@ClassName,@InitialPersistentData)",
+                            p,
+                            commandType: CommandType.Text);
+                    }
                 }
 
                 outputObject.Success = String.IsNullOrEmpty(outputObject.ErrorMessage);

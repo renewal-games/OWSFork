@@ -113,7 +113,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
             }
         }
 
-        public async Task<CreateCharacter> CreateSamsaraCharacter(Guid customerGUID, Guid userSessionGUID, string characterName, string className)
+        public async Task<CreateCharacter> CreateSamsaraCharacter(Guid customerGUID, Guid userSessionGUID, string characterName, string className, string initialPersistentData = null)
         {
             CreateCharacter outputObject = new CreateCharacter();
 

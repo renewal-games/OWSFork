@@ -12,7 +12,7 @@ namespace OWSData.Repositories.Interfaces
     public interface IUsersRepository
     {
         Task<CreateCharacter> CreateCharacter(Guid customerGUID, Guid userSessionGUID, string characterName, string className);
-        Task<CreateCharacter> CreateSamsaraCharacter(Guid customerGUID, Guid userSessionGUID, string characterName, string className);
+        Task<CreateCharacter> CreateSamsaraCharacter(Guid customerGUID, Guid userSessionGUID, string characterName, string className, string initialPersistentData = null);
         Task<SuccessAndErrorMessage> CreateCharacterUsingDefaultCharacterValues(Guid customerGUID, Guid userGUID, string characterName, string defaultSetName);
         Task<IEnumerable<GetAllCharacters>> GetAllCharacters(Guid customerGUID, Guid userSessionGUID);
         Task<IEnumerable<GetAllSamsaraCharacters>> GetAllSamsaraCharacters(Guid customerGUID, Guid userSessionGUID);

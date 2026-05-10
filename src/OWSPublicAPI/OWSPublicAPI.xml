@@ -340,6 +340,14 @@
             Contains the Class Name from the request.  This sets the default values for the new Character.
             </remarks>
         </member>
+        <member name="P:OWSPublicAPI.Requests.Users.CreateCharacterRequest.InitialPersistentData">
+            <summary>
+            Initial persistent character data JSON.
+            </summary>
+            <remarks>
+            Contains project-specific persistent data to write atomically with character creation.
+            </remarks>
+        </member>
         <member name="M:OWSPublicAPI.Requests.Users.CreateCharacterRequest.SetData(OWSData.Repositories.Interfaces.IUsersRepository,OWSShared.Interfaces.IPublicAPIInputValidation,OWSShared.Interfaces.IHeaderCustomerGUID)">
             <summary>
             Set Dependencies for CreateCharacterRequest

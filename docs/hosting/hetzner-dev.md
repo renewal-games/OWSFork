@@ -28,6 +28,26 @@ sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
+## Current Dev Server
+
+SSH from Windows:
+
+```powershell
+ssh -F NUL -i $env:USERPROFILE\.ssh\id_ed25519_codex_20260509 root@87.99.150.89
+```
+
+The repo is checked out at:
+
+```bash
+cd /opt/owsfork/src
+```
+
+Check the running stack:
+
+```bash
+docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml ps
+```
+
 ## Deploy
 
 From `src/`:
@@ -55,6 +75,26 @@ Check status and logs:
 docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml ps
 docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml logs -f owspublicapi
 ```
+
+Apply project database updates as needed:
+
+```bash
+docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml exec -T database \
+  psql -U postgres openworldserver < ../Databases/Postgres/SamsaraUpdates/AddSamsaraCharacterInitialPersistentData_pg.sql
+```
+
+## Updating The Server
+
+The server should usually follow `origin/main`:
+
+```bash
+cd /opt/owsfork/src
+git fetch origin
+git pull --ff-only origin main
+docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml up -d --build
+```
+
+Keep `.env.hetzner-dev` local to the server. Do not commit it.
 
 ## Public Endpoints
 

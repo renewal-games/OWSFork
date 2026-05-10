@@ -38,6 +38,13 @@ namespace OWSPublicAPI.Requests.Users
         /// Contains the Class Name from the request.  This sets the default values for the new Character.
         /// </remarks>
         public string ClassName { get; set; }
+        /// <summary>
+        /// Initial persistent character data JSON.
+        /// </summary>
+        /// <remarks>
+        /// Contains project-specific persistent data to write atomically with character creation.
+        /// </remarks>
+        public string InitialPersistentData { get; set; }
 
         private CreateCharacter Output;
         private Guid CustomerGUID;
@@ -75,7 +82,15 @@ namespace OWSPublicAPI.Requests.Users
                 return new OkObjectResult(createCharacterErrorMessage);
             }
 
-            Output = await usersRepository.CreateSamsaraCharacter(CustomerGUID, UserSessionGUID, CharacterName, ClassName);
+            if (String.IsNullOrWhiteSpace(InitialPersistentData))
+            {
+                CreateCharacter createCharacterErrorMessage = new CreateCharacter();
+                createCharacterErrorMessage.Success = false;
+                createCharacterErrorMessage.ErrorMessage = "InitialPersistentData is required.";
+                return new OkObjectResult(createCharacterErrorMessage);
+            }
+
+            Output = await usersRepository.CreateSamsaraCharacter(CustomerGUID, UserSessionGUID, CharacterName, ClassName, InitialPersistentData);
 
             return new OkObjectResult(Output);
         }
