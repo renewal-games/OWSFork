@@ -66,7 +66,7 @@ and are only used internally by OWS services in this profile.
 Start the lean stack:
 
 ```bash
-docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml up -d --build
+docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml up --build -d
 ```
 
 Check status and logs:
@@ -91,7 +91,7 @@ The server should usually follow `origin/main`:
 cd /opt/owsfork/src
 git fetch origin
 git pull --ff-only origin main
-docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml up -d --build
+docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml up --build -d
 ```
 
 Keep `.env.hetzner-dev` local to the server. Do not commit it.
