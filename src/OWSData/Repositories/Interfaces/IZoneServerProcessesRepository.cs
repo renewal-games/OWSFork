@@ -11,5 +11,6 @@ namespace OWSData.Repositories.Interfaces
         void AddZoneServerProcess(ZoneServerProcess zoneServerProcess);
         List<ZoneServerProcess> GetZoneServerProcesses();
         int FindZoneServerProcessId(int zoneInstanceId);
+        void RemoveZoneServerProcess(int zoneInstanceId);
     }
 }

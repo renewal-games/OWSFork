@@ -818,7 +818,7 @@ void AOWSGameMode::OnGetCurrentWorldTimeResponseReceived(FHttpRequestPtr Request
 }
 
 //Add Zone
-void AOWSGameMode::AddZone(FString ZoneName, FString MapName, int SoftPlayerCap, int HardPlayerCap, int MapMode)
+void AOWSGameMode::AddZone(FString ZoneName, FString MapName, int SoftPlayerCap, int HardPlayerCap, int MapMode, int MinutesToShutdownAfterEmpty)
 {
 	FAddZoneJSONPost AddZoneJSONPost;
 	AddZoneJSONPost.AddOrUpdateZone.ZoneName = ZoneName;
@@ -826,6 +826,7 @@ void AOWSGameMode::AddZone(FString ZoneName, FString MapName, int SoftPlayerCap,
 	AddZoneJSONPost.AddOrUpdateZone.SoftPlayerCap = SoftPlayerCap;
 	AddZoneJSONPost.AddOrUpdateZone.HardPlayerCap = HardPlayerCap;
 	AddZoneJSONPost.AddOrUpdateZone.MapMode = MapMode;
+	AddZoneJSONPost.AddOrUpdateZone.MinutesToShutdownAfterEmpty = MinutesToShutdownAfterEmpty;
 	FString PostParameters = "";
 	if (FJsonObjectConverter::UStructToJsonObjectString(AddZoneJSONPost, PostParameters))
 	{
@@ -862,7 +863,7 @@ void AOWSGameMode::OnAddZoneResponseReceived(FHttpRequestPtr Request, FHttpRespo
 
 //Update Zone
 /*
-void AOWSGameMode::UpdateZone(int32 MapID, FString ZoneName, FString MapName, int SoftPlayerCap, int HardPlayerCap, int MapMode)
+void AOWSGameMode::UpdateZone(int32 MapID, FString ZoneName, FString MapName, int SoftPlayerCap, int HardPlayerCap, int MapMode, int MinutesToShutdownAfterEmpty)
 {
 	FUpdateZoneJSONPost UpdateZoneJSONPost;
 	UpdateZoneJSONPost.AddOrUpdateZone.MapID = MapID;
@@ -871,6 +872,7 @@ void AOWSGameMode::UpdateZone(int32 MapID, FString ZoneName, FString MapName, in
 	UpdateZoneJSONPost.AddOrUpdateZone.SoftPlayerCap = SoftPlayerCap;
 	UpdateZoneJSONPost.AddOrUpdateZone.HardPlayerCap = HardPlayerCap;
 	UpdateZoneJSONPost.AddOrUpdateZone.MapMode = MapMode;
+	UpdateZoneJSONPost.AddOrUpdateZone.MinutesToShutdownAfterEmpty = MinutesToShutdownAfterEmpty;
 	FString PostParameters = "";
 	if (FJsonObjectConverter::UStructToJsonObjectString(UpdateZoneJSONPost, PostParameters))
 	{

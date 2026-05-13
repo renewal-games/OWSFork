@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using OWSData.Models;
+using OWSData.Models.Composites;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Interfaces;
 using OWSShared.Messages;
@@ -19,6 +20,9 @@ namespace OWSInstanceLauncher.Services
 {
     public class ServerLauncherMQListener : IInstanceLauncherJob //BackgroundService
     {
+        private const int CompleteZoneInstanceShutdownAttempts = 5;
+        private static readonly TimeSpan CompleteZoneInstanceShutdownRetryDelay = TimeSpan.FromMilliseconds(500);
+
         private IConnection connection;
         private IModel serverSpinUpChannel;
         private IModel serverShutDownChannel;
@@ -301,14 +305,57 @@ namespace OWSInstanceLauncher.Services
 
             int foundProcessId = _zoneServerProcessesRepository.FindZoneServerProcessId(zoneInstanceID);
 
+            bool completeShutdown = foundProcessId <= 0;
+
             if (foundProcessId > 0)
             {
-                System.Diagnostics.Process procToKill = System.Diagnostics.Process.GetProcessById(foundProcessId);
-
-                if (procToKill != null)
+                try
                 {
-                    procToKill.Kill();
+                    System.Diagnostics.Process procToKill = System.Diagnostics.Process.GetProcessById(foundProcessId);
+
+                    if (procToKill != null && !procToKill.HasExited)
+                    {
+                        procToKill.Kill(entireProcessTree: true);
+                        procToKill.WaitForExit(10000);
+                    }
+
+                    completeShutdown = procToKill == null || procToKill.HasExited;
                 }
+                catch (ArgumentException ex)
+                {
+                    completeShutdown = true;
+                    Log.Warning($"HandleServerShutDownMessage - Zone Instance {zoneInstanceID} process {foundProcessId} was already gone: {ex.Message}");
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning($"HandleServerShutDownMessage - Error killing Zone Instance {zoneInstanceID} process {foundProcessId}: {ex.Message}");
+                }
+            }
+            else
+            {
+                Log.Warning($"HandleServerShutDownMessage - No tracked process found for Zone Instance {zoneInstanceID}. Completing shutdown cleanup.");
+            }
+
+            if (completeShutdown)
+            {
+                try
+                {
+                    var completeShutdownTask = CompleteZoneInstanceShutdownRequest(zoneInstanceID);
+                    completeShutdownTask.Wait();
+
+                    if (completeShutdownTask.Result)
+                    {
+                        _zoneServerProcessesRepository.RemoveZoneServerProcess(zoneInstanceID);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"HandleServerShutDownMessage - Error completing shutdown cleanup for Zone Instance {zoneInstanceID}: {ex.Message}");
+                }
+            }
+            else
+            {
+                Log.Error($"HandleServerShutDownMessage - Zone Instance {zoneInstanceID} process did not exit. Shutdown cleanup was skipped.");
             }
         }
 
@@ -462,6 +509,52 @@ namespace OWSInstanceLauncher.Services
             var responseMessage = await instanceManagementHttpClient.PostAsync("api/Instance/SetZoneInstanceStatus", setZoneInstanceStatusRequest);
 
             return;
+        }
+
+        private async Task<bool> CompleteZoneInstanceShutdownRequest(int zoneInstanceID)
+        {
+            var instanceManagementHttpClient = _httpClientFactory.CreateClient("OWSInstanceManagement");
+
+            var zoneInstanceIDRequestPayload = new ZoneInstanceIDRequestPayload
+            {
+                ZoneInstanceID = zoneInstanceID
+            };
+
+            for (int attempt = 1; attempt <= CompleteZoneInstanceShutdownAttempts; attempt++)
+            {
+                var completeZoneInstanceShutdownRequest = new StringContent(JsonSerializer.Serialize(zoneInstanceIDRequestPayload), Encoding.UTF8, "application/json");
+                var responseMessage = await instanceManagementHttpClient.PostAsync("api/Instance/CompleteZoneInstanceShutdown", completeZoneInstanceShutdownRequest);
+
+                if (!responseMessage.IsSuccessStatusCode)
+                {
+                    Log.Error($"CompleteZoneInstanceShutdownRequest failed for Zone Instance {zoneInstanceID}. HTTP Status: {responseMessage.StatusCode}");
+                    return false;
+                }
+
+                string responseContentString = await responseMessage.Content.ReadAsStringAsync();
+                var output = JsonSerializer.Deserialize<SuccessAndErrorMessage>(responseContentString, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+
+                if (output != null && output.Success)
+                {
+                    return true;
+                }
+
+                if (output?.ErrorMessage?.Contains("is not shutting down", StringComparison.OrdinalIgnoreCase) == true
+                    && attempt < CompleteZoneInstanceShutdownAttempts)
+                {
+                    Log.Warning($"CompleteZoneInstanceShutdownRequest retrying for Zone Instance {zoneInstanceID}. Error: {output.ErrorMessage}");
+                    await Task.Delay(CompleteZoneInstanceShutdownRetryDelay);
+                    continue;
+                }
+
+                Log.Error($"CompleteZoneInstanceShutdownRequest failed for Zone Instance {zoneInstanceID}. Error: {output?.ErrorMessage}");
+                return false;
+            }
+
+            return false;
         }
 
         private Task OnServerSpinUpConsumerConsumerCancelled(object sender, ConsumerEventArgs e) { return Task.CompletedTask; }

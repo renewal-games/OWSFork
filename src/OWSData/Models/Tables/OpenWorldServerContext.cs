@@ -671,6 +671,8 @@ namespace OWSData.Models.Tables
 
                 entity.Property(e => e.MapMode).HasDefaultValueSql("((1))");
 
+                entity.Property(e => e.MinutesToShutdownAfterEmpty).HasDefaultValueSql("((5))");
+
                 entity.Property(e => e.MapName)
                     .IsRequired()
                     .HasMaxLength(50)

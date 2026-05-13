@@ -278,7 +278,7 @@ public:
 
 	//Add Zone
 	UFUNCTION(BlueprintCallable, Category = "Zones")
-		void AddZone(FString ZoneName, FString MapName, int32 SoftPlayerCap, int32 HardPlayerCap, int32 MapMode);
+		void AddZone(FString ZoneName, FString MapName, int32 SoftPlayerCap, int32 HardPlayerCap, int32 MapMode, int32 MinutesToShutdownAfterEmpty = 5);
 
 	void OnAddZoneResponseReceived(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
 
@@ -291,7 +291,7 @@ public:
 	//Update Zone
 	/*
 	UFUNCTION(BlueprintCallable, Category = "Zones")
-		void UpdateZone(int32 MapID, FString ZoneName, FString MapName, int32 SoftPlayerCap, int32 HardPlayerCap, int32 MapMode);
+		void UpdateZone(int32 MapID, FString ZoneName, FString MapName, int32 SoftPlayerCap, int32 HardPlayerCap, int32 MapMode, int32 MinutesToShutdownAfterEmpty);
 
 	void OnUpdateZoneResponseReceived(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
 

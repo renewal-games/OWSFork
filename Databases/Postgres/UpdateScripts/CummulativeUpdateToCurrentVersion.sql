@@ -1,5 +1,5 @@
 UPDATE OWSVersion
-SET OWSDBVersion='20230304'
+SET OWSDBVersion='20260512'
 WHERE OWSDBVersion IS NOT NULL;
 
 SELECT OWSDBVersion
@@ -10,6 +10,16 @@ ADD ZoneServerGUID UUID NULL;
 
 ALTER TABLE WorldServers
 ADD CONSTRAINT AK_ZoneServers UNIQUE (CustomerGUID, ZoneServerGUID);
+
+ALTER TABLE Maps
+ADD COLUMN IF NOT EXISTS MinutesToShutdownAfterEmpty INT NOT NULL DEFAULT 5;
+
+ALTER TABLE Maps
+ALTER COLUMN MinutesToShutdownAfterEmpty SET DEFAULT 5;
+
+UPDATE Maps
+SET MinutesToShutdownAfterEmpty = 5
+WHERE MinutesToShutdownAfterEmpty = 0;
 
 
 CREATE OR REPLACE PROCEDURE AddOrUpdateAbility(_CustomerGUID UUID,

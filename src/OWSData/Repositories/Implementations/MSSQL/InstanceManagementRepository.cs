@@ -127,6 +127,17 @@ namespace OWSData.Repositories.Implementations.MSSQL
             return output;
         }
 
+        public Task<SuccessAndErrorMessage> CompleteZoneInstanceShutdown(Guid customerGUID, int zoneInstanceID)
+        {
+            SuccessAndErrorMessage output = new SuccessAndErrorMessage()
+            {
+                Success = false,
+                ErrorMessage = "CompleteZoneInstanceShutdown is only supported by the Postgres repository."
+            };
+
+            return Task.FromResult(output);
+        }
+
         public async Task<SuccessAndErrorMessage> ShutDownWorldServer(Guid customerGUID, int worldServerID)
         {
             IDbConnection conn = Connection;
@@ -296,7 +307,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
             }
         }
 
-        public async Task<SuccessAndErrorMessage> AddZone(Guid customerGUID, string mapName, string zoneName, string worldCompContainsFilter, string worldCompListFilter, int softPlayerCap, int hardPlayerCap, int mapMode)
+        public async Task<SuccessAndErrorMessage> AddZone(Guid customerGUID, string mapName, string zoneName, string worldCompContainsFilter, string worldCompListFilter, int softPlayerCap, int hardPlayerCap, int mapMode, int minutesToShutdownAfterEmpty)
         {
             try
             {
@@ -339,7 +350,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
             }
         }
 
-        public async Task<SuccessAndErrorMessage> UpdateZone(Guid customerGUID, int mapId, string mapName, string zoneName, string worldCompContainsFilter, string worldCompListFilter, int softPlayerCap, int hardPlayerCap, int mapMode)
+        public async Task<SuccessAndErrorMessage> UpdateZone(Guid customerGUID, int mapId, string mapName, string zoneName, string worldCompContainsFilter, string worldCompListFilter, int softPlayerCap, int hardPlayerCap, int mapMode, int minutesToShutdownAfterEmpty)
         {
             try
             {

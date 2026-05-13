@@ -32,9 +32,6 @@ namespace OWSInstanceManagement.Requests.Instance
 
         public async Task<IActionResult> Handle()
         {
-            //Set the ZoneInstance status to shutting down
-
-
             //Send the servershutdown message to RabbitMQ
             ConnectionFactory factory = new()
             {
@@ -68,11 +65,7 @@ namespace OWSInstanceManagement.Requests.Instance
                 }
             }
 
-            Output = new SuccessAndErrorMessage()
-            {
-                Success = true,
-                ErrorMessage = ""
-            };
+            Output = await _instanceMangementRepository.SetZoneInstanceStatus(CustomerGUID, ZoneInstanceID, 3);
 
             return new OkObjectResult(Output);
         }

@@ -78,6 +78,16 @@ namespace OWSInstanceManagement.Controllers
         }
 
         [HttpPost]
+        [Route("CompleteZoneInstanceShutdown")]
+        [Produces(typeof(SuccessAndErrorMessage))]
+        public async Task<IActionResult> CompleteZoneInstanceShutdown([FromBody] CompleteZoneInstanceShutdownRequest request)
+        {
+            request.SetData(_instanceManagementRepository, _customerGuid);
+
+            return await request.Handle();
+        }
+
+        [HttpPost]
         [Route("RegisterLauncher")]
         [Produces(typeof(SuccessAndErrorMessage))]
         /*[SwaggerOperation("ByName")]

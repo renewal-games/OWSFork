@@ -128,6 +128,84 @@ namespace OWSData.Repositories.Implementations.Postgres
             return output;
         }
 
+        public async Task<SuccessAndErrorMessage> CompleteZoneInstanceShutdown(Guid customerGUID, int zoneInstanceID)
+        {
+            const int ZoneInstanceShuttingDownStatus = 3;
+
+            using IDbConnection conn = CreateConnection();
+            conn.Open();
+            using IDbTransaction transaction = conn.BeginTransaction();
+            try
+            {
+                var parameters = new DynamicParameters();
+                parameters.Add("@CustomerGUID", customerGUID);
+                parameters.Add("@ZoneInstanceID", zoneInstanceID);
+
+                int? status = await conn.QueryFirstOrDefaultAsync<int?>(PostgresQueries.GetZoneInstanceStatusForShutdown,
+                    parameters,
+                    transaction: transaction,
+                    commandType: CommandType.Text);
+
+                if (!status.HasValue)
+                {
+                    transaction.Rollback();
+                    return new SuccessAndErrorMessage()
+                    {
+                        Success = false,
+                        ErrorMessage = $"Zone Instance {zoneInstanceID} was not found."
+                    };
+                }
+
+                if (status.Value != ZoneInstanceShuttingDownStatus)
+                {
+                    transaction.Rollback();
+                    return new SuccessAndErrorMessage()
+                    {
+                        Success = false,
+                        ErrorMessage = $"Zone Instance {zoneInstanceID} is not shutting down."
+                    };
+                }
+
+                await conn.ExecuteAsync(PostgresQueries.RemoveCharactersFromZoneInstance,
+                    parameters,
+                    transaction: transaction,
+                    commandType: CommandType.Text);
+
+                int removedZoneInstances = await conn.ExecuteAsync(PostgresQueries.RemoveZoneInstance,
+                    parameters,
+                    transaction: transaction,
+                    commandType: CommandType.Text);
+
+                if (removedZoneInstances != 1)
+                {
+                    transaction.Rollback();
+                    return new SuccessAndErrorMessage()
+                    {
+                        Success = false,
+                        ErrorMessage = $"Zone Instance {zoneInstanceID} could not be removed."
+                    };
+                }
+
+                transaction.Commit();
+            }
+            catch (Exception ex)
+            {
+                transaction.Rollback();
+
+                return new SuccessAndErrorMessage()
+                {
+                    Success = false,
+                    ErrorMessage = ex.Message
+                };
+            }
+
+            return new SuccessAndErrorMessage()
+            {
+                Success = true,
+                ErrorMessage = ""
+            };
+        }
+
         public async Task<SuccessAndErrorMessage> ShutDownWorldServer(Guid customerGUID, int worldServerID)
         {
             using IDbConnection conn = CreateConnection();
@@ -237,7 +315,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 p.Add("@CustomerGUID", customerGUID);
                 p.Add("@ZoneName", ZoneName);
 
-                output = await Connection.QueryAsync<GetZoneInstancesForZone>("select * from GetZoneInstancesOfZone(@CustomerGUID,@ZoneName)",
+                output = await Connection.QueryAsync<GetZoneInstancesForZone>(PostgresQueries.GetZoneInstancesOfZone,
                     p,
                     commandType: CommandType.Text);
             }
@@ -302,7 +380,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        public async Task<SuccessAndErrorMessage> AddZone(Guid customerGUID, string mapName, string zoneName, string worldCompContainsFilter, string worldCompListFilter, int softPlayerCap, int hardPlayerCap, int mapMode)
+        public async Task<SuccessAndErrorMessage> AddZone(Guid customerGUID, string mapName, string zoneName, string worldCompContainsFilter, string worldCompListFilter, int softPlayerCap, int hardPlayerCap, int mapMode, int minutesToShutdownAfterEmpty)
         {
             try
             {
@@ -319,8 +397,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                     p.Add("@SoftPlayerCap", softPlayerCap);
                     p.Add("@HardPlayerCap", hardPlayerCap);
                     p.Add("@MapMode", mapMode);
+                    p.Add("@MinutesToShutdownAfterEmpty", minutesToShutdownAfterEmpty);
 
-                    await Connection.ExecuteAsync("call AddOrUpdateMapZone(@CustomerGUID,@MapID,@MapName,@MapData,@ZoneName,@WorldCompContainsFilter,@WorldCompListFilter,@SoftPlayerCap,@HardPlayerCap,@MapMode)",
+                    await Connection.ExecuteAsync(PostgresQueries.AddZone,
                         p,
                         commandType: CommandType.Text);
                 }
@@ -345,7 +424,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        public async Task<SuccessAndErrorMessage> UpdateZone(Guid customerGUID, int mapId, string mapName, string zoneName, string worldCompContainsFilter, string worldCompListFilter, int softPlayerCap, int hardPlayerCap, int mapMode)
+        public async Task<SuccessAndErrorMessage> UpdateZone(Guid customerGUID, int mapId, string mapName, string zoneName, string worldCompContainsFilter, string worldCompListFilter, int softPlayerCap, int hardPlayerCap, int mapMode, int minutesToShutdownAfterEmpty)
         {
             try
             {
@@ -362,8 +441,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                     p.Add("@SoftPlayerCap", softPlayerCap);
                     p.Add("@HardPlayerCap", hardPlayerCap);
                     p.Add("@MapMode", mapMode);
+                    p.Add("@MinutesToShutdownAfterEmpty", minutesToShutdownAfterEmpty);
 
-                    await Connection.ExecuteAsync("call AddOrUpdateMapZone(@CustomerGUID,@MapID,@MapName,@MapData,@ZoneName,@WorldCompContainsFilter,@WorldCompListFilter,@SoftPlayerCap,@HardPlayerCap,@MapMode)",
+                    await Connection.ExecuteAsync(PostgresQueries.UpdateZone,
                         p,
                         commandType: CommandType.Text);
                 }

@@ -542,7 +542,7 @@ CREATE TABLE Maps
     MapMode                     INT          DEFAULT 1  NOT NULL,
     SoftPlayerCap               INT          DEFAULT 60 NOT NULL,
     HardPlayerCap               INT          DEFAULT 80 NOT NULL,
-    MinutesToShutdownAfterEmpty INT          DEFAULT 1  NOT NULL,
+    MinutesToShutdownAfterEmpty INT          DEFAULT 5  NOT NULL,
     CONSTRAINT PK_Maps
         PRIMARY KEY (CustomerGUID, MapID)
 );

@@ -854,6 +854,7 @@ public:
 		SoftPlayerCap = 0;
 		HardPlayerCap = 0;
 		MapMode = 0;
+		MinutesToShutdownAfterEmpty = 5;
 	}
 
 	UPROPERTY()
@@ -879,6 +880,9 @@ public:
 
 	UPROPERTY()
 		int32 MapMode;
+
+	UPROPERTY()
+		int32 MinutesToShutdownAfterEmpty;
 };
 
 USTRUCT()

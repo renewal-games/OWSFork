@@ -74,10 +74,11 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 		public static readonly string UpdateNumberOfPlayersSQL = @"UPDATE MapInstances
 				SET NumberOfReportedPlayers = @NumberOfReportedPlayers,
 				LastUpdateFromServer=NOW(),
-				LastServerEmptyDate=(CASE WHEN @NumberOfReportedPlayers = 0 AND NumberOfReportedPlayers > 0 THEN NOW() ELSE (CASE WHEN NumberOfReportedPlayers = 0 AND @NumberOfReportedPlayers > 0 THEN NULL ELSE LastServerEmptyDate END) END),
+				LastServerEmptyDate=(CASE WHEN @NumberOfReportedPlayers = 0 AND (NumberOfReportedPlayers > 0 OR LastServerEmptyDate IS NULL) THEN NOW() ELSE (CASE WHEN NumberOfReportedPlayers = 0 AND @NumberOfReportedPlayers > 0 THEN NULL ELSE LastServerEmptyDate END) END),
 				Status=2
 				WHERE CustomerGUID=@CustomerGUID
-					AND MapInstanceID=@ZoneInstanceID";
+					AND MapInstanceID=@ZoneInstanceID
+					AND Status <> 3";
 
 		public static readonly string UpdateWorldServerSQL = @"UPDATE WorldServers
 				SET ActiveStartTime=NOW(),
@@ -222,12 +223,35 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
                 WHERE LastUpdateFromServer < CURRENT_TIMESTAMP - (@MapMinutes || ' minutes')::INTERVAL AND CustomerGUID = @CustomerGUID";
 
 		public static readonly string GetMapInstancesByWorldServerID = @"SELECT MI.*, M.SoftPlayerCap, M.HardPlayerCap, M.MapName, M.MapMode, M.MinutesToShutdownAfterEmpty,
-		       FLOOR(EXTRACT(EPOCH FROM NOW()::TIMESTAMP - MI.LastServerEmptyDate) / 60)  AS MinutesServerHasBeenEmpty,
-		       FLOOR(EXTRACT(EPOCH FROM NOW()::TIMESTAMP - MI.LastUpdateFromServer) / 60) AS MinutesSinceLastUpdate
+		       COALESCE(FLOOR(EXTRACT(EPOCH FROM NOW()::TIMESTAMP - MI.LastServerEmptyDate) / 60), 0)::INT  AS MinutesServerHasBeenEmpty,
+		       COALESCE(FLOOR(EXTRACT(EPOCH FROM NOW()::TIMESTAMP - MI.LastUpdateFromServer) / 60), 0)::INT AS MinutesSinceLastUpdate
 				FROM Maps M
 				INNER JOIN MapInstances MI ON MI.MapID = M.MapID
 				WHERE M.CustomerGUID = @CustomerGUID
 				AND MI.WorldServerID = @WorldServerID";
+
+        public static readonly string GetZoneInstancesOfZone = @"SELECT M.MapID,
+                    M.MapName,
+                    M.ZoneName,
+                    M.WorldCompContainsFilter,
+                    M.WorldCompListFilter,
+                    CAST(M.MapMode AS VARCHAR) AS MapMode,
+                    M.SoftPlayerCap,
+                    M.HardPlayerCap,
+                    M.MinutesToShutdownAfterEmpty,
+                    MI.MapInstanceID,
+                    MI.WorldServerID,
+                    MI.Port,
+                    MI.Status,
+                    MI.PlayerGroupID,
+                    MI.NumberOfReportedPlayers,
+                    MI.LastUpdateFromServer,
+                    MI.LastServerEmptyDate
+                FROM Maps M
+                LEFT JOIN MapInstances MI ON MI.MapID = M.MapID AND MI.CustomerGUID = M.CustomerGUID
+                WHERE M.CustomerGUID = @CustomerGUID
+                  AND M.ZoneName = @ZoneName
+                ORDER BY MI.MapInstanceID";
 
         public static readonly string GetZoneInstancesByZoneAndGroup = @"SELECT WS.ServerIP AS ServerIP
 					, WS.InternalServerIP AS WorldServerIP
@@ -254,6 +278,46 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 				LIMIT 1";
 
 		public static readonly string RemoveMapInstances = @"DELETE FROM MapInstances WHERE CustomerGUID = @CustomerGUID AND MapInstanceID = ANY(@MapInstances)";
+
+        public static readonly string GetZoneInstanceStatusForShutdown = @"SELECT Status
+                FROM MapInstances
+                WHERE CustomerGUID = @CustomerGUID
+                  AND MapInstanceID = @ZoneInstanceID
+                FOR UPDATE";
+
+        public static readonly string AddZone = @"INSERT INTO Maps
+                (CustomerGUID, MapName, MapData, Width, Height, ZoneName, WorldCompContainsFilter, WorldCompListFilter, SoftPlayerCap, HardPlayerCap, MapMode, MinutesToShutdownAfterEmpty)
+                VALUES
+                (@CustomerGUID, @MapName, @MapData, 1, 1, @ZoneName, COALESCE(@WorldCompContainsFilter, ''), COALESCE(@WorldCompListFilter, ''), @SoftPlayerCap, @HardPlayerCap, @MapMode, @MinutesToShutdownAfterEmpty)";
+
+        public static readonly string UpdateZone = @"UPDATE Maps
+                SET MapName = @MapName,
+                    MapData = @MapData,
+                    ZoneName = @ZoneName,
+                    WorldCompContainsFilter = COALESCE(@WorldCompContainsFilter, ''),
+                    WorldCompListFilter = COALESCE(@WorldCompListFilter, ''),
+                    SoftPlayerCap = @SoftPlayerCap,
+                    HardPlayerCap = @HardPlayerCap,
+                    MapMode = @MapMode,
+                    MinutesToShutdownAfterEmpty = @MinutesToShutdownAfterEmpty
+                WHERE CustomerGUID = @CustomerGUID
+                  AND MapID = @MapID";
+
+        public static readonly string RemoveCharactersFromZoneInstance = @"DELETE FROM CharOnMapInstance
+                WHERE CustomerGUID = @CustomerGUID
+                  AND MapInstanceID = @ZoneInstanceID
+                  AND EXISTS (
+                      SELECT 1
+                      FROM MapInstances
+                      WHERE CustomerGUID = @CustomerGUID
+                        AND MapInstanceID = @ZoneInstanceID
+                        AND Status = 3
+                  )";
+
+        public static readonly string RemoveZoneInstance = @"DELETE FROM MapInstances
+                WHERE CustomerGUID = @CustomerGUID
+                  AND MapInstanceID = @ZoneInstanceID
+                  AND Status = 3";
 
 		#endregion
 

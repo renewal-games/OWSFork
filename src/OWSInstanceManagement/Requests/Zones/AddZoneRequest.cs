@@ -28,7 +28,7 @@ namespace OWSInstanceManagement.Requests.Zones
             SuccessAndErrorMessage successAndErrorMessage = new SuccessAndErrorMessage();
 
             successAndErrorMessage = await instanceManagementRepository.AddZone(customerGUID, addOrUpdateZone.MapName, addOrUpdateZone.ZoneName, addOrUpdateZone.WorldCompContainsFilter, addOrUpdateZone.WorldCompListFilter, addOrUpdateZone.SoftPlayerCap, addOrUpdateZone.HardPlayerCap, 
-                addOrUpdateZone.MapMode);
+                addOrUpdateZone.MapMode, addOrUpdateZone.MinutesToShutdownAfterEmpty);
 
             return new OkObjectResult(successAndErrorMessage);
         }

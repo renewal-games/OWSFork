@@ -21,6 +21,7 @@ namespace OWSInstanceLauncher.Services
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IZoneServerProcessesRepository _zoneServerProcessesRepository;
         private readonly IOWSInstanceLauncherDataRepository _owsInstanceLauncherDataRepository;
+        private const int ZoneInstanceReadyStatus = 2;
 
         public ServerLauncherHealthMonitoring(IOptions<OWSInstanceLauncherOptions> OWSInstanceLauncherOptions, IHttpClientFactory httpClientFactory, IZoneServerProcessesRepository zoneServerProcessesRepository,
             IOWSInstanceLauncherDataRepository owsInstanceLauncherDataRepository)
@@ -50,12 +51,20 @@ namespace OWSInstanceLauncher.Services
 
             foreach (var zoneInstance in zoneInstances)
             {
-                if (zoneInstance.LastServerEmptyDate < DateTime.Now.AddMinutes(0 - zoneInstance.MinutesToShutdownAfterEmpty))
+                if (ShouldShutdownZoneInstance(zoneInstance))
                 {
-                    //Shut down Zone Server Instance
-
+                    ShutDownZoneInstance(worldServerID, zoneInstance.MapInstanceID);
                 }
             }
+        }
+
+        public static bool ShouldShutdownZoneInstance(GetZoneInstancesForWorldServer zoneInstance)
+        {
+            return zoneInstance.Status == ZoneInstanceReadyStatus
+                && zoneInstance.NumberOfReportedPlayers == 0
+                && zoneInstance.MinutesToShutdownAfterEmpty > 0
+                && zoneInstance.LastServerEmptyDate.HasValue
+                && zoneInstance.MinutesServerHasBeenEmpty >= zoneInstance.MinutesToShutdownAfterEmpty;
         }
 
         public void Dispose()
@@ -86,7 +95,10 @@ namespace OWSInstanceLauncher.Services
             {
                 var responseContentAsync = responseMessage.Content.ReadAsStringAsync();
                 string responseContentString = responseContentAsync.Result;
-                output = JsonSerializer.Deserialize<List<GetZoneInstancesForWorldServer>>(responseContentString);
+                output = JsonSerializer.Deserialize<List<GetZoneInstancesForWorldServer>>(responseContentString, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
             }
             else
             {
@@ -94,6 +106,28 @@ namespace OWSInstanceLauncher.Services
             }
 
             return output;
+        }
+
+        private void ShutDownZoneInstance(int worldServerId, int zoneInstanceId)
+        {
+            Log.Information($"Server Health Monitoring is shutting down empty Zone Server Instance {zoneInstanceId}.");
+
+            var instanceManagementHttpClient = _httpClientFactory.CreateClient("OWSInstanceManagement");
+
+            var shutDownServerInstancePayload = new
+            {
+                WorldServerID = worldServerId,
+                ZoneInstanceID = zoneInstanceId
+            };
+
+            var shutDownServerInstanceRequest = new StringContent(JsonSerializer.Serialize(shutDownServerInstancePayload), Encoding.UTF8, "application/json");
+            var responseMessageTask = instanceManagementHttpClient.PostAsync("api/Instance/ShutDownServerInstance", shutDownServerInstanceRequest);
+            var responseMessage = responseMessageTask.Result;
+
+            if (!responseMessage.IsSuccessStatusCode)
+            {
+                Log.Error($"Server Health Monitoring failed to request shutdown for Zone Server Instance {zoneInstanceId}. HTTP Status: {responseMessage.StatusCode}");
+            }
         }
     }
 }

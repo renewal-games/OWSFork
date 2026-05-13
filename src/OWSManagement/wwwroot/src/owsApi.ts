@@ -13,5 +13,11 @@ export default {
     updateUser(data: Record<string, unknown>) {
         return client.put('/Users', data);
     },
+    addZone(data: Record<string, unknown>) {
+        return client.post('/Zones/AddZone', data);
+    },
+    getZoneInstancesForZone(data: Record<string, unknown>) {
+        return client.post('/Instance/GetZoneInstancesForZone', data);
+    },
 
 }

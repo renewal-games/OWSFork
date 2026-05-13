@@ -15,5 +15,6 @@ namespace OWSShared.RequestPayloads
 		public int SoftPlayerCap { get; set; }
 		public int HardPlayerCap { get; set; }
 		public int MapMode { get; set; }
+		public int MinutesToShutdownAfterEmpty { get; set; } = 5;
 	}
 }

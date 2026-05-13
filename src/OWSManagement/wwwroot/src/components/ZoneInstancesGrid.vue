@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-    import { ref, reactive } from 'vue';
+    import { reactive } from 'vue';
 
     interface Data {
         headers: Object,
@@ -8,6 +8,14 @@
 
     const data: Data = reactive({
         headers: [
+            { title: 'Instance ID', key: 'mapInstanceID' },
+            { title: 'World Server ID', key: 'worldServerID' },
+            { title: 'Zone', key: 'zoneName' },
+            { title: 'Port', key: 'port' },
+            { title: 'Status', key: 'status' },
+            { title: 'Players', key: 'numberOfReportedPlayers' },
+            { title: 'Last Empty', key: 'lastServerEmptyDate' },
+            { title: 'Shutdown After Empty', key: 'minutesToShutdownAfterEmpty' },
         ],
         rows: [
         ]
