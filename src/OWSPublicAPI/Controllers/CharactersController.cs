@@ -84,5 +84,35 @@ namespace OWSPublicAPI.Controllers
             return await getByNameRequest.Handle();
         }
 
+        /// <summary>
+        /// Get public-safe custom character data.
+        /// </summary>
+        /// <remarks>
+        /// Validates that the session owns the requested character before returning filtered custom data.
+        /// </remarks>
+        [HttpPost]
+        [Route("GetCustomData")]
+        [Produces(typeof(CustomCharacterDataRows))]
+        public async Task<IActionResult> GetCustomData([FromBody] GetCustomDataDTO request)
+        {
+            GetCustomDataRequest getCustomDataRequest = new GetCustomDataRequest(request, _usersRepository, _charactersRepository, _customerGuid, _customCharacterDataSelector);
+            return await getCustomDataRequest.Handle();
+        }
+
+        /// <summary>
+        /// Add or update public-safe custom character data.
+        /// </summary>
+        /// <remarks>
+        /// Validates that the session owns the requested character and only permits client-safe fields.
+        /// </remarks>
+        [HttpPost]
+        [Route("AddOrUpdateCustomData")]
+        [Produces(typeof(SuccessAndErrorMessage))]
+        public async Task<IActionResult> AddOrUpdateCustomData([FromBody] AddOrUpdateCustomDataDTO request)
+        {
+            AddOrUpdateCustomDataRequest addOrUpdateCustomDataRequest = new AddOrUpdateCustomDataRequest(request, _usersRepository, _charactersRepository, _customerGuid);
+            return await addOrUpdateCustomDataRequest.Handle();
+        }
+
     }
 }

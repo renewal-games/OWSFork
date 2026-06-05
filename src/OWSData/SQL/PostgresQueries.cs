@@ -20,7 +20,8 @@ namespace OWSData.SQL
             @StartingMapInstancePort      AS StartingMapInstancePort,
             @ZoneServerGUID::UUID         AS ZoneServerGUID)
 ON CONFLICT ON CONSTRAINT ak_zoneservers
-    DO UPDATE SET MaxNumberOfInstances    = @MaxNumberOfInstances,
+    DO UPDATE SET ServerIP                = @ServerIP,
+                  MaxNumberOfInstances    = @MaxNumberOfInstances,
                   Port                    = 8081,
                   ServerStatus            = 0,
                   InternalServerIP        = @InternalServerIP,

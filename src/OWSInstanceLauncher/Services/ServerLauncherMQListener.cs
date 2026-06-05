@@ -191,9 +191,9 @@ namespace OWSInstanceLauncher.Services
 
             serverSpinUpConsumer.Received += (model, ea) =>
             {
-                Log.Information("Server Spin Up Message Received");
                 var body = ea.Body;
                 MQSpinUpServerMessage serverSpinUpMessage = MQSpinUpServerMessage.Deserialize(body.ToArray());
+                Log.Information($"Server Spin Up Message Received: {serverSpinUpMessage.CustomerGUID} WorldServerID: {serverSpinUpMessage.WorldServerID} ZoneInstanceID: {serverSpinUpMessage.ZoneInstanceID} MapName: {serverSpinUpMessage.MapName} Port: {serverSpinUpMessage.Port}");
                 HandleServerSpinUpMessage(
                     serverSpinUpMessage.CustomerGUID,
                     serverSpinUpMessage.WorldServerID,
@@ -261,6 +261,11 @@ namespace OWSInstanceLauncher.Services
                 + (_owsInstanceLauncherOptions.Value.UseNoSteam ? "-nosteam " : "")
                 + "-port={1} "
                 + "-zoneinstanceid={2}";
+
+            if (!string.IsNullOrWhiteSpace(_owsInstanceLauncherOptions.Value.OtherCustomFlags))
+            {
+                serverArguments += " " + _owsInstanceLauncherOptions.Value.OtherCustomFlags.Trim();
+            }
 
             System.Diagnostics.Process proc = new System.Diagnostics.Process
             {

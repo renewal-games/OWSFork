@@ -115,6 +115,7 @@ namespace OWSPublicAPI
             services.Configure<OWSShared.Options.PublicAPIOptions>(Configuration.GetSection(OWSShared.Options.PublicAPIOptions.SectionName));
             services.Configure<OWSShared.Options.APIPathOptions>(Configuration.GetSection(OWSShared.Options.APIPathOptions.SectionName));
             services.Configure<OWSShared.Options.StorageOptions>(Configuration.GetSection(OWSShared.Options.StorageOptions.SectionName));
+            services.Configure<OWSShared.Options.UserSessionCacheOptions>(Configuration.GetSection(OWSShared.Options.UserSessionCacheOptions.SectionName));
 
             // Register And Validate External Login Provider Options
             // services.ConfigureAndValidate<EpicOnlineServicesOptions>(ExternalLoginProviderOptions.EpicOnlineServices, Configuration.GetSection($"{ExternalLoginProviderOptions.SectionName}:{ExternalLoginProviderOptions.EpicOnlineServices}"));
@@ -180,6 +181,8 @@ namespace OWSPublicAPI
                         break;
                 }
             }
+
+            container.RegisterSingleton<IUserSessionRepository, OWSData.Repositories.Implementations.ValKey.UserSessionRepository>();
 
             container.Register<IPublicAPIInputValidation, DefaultPublicAPIInputValidation>(Lifestyle.Singleton);
             container.Register<ICustomCharacterDataSelector, DefaultCustomCharacterDataSelector>(Lifestyle.Singleton);

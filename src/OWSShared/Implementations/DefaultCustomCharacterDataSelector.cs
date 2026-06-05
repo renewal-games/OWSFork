@@ -11,6 +11,16 @@ namespace OWSShared.Implementations
     {
         public bool ShouldExportThisCustomCharacterDataField(string fieldName)
         {
+            if (fieldName == "CharacterPersistentData")
+            {
+                return true;
+            }
+
+            if (fieldName == "LoginSlotIndex")
+            {
+                return true;
+            }
+
             if (fieldName == "CosmeticCharacterData")
             {
                 return true;
