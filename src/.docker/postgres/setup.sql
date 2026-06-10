@@ -99,10 +99,11 @@ CREATE TABLE Users
     PasswordHash VARCHAR(128)                        NOT NULL,
     CreateDate   TIMESTAMP DEFAULT NOW()             NOT NULL,
     LastAccess   TIMESTAMP DEFAULT NOW()             NOT NULL,
-    Role         VARCHAR(10)                         NOT NULL,
-    CONSTRAINT AK_User
-        UNIQUE (CustomerGUID, Email, Role)
+    Role         VARCHAR(10)                         NOT NULL
 );
+
+CREATE UNIQUE INDEX AK_User_NormalizedEmail
+    ON Users (CustomerGUID, LOWER(TRIM(Email)));
 
 CREATE TABLE Characters
 (
@@ -1481,7 +1482,16 @@ BEGIN
 
     INSERT INTO Users (UserGUID, CustomerGUID, FirstName, LastName, Email, PasswordHash, CreateDate, LastAccess,
                        ROLE)
-    VALUES (_UserGUID, _CustomerGUID, _FirstName, _LastName, _Email, _PasswordHash, NOW(), NOW(), _Role);
+    VALUES (_UserGUID, _CustomerGUID, _FirstName, _LastName, TRIM(_Email), _PasswordHash, NOW(), NOW(),
+            CASE LOWER(TRIM(_Role))
+                WHEN 'player' THEN 'Player'
+                WHEN 'moderator' THEN 'Moderator'
+                WHEN 'mod' THEN 'Moderator'
+                WHEN 'gamemaster' THEN 'GameMaster'
+                WHEN 'gm' THEN 'GameMaster'
+                WHEN 'admin' THEN 'Admin'
+                ELSE TRIM(_Role)
+            END);
     RETURN QUERY SELECT *
                  FROM temp_table;
 END
@@ -1524,7 +1534,7 @@ BEGIN
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
     VALUES (_CustomerGUID, 'DungeonMap', 'DungeonMap', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
-    VALUES (_CustomerGUID, 'L_Gullwing_Cave_01', 'L_Gullwing_Cave_01', NULL, 1, 1);
+    VALUES (_CustomerGUID, 'L_GullwingCave_01', 'L_GullwingCave_01', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
     VALUES (_CustomerGUID, 'FourZoneMap', 'Zone1', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
@@ -1540,7 +1550,7 @@ BEGIN
                        Defense, Dodge, Parry, Avoidance, Versatility, Multishot, Initiative, NaturalArmor,
                        PhysicalArmor, BonusArmor, ForceArmor, MagicArmor, Resistance, ReloadSpeed, RANGE, Speed, Silver,
                        Copper, FreeCurrency, PremiumCurrency, Fame, ALIGNMENT, Description)
-    VALUES (_CustomerGUID, 'MaleWarrior', 'L_MVP_2', -14319.548852, -3045.964828, 2151.217753, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+    VALUES (_CustomerGUID, 'MaleWarrior', 'L_MVP_2', -14897.000000, -3839.000000, 2169.000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
             1, 1, 0, 10, 0, 1, 0, 100, 50, 1, 100, 0, 1, 100, 0, 5, 100, 0, 1, 0, 0, 0, 0, 0, 0, 10, 10, 10, 10, 10, 10,
             0, 1, 1, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             '');
@@ -1555,7 +1565,7 @@ BEGIN
                        Defense, Dodge, Parry, Avoidance, Versatility, Multishot, Initiative, NaturalArmor,
                        PhysicalArmor, BonusArmor, ForceArmor, MagicArmor, Resistance, ReloadSpeed, RANGE, Speed, Silver,
                        Copper, FreeCurrency, PremiumCurrency, Fame, ALIGNMENT, Description)
-    VALUES (_CustomerGUID, 'Apprentice', 'L_MVP_2', -14319.548852, -3045.964828, 2151.217753, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+    VALUES (_CustomerGUID, 'Apprentice', 'L_MVP_2', -14897.000000, -3839.000000, 2169.000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
             1, 1, 0, 10, 0, 1, 0, 100, 50, 1, 100, 0, 1, 100, 0, 5, 100, 0, 1, 0, 0, 0, 0, 0, 0, 10, 10, 10, 10, 10, 10,
             0, 1, 1, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             '');
@@ -2711,7 +2721,8 @@ CREATE OR REPLACE FUNCTION PlayerLoginAndCreateSession(_CustomerGUID UUID,
     RETURNS TABLE
             (
                 Authenticated   BOOLEAN,
-                UserSessionGUID UUID
+                UserSessionGUID UUID,
+                ErrorMessage    VARCHAR(100)
             )
     LANGUAGE PLPGSQL
 AS
@@ -2719,24 +2730,44 @@ $$
 DECLARE
     _Authenticated   BOOLEAN = FALSE;
     _PasswordCheck   BOOLEAN = FALSE;
-    _HashInDB        VARCHAR(128);
-    _HashToCheck     VARCHAR(128);
     _UserGUID        UUID;
     _UserSessionGUID UUID;
+    _ErrorMessage    VARCHAR(100) = '';
+    _MatchingUsers   INT = 0;
 BEGIN
 
     CREATE TEMP TABLE IF NOT EXISTS temp_table
     (
         Authenticated   BOOLEAN,
-        UserSessionGUID UUID
+        UserSessionGUID UUID,
+        ErrorMessage    VARCHAR(100)
     ) ON COMMIT DROP;
+
+    SELECT COUNT(*)
+    INTO _MatchingUsers
+    FROM Users
+    WHERE CustomerGUID = _CustomerGUID
+      AND LOWER(TRIM(Email)) = LOWER(TRIM(_Email));
+
+    IF (_MatchingUsers > 1) THEN
+        _ErrorMessage := 'Account configuration error';
+        INSERT INTO temp_table (Authenticated, UserSessionGUID, ErrorMessage)
+        VALUES (_Authenticated, _UserSessionGUID, _ErrorMessage);
+        RETURN QUERY SELECT * FROM temp_table;
+        RETURN;
+    ELSIF (_MatchingUsers = 0) THEN
+        _ErrorMessage := 'Invalid email or password';
+        INSERT INTO temp_table (Authenticated, UserSessionGUID, ErrorMessage)
+        VALUES (_Authenticated, _UserSessionGUID, _ErrorMessage);
+        RETURN QUERY SELECT * FROM temp_table;
+        RETURN;
+    END IF;
 
     SELECT (PasswordHash = crypt(_Password, PasswordHash)), UserGUID
     INTO _PasswordCheck, _UserGUID
     FROM Users
     WHERE CustomerGUID = _CustomerGUID
-      AND Email = _Email
-      AND ROLE = 'Player';
+      AND LOWER(TRIM(Email)) = LOWER(TRIM(_Email));
 
     IF (_PasswordCheck = TRUE OR _DontCheckPassword = TRUE) THEN
         _Authenticated := TRUE;
@@ -2744,8 +2775,11 @@ BEGIN
         _UserSessionGUID := gen_random_uuid();
         INSERT INTO UserSessions (CustomerGUID, UserSessionGUID, UserGUID, LoginDate)
         VALUES (_CustomerGUID, _UserSessionGUID, _UserGUID, NOW());
+    ELSE
+        _ErrorMessage := 'Invalid email or password';
     END IF;
-    INSERT INTO temp_table (Authenticated, UserSessionGUID) VALUES (_Authenticated, _UserSessionGUID);
+    INSERT INTO temp_table (Authenticated, UserSessionGUID, ErrorMessage)
+    VALUES (_Authenticated, _UserSessionGUID, _ErrorMessage);
 
     RETURN QUERY SELECT * FROM temp_table;
 
@@ -3437,7 +3471,7 @@ BEGIN
         INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
         VALUES (_CustomerGUID, 'DungeonMap', 'DungeonMap', NULL, 1, 1);
         INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
-        VALUES (_CustomerGUID, 'L_Gullwing_Cave_01', 'L_Gullwing_Cave_01', NULL, 1, 1);
+        VALUES (_CustomerGUID, 'L_GullwingCave_01', 'L_GullwingCave_01', NULL, 1, 1);
         INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
         VALUES (_CustomerGUID, 'FourZoneMap', 'Zone1', NULL, 1, 1);
         INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
@@ -3453,7 +3487,7 @@ BEGIN
                            Defense, Dodge, Parry, Avoidance, Versatility, Multishot, Initiative, NaturalArmor,
                            PhysicalArmor, BonusArmor, ForceArmor, MagicArmor, Resistance, ReloadSpeed, RANGE, Speed, Silver,
                            Copper, FreeCurrency, PremiumCurrency, Fame, ALIGNMENT, Description)
-        VALUES (_CustomerGUID, 'MaleWarrior', 'L_MVP_2', -14319.548852, -3045.964828, 2151.217753, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+        VALUES (_CustomerGUID, 'MaleWarrior', 'L_MVP_2', -14897.000000, -3839.000000, 2169.000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
                 1, 1, 0, 10, 0, 1, 0, 100, 50, 1, 100, 0, 1, 100, 0, 5, 100, 0, 1, 0, 0, 0, 0, 0, 0, 10, 10, 10, 10, 10, 10,
                 0, 1, 1, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 '');
@@ -3468,7 +3502,7 @@ BEGIN
                            Defense, Dodge, Parry, Avoidance, Versatility, Multishot, Initiative, NaturalArmor,
                            PhysicalArmor, BonusArmor, ForceArmor, MagicArmor, Resistance, ReloadSpeed, RANGE, Speed, Silver,
                            Copper, FreeCurrency, PremiumCurrency, Fame, ALIGNMENT, Description)
-        VALUES (_CustomerGUID, 'Apprentice', 'L_MVP_2', -14319.548852, -3045.964828, 2151.217753, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+        VALUES (_CustomerGUID, 'Apprentice', 'L_MVP_2', -14897.000000, -3839.000000, 2169.000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
                 1, 1, 0, 10, 0, 1, 0, 100, 50, 1, 100, 0, 1, 100, 0, 5, 100, 0, 1, 0, 0, 0, 0, 0, 0, 10, 10, 10, 10, 10, 10,
                 0, 1, 1, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 '');

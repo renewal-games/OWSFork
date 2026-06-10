@@ -41,10 +41,10 @@ BEGIN
         (_CustomerGUID, 'FourZoneMap', 'Zone2', NULL, 1, 1);
 
     INSERT INTO Class (CustomerGUID, ClassName, StartingMapName, X, Y, Z, RX, RY, RZ, TeamNumber, Gender, Description)
-    VALUES (_CustomerGUID, 'Wanderer', 'L_MVP_2', -14319.548852, -3045.964828, 2151.217753, 0, 0, 0, 1, 1, '');
+    VALUES (_CustomerGUID, 'Wanderer', 'L_MVP_2', -14897.000000, -3839.000000, 2169.000000, 0, 0, 0, 1, 1, '');
 
     INSERT INTO Class (CustomerGUID, ClassName, StartingMapName, X, Y, Z, RX, RY, RZ, TeamNumber, Gender, Description)
-    VALUES (_CustomerGUID, 'Apprentice', 'L_MVP_2', -14319.548852, -3045.964828, 2151.217753, 0, 0, 0, 1, 1, '');
+    VALUES (_CustomerGUID, 'Apprentice', 'L_MVP_2', -14897.000000, -3839.000000, 2169.000000, 0, 0, 0, 1, 1, '');
 
     _ClassID := CURRVAL(PG_GET_SERIAL_SEQUENCE('class', 'classid'));
 

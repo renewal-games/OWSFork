@@ -60,7 +60,7 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
         public static readonly string GetUserFromEmailSQL = @"SELECT U.Email, U.FirstName, U.LastName, U.CreateDate, U.LastAccess, U.Role
 	            FROM Users U
 	            WHERE U.CustomerGUID=@CustomerGUID::UUID
-	            AND U.Email=@Email";
+	            AND LOWER(TRIM(U.Email))=LOWER(TRIM(@Email))";
 
         public static readonly string GetCharacterByNameSQL = @"SELECT C.CharacterID, C.CharName, C.X, C.Y, C.Z, C.RX, C.RY, C.RZ, C.MapName as ZoneName
 	            FROM Characters C
@@ -80,6 +80,8 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 				WHERE CustomerGUID=@CustomerGUID
 					AND MapInstanceID=@ZoneInstanceID
 					AND Status <> 3";
+
+		public static readonly string AcquireMapAllocationLock = @"SELECT pg_advisory_xact_lock(hashtextextended(CAST(@CustomerGUID AS text), 0))";
 
 		public static readonly string UpdateWorldServerSQL = @"UPDATE WorldServers
 				SET ActiveStartTime=NOW(),
@@ -262,7 +264,7 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
      				, WS.WorldServerID
      				, MI.Status AS MapInstanceStatus
 				FROM WorldServers WS
-				LEFT JOIN MapInstances MI
+				INNER JOIN MapInstances MI
 					ON MI.WorldServerID = WS.WorldServerID
 					AND MI.CustomerGUID = WS.CustomerGUID
 				LEFT JOIN CharOnMapInstance CMI
@@ -271,11 +273,14 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 				WHERE MI.MapID = @MapID
 				AND WS.ActiveStartTime IS NOT NULL
 				AND WS.CustomerGUID = @CustomerGUID
-				AND MI.NumberOfReportedPlayers < @SoftPlayerCap
+				AND MI.Status IN (1, 2)
 				AND (MI.PlayerGroupID = @PlayerGroupID OR @PlayerGroupID = 0)
-				AND MI.Status = 2
-				GROUP BY MI.MapInstanceID, WS.ServerIP, MI.Port, WS.WorldServerID, WS.InternalServerIP, WS.Port, MI.Status
-				ORDER BY COUNT(DISTINCT CMI.CharacterID)
+				GROUP BY MI.MapInstanceID, WS.ServerIP, MI.Port, WS.WorldServerID, WS.InternalServerIP, WS.Port, MI.Status, MI.NumberOfReportedPlayers
+				HAVING GREATEST(COALESCE(MI.NumberOfReportedPlayers, 0), COUNT(DISTINCT CMI.CharacterID)) < @HardPlayerCap
+					OR COUNT(DISTINCT CASE WHEN CMI.CharacterID = @CharacterID THEN CMI.CharacterID END) > 0
+				ORDER BY CASE WHEN MI.Status = 2 THEN 0 ELSE 1 END,
+					GREATEST(COALESCE(MI.NumberOfReportedPlayers, 0), COUNT(DISTINCT CMI.CharacterID)),
+					MI.MapInstanceID
 				LIMIT 1";
 
 		public static readonly string RemoveMapInstances = @"DELETE FROM MapInstances WHERE CustomerGUID = @CustomerGUID AND MapInstanceID = ANY(@MapInstances)";

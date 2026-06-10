@@ -195,6 +195,11 @@ namespace OWSData.SQL
                 WHERE CustomerGUID = @CustomerGUID
                   AND CharacterID = @CharacterID";
 
+        public static readonly string RemoveCharacterFromInstance = @"DELETE FROM CharOnMapInstance
+                WHERE CustomerGUID = @CustomerGUID
+                  AND CharacterID = @CharacterID
+                  AND MapInstanceID = @MapInstanceID";
+
         public static readonly string RemoveCharacterFromInstances = @"DELETE FROM CharOnMapInstance WHERE CustomerGUID = @CustomerGUID AND MapInstanceID IN @MapInstances";
 
         public static readonly string UpdateCharacterCustomDataField = @"UPDATE CustomCharacterData

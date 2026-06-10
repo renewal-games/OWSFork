@@ -78,6 +78,30 @@ namespace OWSData.Repositories.Implementations.MSSQL
             }
         }
 
+        public async Task ReleaseCharacterMapReservation(Guid customerGUID, string characterName, int mapInstanceID)
+        {
+            using IDbConnection conn = Connection;
+            conn.Open();
+
+            var parameters = new DynamicParameters();
+            parameters.Add("@CustomerGUID", customerGUID);
+            parameters.Add("@CharName", characterName);
+            parameters.Add("@MapInstanceID", mapInstanceID);
+
+            var outputCharacter = await conn.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterIDByName,
+                parameters,
+                commandType: CommandType.Text);
+
+            if (outputCharacter?.CharacterId > 0)
+            {
+                parameters.Add("@CharacterID", outputCharacter.CharacterId);
+
+                await conn.ExecuteAsync(GenericQueries.RemoveCharacterFromInstance,
+                    parameters,
+                    commandType: CommandType.Text);
+            }
+        }
+
         public async Task<IEnumerable<CustomCharacterData>> GetCustomCharacterData(Guid customerGUID, string characterName)
         {
             IEnumerable<CustomCharacterData> outputCustomCharacterDataRows;

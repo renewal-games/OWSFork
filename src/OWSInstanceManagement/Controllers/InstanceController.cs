@@ -161,7 +161,7 @@ namespace OWSInstanceManagement.Controllers
         [SwaggerResponse(404)]*/
         public async Task<IActionResult> GetServerToConnectToRequest([FromBody] GetServerToConnectToRequest request)
         {
-            request.SetData(_charactersRepository, _customerGuid);
+            request.SetData(_rabbitMQOptions, _charactersRepository, _customerGuid);
 
             return await request.Handle();
         }

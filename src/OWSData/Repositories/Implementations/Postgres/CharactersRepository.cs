@@ -237,6 +237,30 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
+        public async Task ReleaseCharacterMapReservation(Guid customerGUID, string characterName, int mapInstanceID)
+        {
+            using IDbConnection conn = CreateConnection();
+            conn.Open();
+
+            var parameters = new DynamicParameters();
+            parameters.Add("@CustomerGUID", customerGUID);
+            parameters.Add("@CharName", characterName);
+            parameters.Add("@MapInstanceID", mapInstanceID);
+
+            var outputCharacter = await conn.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterIDByName,
+                parameters,
+                commandType: CommandType.Text);
+
+            if (outputCharacter?.CharacterId > 0)
+            {
+                parameters.Add("@CharacterID", outputCharacter.CharacterId);
+
+                await conn.ExecuteAsync(GenericQueries.RemoveCharacterFromInstance,
+                    parameters,
+                    commandType: CommandType.Text);
+            }
+        }
+
         public async Task AddOrUpdateCustomCharacterData(Guid customerGUID, AddOrUpdateCustomCharacterData addOrUpdateCustomCharacterData)
         {
             using (Connection)
@@ -379,29 +403,17 @@ namespace OWSData.Repositories.Implementations.Postgres
             // TODO: Run Cleanup here for now. Later this can get moved to a scheduler to run periodically.
             await CleanUpInstances(customerGUID);
 
-            JoinMapByCharName outputObject = new JoinMapByCharName();
-
-            string serverIp = "";
-            int? worldServerId = 0;
-            string worldServerIp = "";
-            int worldServerPort = 0;
-            int port = 0;
-            int mapInstanceID = 0;
-            string mapNameToStart = "";
-            int? mapInstanceStatus = 0;
-            bool needToStartupMap = false;
-            bool enableAutoLoopback = false;
-            bool noPortForwarding = false;
-
-            using (Connection)
+            using (DbConnection conn = CreateConnection())
             {
+                await conn.OpenAsync();
+
                 var parameters = new DynamicParameters();
                 parameters.Add("@CustomerGUID", customerGUID);
                 parameters.Add("@CharName", characterName);
                 parameters.Add("@ZoneName", zoneName);
                 parameters.Add("@PlayerGroupType", playerGroupType);
 
-                Maps outputMap = await Connection.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetMapByZoneName,
+                Maps outputMap = await conn.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetMapByZoneName,
                     parameters,
                     commandType: CommandType.Text);
 
@@ -411,55 +423,51 @@ namespace OWSData.Repositories.Implementations.Postgres
                     {
                         Success = false,
                         ErrorMessage = $"Error finding Zone: {zoneName}",
-                        ServerIP = serverIp,
-                        Port = port,
+                        ServerIP = "",
+                        Port = 0,
                         WorldServerID = -1,
-                        WorldServerIP = worldServerIp,
-                        WorldServerPort = worldServerPort,
-                        MapInstanceID = mapInstanceID,
-                        MapNameToStart = mapNameToStart,
+                        WorldServerIP = "",
+                        WorldServerPort = 0,
+                        MapInstanceID = 0,
+                        MapNameToStart = "",
                         MapInstanceStatus = -1,
                         NeedToStartupMap = false,
-                        EnableAutoLoopback = enableAutoLoopback,
-                        NoPortForwarding = noPortForwarding
+                        EnableAutoLoopback = false,
+                        NoPortForwarding = false
                     };
                 }
 
-                Characters outputCharacter = await Connection.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterByName,
-                    parameters,
-                    commandType: CommandType.Text);
-
-                Customers outputCustomer = await Connection.QuerySingleOrDefaultAsync<Customers>(GenericQueries.GetCustomer,
+                Characters outputCharacter = await conn.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterByName,
                     parameters,
                     commandType: CommandType.Text);
 
                 if (outputCharacter == null)
                 {
-                    outputObject = new JoinMapByCharName()
+                    return new JoinMapByCharName()
                     {
-                        ServerIP = serverIp,
-                        Port = port,
+                        Success = false,
+                        ErrorMessage = $"Error finding Character: {characterName}",
+                        ServerIP = "",
+                        Port = 0,
                         WorldServerID = -1,
-                        WorldServerIP = worldServerIp,
-                        WorldServerPort = worldServerPort,
-                        MapInstanceID = mapInstanceID,
-                        MapNameToStart = mapNameToStart,
+                        WorldServerIP = "",
+                        WorldServerPort = 0,
+                        MapInstanceID = 0,
+                        MapNameToStart = "",
                         MapInstanceStatus = -1,
                         NeedToStartupMap = false,
-                        EnableAutoLoopback = enableAutoLoopback,
-                        NoPortForwarding = noPortForwarding
+                        EnableAutoLoopback = false,
+                        NoPortForwarding = false
                     };
-
-                    return outputObject;
                 }
 
                 PlayerGroup outputPlayerGroup = new PlayerGroup();
 
                 if (playerGroupType > 0)
                 {
-                    outputPlayerGroup = await Connection.QuerySingleOrDefaultAsync<PlayerGroup>(GenericQueries.GetPlayerGroupIDByType,
+                    outputPlayerGroup = await conn.QuerySingleOrDefaultAsync<PlayerGroup>(GenericQueries.GetPlayerGroupIDByType,
                         parameters,
-                        commandType: CommandType.Text);
+                        commandType: CommandType.Text) ?? new PlayerGroup();
                 }
                 else
                 {
@@ -467,117 +475,229 @@ namespace OWSData.Repositories.Implementations.Postgres
                 }
 
                 parameters.Add("@IsInternalNetworkTestUser", outputCharacter.IsInternalNetworkTestUser);
-                parameters.Add("@SoftPlayerCap", outputMap.SoftPlayerCap);
+                parameters.Add("@HardPlayerCap", outputMap.HardPlayerCap);
                 parameters.Add("@PlayerGroupID", outputPlayerGroup.PlayerGroupId);
                 parameters.Add("@MapID", outputMap.MapId);
+                parameters.Add("@CharacterID", outputCharacter.CharacterId);
 
-                JoinMapByCharName outputJoinMapByCharName = await Connection.QuerySingleOrDefaultAsync<JoinMapByCharName>(PostgresQueries.GetZoneInstancesByZoneAndGroup,
-                    parameters,
-                    commandType: CommandType.Text);
+                using IDbTransaction transaction = conn.BeginTransaction();
 
-                if (outputJoinMapByCharName != null)
+                try
                 {
-                    outputObject.NeedToStartupMap = false;
-                    outputObject.WorldServerID = outputJoinMapByCharName.WorldServerID;
-                    outputObject.ServerIP = outputJoinMapByCharName.ServerIP;
-                    if (outputCharacter.IsInternalNetworkTestUser)
-                    {
-                        outputObject.ServerIP = outputJoinMapByCharName.WorldServerIP;
-                    }
-                    outputObject.WorldServerIP = outputJoinMapByCharName.WorldServerIP;
-                    outputObject.WorldServerPort = outputJoinMapByCharName.WorldServerPort;
-                    outputObject.Port = outputJoinMapByCharName.Port;
-                    outputObject.MapInstanceID = outputJoinMapByCharName.MapInstanceID;
-                    outputObject.MapNameToStart = outputMap.MapName;
-                }
-                else
-                {
-                    MapInstances outputMapInstance = await SpinUpInstance(customerGUID, zoneName, outputPlayerGroup.PlayerGroupId);
-
-                    parameters.Add("@WorldServerId", outputMapInstance.WorldServerId);
-
-                    WorldServers outputWorldServers = await Connection.QuerySingleOrDefaultAsync<WorldServers>(GenericQueries.GetWorldByID,
+                    await conn.ExecuteAsync(PostgresQueries.AcquireMapAllocationLock,
                         parameters,
+                        transaction: transaction,
                         commandType: CommandType.Text);
 
-                    outputObject.NeedToStartupMap = true;
-                    outputObject.WorldServerID = outputMapInstance.WorldServerId;
-                    outputObject.ServerIP = outputWorldServers.ServerIp;
-                    if (outputCharacter.IsInternalNetworkTestUser)
+                    JoinMapByCharName outputObject = await conn.QuerySingleOrDefaultAsync<JoinMapByCharName>(PostgresQueries.GetZoneInstancesByZoneAndGroup,
+                        parameters,
+                        transaction: transaction,
+                        commandType: CommandType.Text);
+
+                    if (outputObject != null)
                     {
-                        outputObject.ServerIP = outputWorldServers.InternalServerIp;
+                        outputObject.NeedToStartupMap = false;
+                        outputObject.MapNameToStart = outputMap.MapName;
+                        outputObject.Success = true;
+                        outputObject.ErrorMessage = "";
                     }
-                    outputObject.WorldServerIP = outputWorldServers.InternalServerIp;
-                    outputObject.WorldServerPort = outputWorldServers.Port;
-                    outputObject.Port = outputMapInstance.Port;
-                    outputObject.MapInstanceID = outputMapInstance.MapInstanceId;
-                    outputObject.MapNameToStart = outputMap.MapName;
-                }
+                    else
+                    {
+                        MapInstances outputMapInstance = await SpinUpInstance(conn, transaction, customerGUID, outputMap, outputPlayerGroup.PlayerGroupId);
 
-                if ((outputCharacter.Email?.Contains("@localhost") ?? false) || outputCharacter.IsInternalNetworkTestUser)
+                        if (outputMapInstance.MapInstanceId < 1)
+                        {
+                            transaction.Rollback();
+                            return new JoinMapByCharName()
+                            {
+                                Success = false,
+                                ErrorMessage = "No active World Servers or available instance ports were found.",
+                                WorldServerID = -1,
+                                MapInstanceStatus = -1,
+                                NeedToStartupMap = false
+                            };
+                        }
+
+                        var worldServerParameters = new
+                        {
+                            CustomerGUID = customerGUID,
+                            WorldServerID = outputMapInstance.WorldServerId
+                        };
+
+                        WorldServers outputWorldServers = await conn.QuerySingleOrDefaultAsync<WorldServers>(GenericQueries.GetWorldByID,
+                            worldServerParameters,
+                            transaction: transaction,
+                            commandType: CommandType.Text);
+
+                        if (outputWorldServers == null)
+                        {
+                            transaction.Rollback();
+                            return new JoinMapByCharName()
+                            {
+                                Success = false,
+                                ErrorMessage = $"Error finding World Server: {outputMapInstance.WorldServerId}",
+                                WorldServerID = -1,
+                                MapInstanceStatus = -1,
+                                NeedToStartupMap = false
+                            };
+                        }
+
+                        outputObject = new JoinMapByCharName()
+                        {
+                            Success = true,
+                            ErrorMessage = "",
+                            NeedToStartupMap = true,
+                            WorldServerID = outputMapInstance.WorldServerId,
+                            ServerIP = outputWorldServers.ServerIp,
+                            WorldServerIP = outputWorldServers.InternalServerIp,
+                            WorldServerPort = outputWorldServers.Port,
+                            Port = outputMapInstance.Port,
+                            MapInstanceID = outputMapInstance.MapInstanceId,
+                            MapInstanceStatus = outputMapInstance.Status,
+                            MapNameToStart = outputMap.MapName
+                        };
+                    }
+
+                    await ReserveCharacterMapInstance(conn, transaction, customerGUID, outputCharacter.CharacterId, outputObject.MapInstanceID);
+
+                    transaction.Commit();
+
+                    outputObject.ServerIP = GetClientServerIp(outputObject, outputCharacter);
+                    return outputObject;
+                }
+                catch
                 {
-                    outputObject.ServerIP = "127.0.0.1";
+                    transaction.Rollback();
+                    throw;
                 }
-
             }
-
-            return outputObject;
         }
 
         public async Task<MapInstances> SpinUpInstance(Guid customerGUID, string zoneName, int playerGroupId = 0)
         {
-            using (Connection)
+            using (DbConnection conn = CreateConnection())
             {
+                await conn.OpenAsync();
+
                 var parameters = new DynamicParameters();
                 parameters.Add("@CustomerGUID", customerGUID);
                 parameters.Add("@ZoneName", zoneName);
-                parameters.Add("@PlayerGroupId", playerGroupId);
 
-                List<WorldServers> outputWorldServers = (List<WorldServers>)await Connection.QueryAsync<WorldServers>(GenericQueries.GetActiveWorldServersByLoad,
+                Maps outputMap = await conn.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetMapByZoneName,
                     parameters,
                     commandType: CommandType.Text);
 
-                if (outputWorldServers.Any())
+                if (outputMap == null)
                 {
-                    int? firstAvailable = null;
-                    foreach (var worldServer in outputWorldServers)
+                    return new MapInstances { MapInstanceId = -1 };
+                }
+
+                using IDbTransaction transaction = conn.BeginTransaction();
+
+                try
+                {
+                    await conn.ExecuteAsync(PostgresQueries.AcquireMapAllocationLock,
+                        parameters,
+                        transaction: transaction,
+                        commandType: CommandType.Text);
+
+                    MapInstances outputMapInstance = await SpinUpInstance(conn, transaction, customerGUID, outputMap, playerGroupId);
+                    transaction.Commit();
+                    return outputMapInstance;
+                }
+                catch
+                {
+                    transaction.Rollback();
+                    throw;
+                }
+            }
+        }
+
+        private async Task<MapInstances> SpinUpInstance(IDbConnection conn, IDbTransaction transaction, Guid customerGUID, Maps outputMap, int playerGroupId)
+        {
+            var worldServerParameters = new
+            {
+                CustomerGUID = customerGUID,
+                ZoneName = outputMap.ZoneName,
+                PlayerGroupId = playerGroupId
+            };
+
+            List<WorldServers> outputWorldServers = (List<WorldServers>)await conn.QueryAsync<WorldServers>(GenericQueries.GetActiveWorldServersByLoad,
+                worldServerParameters,
+                transaction: transaction,
+                commandType: CommandType.Text);
+
+            foreach (var worldServer in outputWorldServers)
+            {
+                var portsInUse = await conn.QueryAsync<int>(GenericQueries.GetPortsInUseByWorldServer,
+                    new
                     {
-                        var portsInUse = await Connection.QueryAsync<int>(GenericQueries.GetPortsInUseByWorldServer,
-                            parameters,
-                            commandType: CommandType.Text);
+                        CustomerGUID = customerGUID,
+                        WorldServerID = worldServer.WorldServerId
+                    },
+                    transaction: transaction,
+                    commandType: CommandType.Text);
 
-                        firstAvailable = Enumerable.Range(worldServer.StartingMapInstancePort, worldServer.StartingMapInstancePort + worldServer.MaxNumberOfInstances)
-                            .Except(portsInUse)
-                            .FirstOrDefault();
+                int firstAvailable = Enumerable.Range(worldServer.StartingMapInstancePort, worldServer.MaxNumberOfInstances)
+                    .Except(portsInUse)
+                    .FirstOrDefault();
 
-                        if (firstAvailable >= worldServer.StartingMapInstancePort)
+                if (firstAvailable >= worldServer.StartingMapInstancePort)
+                {
+                    int outputMapInstanceID = await conn.QuerySingleOrDefaultAsync<int>(PostgresQueries.AddMapInstance,
+                        new
                         {
+                            CustomerGUID = customerGUID,
+                            WorldServerID = worldServer.WorldServerId,
+                            MapID = outputMap.MapId,
+                            Port = firstAvailable,
+                            PlayerGroupID = playerGroupId
+                        },
+                        transaction: transaction,
+                        commandType: CommandType.Text);
 
-                            Maps outputMaps = await Connection.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetMapByZoneName,
-                                parameters,
-                                commandType: CommandType.Text);
+                    MapInstances outputMapInstances = await conn.QuerySingleOrDefaultAsync<MapInstances>(GenericQueries.GetMapInstance,
+                        new
+                        {
+                            CustomerGUID = customerGUID,
+                            MapInstanceID = outputMapInstanceID
+                        },
+                        transaction: transaction,
+                        commandType: CommandType.Text);
 
-                            parameters.Add("@WorldServerID", worldServer.WorldServerId);
-                            parameters.Add("@MapID", outputMaps.MapId);
-                            parameters.Add("@Port", firstAvailable);
-
-                            int outputMapInstanceID = await Connection.QuerySingleOrDefaultAsync<int>(PostgresQueries.AddMapInstance,
-                                parameters,
-                                commandType: CommandType.Text);
-
-                            parameters.Add("@MapInstanceID", outputMapInstanceID);
-
-                            MapInstances outputMapInstances = await Connection.QuerySingleOrDefaultAsync<MapInstances>(GenericQueries.GetMapInstance,
-                                parameters,
-                                commandType: CommandType.Text);
-
-                            return outputMapInstances;
-                        }
-                    }
+                    return outputMapInstances ?? new MapInstances { MapInstanceId = -1 };
                 }
             }
 
             return new MapInstances { MapInstanceId = -1 };
+        }
+
+        private static async Task ReserveCharacterMapInstance(IDbConnection conn, IDbTransaction transaction, Guid customerGUID, int characterID, int mapInstanceID)
+        {
+            var parameters = new DynamicParameters();
+            parameters.Add("@CustomerGUID", customerGUID);
+            parameters.Add("@CharacterID", characterID);
+            parameters.Add("@MapInstanceID", mapInstanceID);
+
+            await conn.ExecuteAsync(GenericQueries.RemoveCharacterFromInstance,
+                parameters,
+                transaction: transaction,
+                commandType: CommandType.Text);
+
+            await conn.ExecuteAsync(GenericQueries.AddCharacterToInstance,
+                parameters,
+                transaction: transaction,
+                commandType: CommandType.Text);
+        }
+
+        private static string GetClientServerIp(JoinMapByCharName outputObject, Characters outputCharacter)
+        {
+            if ((outputCharacter.Email?.Contains("@localhost") ?? false) || outputCharacter.IsInternalNetworkTestUser)
+            {
+                return "127.0.0.1";
+            }
+
+            return outputObject.ServerIP;
         }
 
         public async Task UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats)

@@ -1454,7 +1454,7 @@ BEGIN
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
     VALUES (_CustomerGUID, 'DungeonMap', 'DungeonMap', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
-    VALUES (_CustomerGUID, 'L_Gullwing_Cave_01', 'L_Gullwing_Cave_01', NULL, 1, 1);
+    VALUES (_CustomerGUID, 'L_GullwingCave_01', 'L_GullwingCave_01', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)
     VALUES (_CustomerGUID, 'FourZoneMap', 'Zone1', NULL, 1, 1);
     INSERT INTO Maps (CustomerGUID, MapName, ZoneName, MapData, Width, Height)

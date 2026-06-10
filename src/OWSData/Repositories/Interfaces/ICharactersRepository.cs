@@ -13,6 +13,7 @@ namespace OWSData.Repositories.Interfaces
     public interface ICharactersRepository
     {
         Task AddCharacterToMapInstanceByCharName(Guid customerGUID, string characterName, int mapInstanceID);
+        Task ReleaseCharacterMapReservation(Guid customerGUID, string characterName, int mapInstanceID);
         Task AddOrUpdateCustomCharacterData(Guid customerGUID, AddOrUpdateCustomCharacterData addOrUpdateCustomCharacterData);
         Task<MapInstances> CheckMapInstanceStatus(Guid customerGUID, int mapInstanceID);
         Task CleanUpInstances(Guid customerGUID);

@@ -10,9 +10,9 @@ CREATE TABLE IF NOT EXISTS public.defaultsamsaracharactervalues
     statIdentifier varchar(50) NOT NULL,
     statValue int NOT NULL,
     startingmapname varchar(50) DEFAULT 'L_MVP_2' NOT NULL,
-    x float8 DEFAULT -14319.548852 NOT NULL,
-    y float8 DEFAULT -3045.964828 NOT NULL,
-    z float8 DEFAULT 2151.217753 NOT NULL,
+    x float8 DEFAULT -14897.000000 NOT NULL,
+    y float8 DEFAULT -3839.000000 NOT NULL,
+    z float8 DEFAULT 2169.000000 NOT NULL,
     rx float8 DEFAULT 0.0 NOT NULL,
     ry float8 DEFAULT 0.0 NOT NULL,
     rz float8 DEFAULT 0.0 NOT NULL
@@ -240,7 +240,7 @@ BEGIN
     -- Fallback to defaults if not found
     IF _StartMapName IS NULL THEN
         _StartMapName := 'L_MVP_2';
-        _X := -14319.548852; _Y := -3045.964828; _Z := 2151.217753;
+        _X := -14897.000000; _Y := -3839.000000; _Z := 2169.000000;
         _RX := 0.0; _RY := 0.0; _RZ := 0.0;
     END IF;
 

@@ -90,10 +90,24 @@ namespace OWSPublicAPI.Requests.Users
             //There is no zone server running that will accept our connection, so start up a new one
             if (joinMapByCharacterName.NeedToStartupMap)
             {
-                bool requestSuccess = await RequestServerSpinUp(joinMapByCharacterName.WorldServerID, joinMapByCharacterName.MapInstanceID, joinMapByCharacterName.MapNameToStart, joinMapByCharacterName.Port);
+                bool requestSuccess;
+
+                try
+                {
+                    requestSuccess = await RequestServerSpinUp(joinMapByCharacterName.WorldServerID, joinMapByCharacterName.MapInstanceID, joinMapByCharacterName.MapNameToStart, joinMapByCharacterName.Port);
+                }
+                catch
+                {
+                    return await ReleaseReservationAndReturnFailure(joinMapByCharacterName, "GetServerToConnectTo: Failed to request zone server spin-up.");
+                }
+
+                if (!requestSuccess)
+                {
+                    return await ReleaseReservationAndReturnFailure(joinMapByCharacterName, "GetServerToConnectTo: Failed to request zone server spin-up.");
+                }
 
                 //Wait OWSGeneralConfig.SecondsToWaitBeforeFirstPollForSpinUp seconds before the first CheckMapInstanceStatus to give it time to spin up
-                System.Threading.Thread.Sleep(owsGeneralConfig.Value.SecondsToWaitBeforeFirstPollForSpinUp);
+                await Task.Delay(TimeSpan.FromSeconds(owsGeneralConfig.Value.SecondsToWaitBeforeFirstPollForSpinUp));
 
                 readyForPlayersToConnect = await WaitForServerReadyToConnect(CustomerGUID, joinMapByCharacterName.MapInstanceID);
             }
@@ -114,6 +128,10 @@ namespace OWSPublicAPI.Requests.Users
             if (readyForPlayersToConnect)
             {
                 await charactersRepository.AddCharacterToMapInstanceByCharName(CustomerGUID, CharacterName, joinMapByCharacterName.MapInstanceID);
+            }
+            else
+            {
+                return await ReleaseReservationAndReturnFailure(joinMapByCharacterName, "GetServerToConnectTo: Zone server did not become ready before the timeout.");
             }
 
             Output = joinMapByCharacterName;
@@ -136,13 +154,26 @@ namespace OWSPublicAPI.Requests.Users
                     return true;
                 }
 
-                System.Threading.Thread.Sleep(owsGeneralConfig.Value.SecondsToWaitInBetweenSpinUpPolling);
+                await Task.Delay(TimeSpan.FromSeconds(owsGeneralConfig.Value.SecondsToWaitInBetweenSpinUpPolling));
             }
 
             //The server did not spin up in time so shut it down
 
 
             return false;
+        }
+
+        private async Task<IActionResult> ReleaseReservationAndReturnFailure(JoinMapByCharName joinMapByCharacterName, string errorMessage)
+        {
+            if (joinMapByCharacterName?.MapInstanceID > 0)
+            {
+                await charactersRepository.ReleaseCharacterMapReservation(CustomerGUID, CharacterName, joinMapByCharacterName.MapInstanceID);
+            }
+
+            Output = joinMapByCharacterName ?? new JoinMapByCharName();
+            Output.Success = false;
+            Output.ErrorMessage = errorMessage;
+            return new OkObjectResult(Output);
         }
 
         private async Task<bool> RequestServerSpinUp(int worldServerID, int zoneInstanceID, string zoneName, int port)

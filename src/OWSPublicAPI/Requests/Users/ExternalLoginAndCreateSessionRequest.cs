@@ -68,7 +68,10 @@ namespace OWSPublicAPI.Requests.Users
 
                 if (!output.Authenticated || !output.UserSessionGuid.HasValue || output.UserSessionGuid == Guid.Empty)
                 {
-                    output.ErrorMessage = "Username or Password is invalid!";
+                    if (String.IsNullOrWhiteSpace(output.ErrorMessage))
+                    {
+                        output.ErrorMessage = "Invalid email or password";
+                    }
                 }
 
                 return new OkObjectResult(output);

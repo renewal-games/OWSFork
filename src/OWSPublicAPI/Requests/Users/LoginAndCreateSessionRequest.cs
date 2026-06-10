@@ -29,9 +29,21 @@ namespace OWSPublicAPI.Requests.Users
         {
             output = await usersRepository.LoginAndCreateSession(customerGUID, Email, Password, false);
 
+            if (output == null)
+            {
+                output = new PlayerLoginAndCreateSession
+                {
+                    Authenticated = false,
+                    ErrorMessage = "Login service unavailable"
+                };
+            }
+
             if (!output.Authenticated || !output.UserSessionGuid.HasValue || output.UserSessionGuid == Guid.Empty)
             {
-                output.ErrorMessage = "Username or Password is invalid!";
+                if (string.IsNullOrWhiteSpace(output.ErrorMessage))
+                {
+                    output.ErrorMessage = "Invalid email or password";
+                }
             }
 
             return new OkObjectResult(output);
