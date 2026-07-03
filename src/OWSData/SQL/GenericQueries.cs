@@ -301,6 +301,11 @@ namespace OWSData.SQL
                     @CustomData
                 )";
 
+        public static readonly string UpdateCharacterCurrency = @"UPDATE Characters
+                SET Gold = @Gold
+                WHERE CustomerGUID = @CustomerGUID
+                  AND CharName = @CharName";
+
         public static readonly string UpdateCharacterZone = @"UPDATE Characters
                 SET MapName = @ZoneName
                 WHERE CharacterID = @CharacterID

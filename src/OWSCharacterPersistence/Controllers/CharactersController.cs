@@ -117,6 +117,15 @@ namespace OWSCharacterPersistence.Controllers
         }
 
         [HttpPost]
+        [Route("UpdateCharacterCurrency")]
+        [Produces(typeof(SuccessAndErrorMessage))]
+        public async Task<SuccessAndErrorMessage> UpdateCharacterCurrency([FromBody] UpdateCharacterCurrencyRequest request)
+        {
+            request.SetData(_charactersRepository, _customerGuid);
+            return await request.Handle();
+        }
+
+        [HttpPost]
         [Route("UpdateCharacterAbilities")]
         [Produces(typeof(SuccessAndErrorMessage))]
         public async Task<SuccessAndErrorMessage> UpdateCharacterAbilities([FromBody] UpdateCharacterAbilitiesRequest request)

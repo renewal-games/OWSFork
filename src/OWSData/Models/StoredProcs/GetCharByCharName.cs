@@ -44,5 +44,6 @@ namespace OWSData.Models.StoredProcs
         public int Port { get; set; }
         public int MapInstanceID { get; set; }
         public string ClassName { get; set; }
+        public int Gold { get; set; }
     }
 }

@@ -932,6 +932,21 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
+        public async Task UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold)
+        {
+            using (Connection)
+            {
+                var parameters = new DynamicParameters();
+                parameters.Add("@CustomerGUID", customerGUID);
+                parameters.Add("@CharName", characterName);
+                parameters.Add("@Gold", gold);
+
+                await Connection.ExecuteAsync(GenericQueries.UpdateCharacterCurrency,
+                    parameters,
+                    commandType: CommandType.Text);
+            }
+        }
+
         public async Task<SuccessAndErrorMessage> UpdateCharacterAbilities(Guid customerGUID, string charName, string abilitiesJson)
         {
             using (Connection)
