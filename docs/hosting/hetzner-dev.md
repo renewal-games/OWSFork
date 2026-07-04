@@ -96,6 +96,70 @@ docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml up 
 
 Keep `.env.hetzner-dev` local to the server. Do not commit it.
 
+> **CAUTION — `--build` also recreates the `database` container.** The `database`
+> service has a `build:` context, so `up --build` rebuilds and **recreates** it, which
+> severs every service's live Postgres connection pool. On reconnect, any service still
+> holding a **stale DB password** (e.g. `.env.hetzner-dev` was rotated but that container
+> was never recreated) fails with `Npgsql 28P01: password authentication failed for user
+> "postgres"` — which surfaces to players as **"login service unavailable"** from
+> `owspublicapi`. This is a latent trap: a long-running container keeps working on its old
+> pooled credentials until something forces a reconnect.
+>
+> Safer patterns:
+> - **App-code change only (no DB image change):** rebuild just that service and don't touch
+>   the DB — `... up -d --no-deps --build <service>`.
+> - **After any DB restart/recreate:** force every app service to reconnect with the current
+>   env — `... up -d --no-deps --force-recreate owspublicapi owscharacterpersistence owsinstancemanagement owsglobaldata owschat owsparty`.
+> - **Verify no drift first:** run `scripts/hetzner/check-db-password-drift.sh` (compares each
+>   running container's DB password to `.env.hetzner-dev`). A green `docker compose exec
+>   database psql -U postgres` does NOT prove network creds are valid — that path uses local
+>   trust auth and never checks the password.
+
+## Troubleshooting
+
+### "Login service unavailable" / `owspublicapi` returns HTTP 500
+
+Check its logs for a Postgres auth error:
+
+```bash
+docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml logs --tail=40 owspublicapi | grep -i 28P01
+```
+
+If present, a container is on a stale DB password (see the CAUTION above). Fix by recreating
+it with the current env (DB left alone):
+
+```bash
+docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml up -d --no-deps --force-recreate owspublicapi
+```
+
+Then confirm: a request to `/api/Users/GetServerToConnectTo` returns 400 (business error), not
+500 (DB error), and the logs show a clean start with no `28P01`.
+
+### Idle zone servers never shut down / port 7778 reused
+
+Zone (dedicated) server processes run on the **dev PC**, not this box; the launcher decides to
+shut them down from the `mapinstances` rows in this DB. Symptoms of a leak: `mapinstances` is
+empty (or has stale rows) while `SamsaraSagaServer.exe` processes keep running, and every new
+instance is assigned the base port (`StartingInstancePort`, 7778) because the port is derived
+from existing rows — so fresh servers collide on 7778 with a lingering one and die.
+
+Inspect from this box:
+
+```bash
+docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml exec -T database \
+  psql -U postgres -d openworldserver -c \
+  "SELECT mapinstanceid, mapid, port, status, numberofreportedplayers, lastserveremptydate, lastupdatefromserver FROM mapinstances ORDER BY mapinstanceid;"
+```
+
+On the dev PC, list/kill orphaned processes (verify no player connections first — an idle
+server's only established connection is outbound to the Party gRPC service on `:44364`):
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='SamsaraSagaServer.exe'" | Select ProcessId, CommandLine
+# after confirming zero inbound player connections:
+Stop-Process -Id <pid> -Force
+```
+
 ## Public Endpoints
 
 By default the profile exposes:
