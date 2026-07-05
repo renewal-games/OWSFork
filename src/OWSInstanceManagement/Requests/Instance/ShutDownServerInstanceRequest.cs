@@ -32,6 +32,11 @@ namespace OWSInstanceManagement.Requests.Instance
 
         public async Task<IActionResult> Handle()
         {
+            //Set the status to 3 (shutting down) BEFORE publishing the shutdown message. The launcher's follow-up
+            //CompleteZoneInstanceShutdown requires status 3; publishing first creates a race where the launcher can
+            //call CompleteZoneInstanceShutdown before the status is set (papered over by a retry loop launcher-side).
+            Output = await _instanceMangementRepository.SetZoneInstanceStatus(CustomerGUID, ZoneInstanceID, 3);
+
             //Send the servershutdown message to RabbitMQ
             ConnectionFactory factory = new()
             {
@@ -50,12 +55,12 @@ namespace OWSInstanceManagement.Requests.Instance
                         durable: false,
                         autoDelete: false);
 
-                    MQShutDownServerMessage serverSpinUpMessage = new() 
+                    MQShutDownServerMessage serverSpinUpMessage = new()
                     {
                         CustomerGUID = CustomerGUID,
                         ZoneInstanceID = ZoneInstanceID
                     };
-                    
+
                     var body = serverSpinUpMessage.Serialize();
 
                     channel.BasicPublish(exchange: "ows.servershutdown",
@@ -64,8 +69,6 @@ namespace OWSInstanceManagement.Requests.Instance
                                          body: body);
                 }
             }
-
-            Output = await _instanceMangementRepository.SetZoneInstanceStatus(CustomerGUID, ZoneInstanceID, 3);
 
             return new OkObjectResult(Output);
         }

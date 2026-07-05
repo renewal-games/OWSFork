@@ -255,6 +255,23 @@ namespace OWSInstanceLauncher.Services
             //string PathToDedicatedServer = "E:\\Program Files\\Epic Games\\UE_4.25\\Engine\\Binaries\\Win64\\UE4Editor.exe";
             //string ServerArguments = "\"C:\\OWS\\OpenWorldStarterPlugin\\OpenWorldStarter.uproject\" {0}?listen -server -log -nosteam -messaging -port={1}";
 
+            //Port guard: never start a server on a port that is already bound (e.g. a leaked instance still holding it).
+            //Starting anyway produces a process that fails its net bind and dies, leaving the DB instance orphaned.
+            if (!IsUdpPortAvailable(port))
+            {
+                Log.Error($"HandleServerSpinUpMessage - Port {port} for Zone Instance {zoneInstanceID} is already in use. Aborting spin up and marking the instance broken so it can be cleaned up.");
+                try
+                {
+                    SetZoneInstanceStatus(zoneInstanceID, 3).Wait();
+                    CompleteZoneInstanceShutdownRequest(zoneInstanceID).Wait();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"HandleServerSpinUpMessage - Failed to clean up broken Zone Instance {zoneInstanceID} after port conflict: {ex.Message}");
+                }
+                return;
+            }
+
             string serverArguments = (_owsInstanceLauncherOptions.Value.IsServerEditor ? "\"" + _owsInstanceLauncherOptions.Value.PathToUProject + "\" " : "")
                 + "{0}?listen -server "
                 + (_owsInstanceLauncherOptions.Value.UseServerLog ? "-log " : "")
@@ -282,19 +299,29 @@ namespace OWSInstanceLauncher.Services
             proc.Start();
             //proc.WaitForInputIdle();
 
+            DateTime? processStartTimeUtc = null;
+            try
+            {
+                processStartTimeUtc = proc.StartTime.ToUniversalTime();
+            }
+            catch
+            {
+                //StartTime can throw if the process exited immediately; the PID-reuse guard simply won't apply for this entry.
+            }
+
             _zoneServerProcessesRepository.AddZoneServerProcess(new ZoneServerProcess
             {
                 ZoneInstanceId = zoneInstanceID,
                 MapName = mapName,
                 Port = port,
                 ProcessId = proc.Id,
-                ProcessName = proc.ProcessName
+                ProcessName = proc.ProcessName,
+                ProcessStartTimeUtc = processStartTimeUtc
             });
 
             Log.Information($"{customerGUID} : {worldServerID} : {mapName} : {port} has started.  ProcessId: {proc.Id}, ProcessName: {proc.ProcessName}");
 
-            //The server has finished spinning up.  Set the status to 2.
-            //_ = UpdateZoneServerStatusReady(zoneInstanceID);
+            //Readiness (Status = 2) is now reported by the dedicated server itself via UpdateNumberOfPlayers (see AOWSGameMode::StartPlay).
         }
 
         private void HandleServerShutDownMessage(Guid customerGUID, int zoneInstanceID)
@@ -496,7 +523,7 @@ namespace OWSInstanceLauncher.Services
             return;
         }
 
-        private async Task UpdateZoneServerStatusReady(int zoneInstanceID)
+        private async Task SetZoneInstanceStatus(int zoneInstanceID, int instanceStatus)
         {
             var instanceManagementHttpClient = _httpClientFactory.CreateClient("OWSInstanceManagement");
 
@@ -505,7 +532,7 @@ namespace OWSInstanceLauncher.Services
                 request = new SetZoneInstanceStatusRequestPayload
                 {
                     ZoneInstanceID = zoneInstanceID,
-                    InstanceStatus = 2 //Ready
+                    InstanceStatus = instanceStatus
                 }
             };
 
@@ -514,6 +541,23 @@ namespace OWSInstanceLauncher.Services
             var responseMessage = await instanceManagementHttpClient.PostAsync("api/Instance/SetZoneInstanceStatus", setZoneInstanceStatusRequest);
 
             return;
+        }
+
+        //Returns true if a UDP socket can bind the port (i.e. it is free). Used to avoid starting a server on a port a
+        //leaked/lingering zone server still holds.
+        private static bool IsUdpPortAvailable(int port)
+        {
+            try
+            {
+                using (var udpClient = new System.Net.Sockets.UdpClient(port))
+                {
+                    return true;
+                }
+            }
+            catch (System.Net.Sockets.SocketException)
+            {
+                return false;
+            }
         }
 
         private async Task<bool> CompleteZoneInstanceShutdownRequest(int zoneInstanceID)
