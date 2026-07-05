@@ -20,12 +20,13 @@ namespace OWSData.Repositories.Implementations.Local
         private readonly string _filePath;
         private List<ZoneServerProcess> _zoneServerProcesses;
 
+        //Single public constructor so the DI container (SimpleInjector) can construct it.
         public PersistentZoneServerProcessesRepository()
             : this(Path.Combine(AppContext.BaseDirectory, "zone-server-processes.json"))
         {
         }
 
-        public PersistentZoneServerProcessesRepository(string filePath)
+        private PersistentZoneServerProcessesRepository(string filePath)
         {
             _filePath = filePath;
             _zoneServerProcesses = LoadAndReconcile();
