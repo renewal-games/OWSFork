@@ -43,6 +43,7 @@ namespace OWSPublicAPI.Controllers
         private readonly IOptions<PublicAPIOptions> _owsGeneralConfig;
         private readonly IOptions<APIPathOptions> _owsApiPathConfig;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly Services.ISteamAuthService _steamAuthService;
 
         /// <summary>
         /// Constructor for Public User related API calls.
@@ -60,7 +61,8 @@ namespace OWSPublicAPI.Controllers
             IHeaderCustomerGUID customerGuid,
             IOptions<PublicAPIOptions> owsGeneralConfig,
             IOptions<APIPathOptions> owsApiPathConfig,
-            IHttpClientFactory httpClientFactory)
+            IHttpClientFactory httpClientFactory,
+            Services.ISteamAuthService steamAuthService)
         {
             _logger = logger;
             _container = container;
@@ -72,6 +74,7 @@ namespace OWSPublicAPI.Controllers
             _owsGeneralConfig = owsGeneralConfig;
             _owsApiPathConfig = owsApiPathConfig;
             _httpClientFactory = httpClientFactory;
+            _steamAuthService = steamAuthService;
         }
 
         /// <summary>
@@ -181,6 +184,22 @@ namespace OWSPublicAPI.Controllers
         public async Task<IActionResult> ExternalLoginAndCreateSession([FromBody] ExternalLoginAndCreateSessionRequest request)
         {
             request.SetData(_usersRepository, _externalLoginProviderFactory, _customerGuid);
+            return await request.Handle();
+        }
+
+        /// <summary>
+        /// Login and create a User Session using a Steam WebAPI auth ticket.
+        /// </summary>
+        /// <remarks>
+        /// Pass the hex-encoded ticket from ISteamUser::GetAuthTicketForWebApi. The ticket is
+        /// validated against the Steam Web API and a user is created automatically on first login.
+        /// </remarks>
+        [HttpPost]
+        [Route("SteamLoginAndCreateSession")]
+        [Produces(typeof(PlayerLoginAndCreateSession))]
+        public async Task<IActionResult> SteamLoginAndCreateSession([FromBody] SteamLoginAndCreateSessionRequest request)
+        {
+            request.SetData(_usersRepository, _steamAuthService, _customerGuid);
             return await request.Handle();
         }
 

@@ -1,0 +1,87 @@
+using Microsoft.AspNetCore.Mvc;
+using System;
+using System.Threading.Tasks;
+using OWSData.Models.StoredProcs;
+using OWSData.Repositories.Interfaces;
+using OWSPublicAPI.Services;
+using OWSShared.Interfaces;
+
+namespace OWSPublicAPI.Requests.Users
+{
+    /// <summary>
+    /// SteamLoginAndCreateSessionRequest Handler
+    /// </summary>
+    /// <remarks>
+    /// Handles api/Users/SteamLoginAndCreateSession requests. The client obtains a WebAPI auth
+    /// ticket via ISteamUser::GetAuthTicketForWebApi and we validate it with Valve, JIT-creating
+    /// a user for unknown SteamIds.
+    /// </remarks>
+    public class SteamLoginAndCreateSessionRequest : IRequestHandler<SteamLoginAndCreateSessionRequest, IActionResult>, IRequest
+    {
+        /// <summary>
+        /// Hex-encoded WebAPI auth ticket from ISteamUser::GetAuthTicketForWebApi.
+        /// </summary>
+        public string SteamAuthTicket { get; set; }
+
+        private PlayerLoginAndCreateSession output;
+        private Guid customerGUID;
+        private IUsersRepository usersRepository;
+        private ISteamAuthService steamAuthService;
+
+        public void SetData(IUsersRepository usersRepository, ISteamAuthService steamAuthService, IHeaderCustomerGUID customerGuid)
+        {
+            this.customerGUID = customerGuid.CustomerGUID;
+            this.usersRepository = usersRepository;
+            this.steamAuthService = steamAuthService;
+        }
+
+        public async Task<IActionResult> Handle()
+        {
+            SteamTicketValidationResult validation = await steamAuthService.ValidateAuthTicket(SteamAuthTicket);
+
+            if (!validation.IsValid)
+            {
+                return Unauthenticated(string.IsNullOrWhiteSpace(validation.ErrorMessage) ? "Steam authentication failed" : validation.ErrorMessage);
+            }
+
+            if (validation.VacBanned || validation.PublisherBanned)
+            {
+                return Unauthenticated("This Steam account is banned");
+            }
+
+            string personaName = await steamAuthService.GetPersonaName(validation.SteamId) ?? "SteamUser";
+            // FirstName column is VARCHAR(50).
+            if (personaName.Length > 50)
+            {
+                personaName = personaName.Substring(0, 50);
+            }
+
+            output = await usersRepository.SteamLoginAndCreateSession(customerGUID, validation.SteamId, personaName);
+
+            if (output == null)
+            {
+                return Unauthenticated("Login service unavailable");
+            }
+
+            if (!output.Authenticated || !output.UserSessionGuid.HasValue || output.UserSessionGuid == Guid.Empty)
+            {
+                if (string.IsNullOrWhiteSpace(output.ErrorMessage))
+                {
+                    output.ErrorMessage = "Steam authentication failed";
+                }
+            }
+
+            return new OkObjectResult(output);
+        }
+
+        private IActionResult Unauthenticated(string errorMessage)
+        {
+            return new OkObjectResult(new PlayerLoginAndCreateSession
+            {
+                Authenticated = false,
+                UserSessionGuid = Guid.Empty,
+                ErrorMessage = errorMessage
+            });
+        }
+    }
+}

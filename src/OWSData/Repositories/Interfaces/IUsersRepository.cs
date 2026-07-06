@@ -22,6 +22,7 @@ namespace OWSData.Repositories.Interfaces
         Task<GetUserSession> GetUserSessionORM(Guid customerGUID, Guid userSessionGUID);
         Task<GetUserSessionComposite> GetUserSessionParallel(Guid customerGUID, Guid userSessionGUID);
         Task<PlayerLoginAndCreateSession> LoginAndCreateSession(Guid customerGUID, string email, string password, bool dontCheckPassword = false);
+        Task<PlayerLoginAndCreateSession> SteamLoginAndCreateSession(Guid customerGUID, string steamId, string personaName);
         Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid);
         Task<SuccessAndErrorMessage> UserSessionSetSelectedCharacter(Guid customerGUID, Guid userSessionGUID, string selectedCharacterName);
         Task<SuccessAndErrorMessage> RegisterUser(Guid customerGUID, string userName, string password, string firstName, string lastName);

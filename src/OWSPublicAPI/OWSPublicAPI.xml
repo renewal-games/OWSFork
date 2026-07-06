@@ -36,6 +36,41 @@
             Gets a Characters by Name.
             </remarks>
         </member>
+        <member name="M:OWSPublicAPI.Controllers.CharactersController.GetCustomData(OWSPublicAPI.DTOs.GetCustomDataDTO)">
+            <summary>
+            Get public-safe custom character data.
+            </summary>
+            <remarks>
+            Validates that the session owns the requested character before returning filtered custom data.
+            </remarks>
+        </member>
+        <member name="M:OWSPublicAPI.Controllers.CharactersController.AddOrUpdateCustomData(OWSPublicAPI.DTOs.AddOrUpdateCustomDataDTO)">
+            <summary>
+            Add or update public-safe custom character data.
+            </summary>
+            <remarks>
+            Validates that the session owns the requested character and only permits client-safe fields.
+            </remarks>
+        </member>
+        <member name="T:OWSPublicAPI.Controllers.ServersController">
+            <summary>
+            Public game-server list API.
+            </summary>
+            <remarks>
+            Serves the server-selector list shown on the login screen. Entries come from the
+            GameServersConfig appsettings section; population is config-stubbed for now.
+            </remarks>
+        </member>
+        <member name="M:OWSPublicAPI.Controllers.ServersController.#ctor(Microsoft.Extensions.Options.IOptions{OWSPublicAPI.Options.GameServersOptions})">
+            <summary>
+            Constructor for public game-server list API.
+            </summary>
+        </member>
+        <member name="M:OWSPublicAPI.Controllers.ServersController.List">
+            <summary>
+            Get the list of game servers for the server selector.
+            </summary>
+        </member>
         <member name="T:OWSPublicAPI.Controllers.SystemController">
             <summary>
             Public System API calls.
@@ -60,7 +95,7 @@
             Contains user related API calls that are all publicly accessible.
             </remarks>
         </member>
-        <member name="M:OWSPublicAPI.Controllers.UsersController.#ctor(Microsoft.Extensions.Logging.ILogger{OWSPublicAPI.Controllers.UsersController},SimpleInjector.Container,OWSData.Repositories.Interfaces.IUsersRepository,OWSExternalLoginProviders.Interfaces.IExternalLoginProviderFactory,OWSData.Repositories.Interfaces.ICharactersRepository,OWSShared.Interfaces.IPublicAPIInputValidation,OWSShared.Interfaces.IHeaderCustomerGUID,Microsoft.Extensions.Options.IOptions{OWSShared.Options.PublicAPIOptions},Microsoft.Extensions.Options.IOptions{OWSShared.Options.APIPathOptions},System.Net.Http.IHttpClientFactory)">
+        <member name="M:OWSPublicAPI.Controllers.UsersController.#ctor(Microsoft.Extensions.Logging.ILogger{OWSPublicAPI.Controllers.UsersController},SimpleInjector.Container,OWSData.Repositories.Interfaces.IUsersRepository,OWSExternalLoginProviders.Interfaces.IExternalLoginProviderFactory,OWSData.Repositories.Interfaces.ICharactersRepository,OWSShared.Interfaces.IPublicAPIInputValidation,OWSShared.Interfaces.IHeaderCustomerGUID,Microsoft.Extensions.Options.IOptions{OWSShared.Options.PublicAPIOptions},Microsoft.Extensions.Options.IOptions{OWSShared.Options.APIPathOptions},System.Net.Http.IHttpClientFactory,OWSPublicAPI.Services.ISteamAuthService)">
             <summary>
             Constructor for Public User related API calls.
             </summary>
@@ -127,6 +162,15 @@
             Login and create a User Session using an External Login Provider (such as Epic Game Store or Xsolla).
             </summary>
         </member>
+        <member name="M:OWSPublicAPI.Controllers.UsersController.SteamLoginAndCreateSession(OWSPublicAPI.Requests.Users.SteamLoginAndCreateSessionRequest)">
+            <summary>
+            Login and create a User Session using a Steam WebAPI auth ticket.
+            </summary>
+            <remarks>
+            Pass the hex-encoded ticket from ISteamUser::GetAuthTicketForWebApi. The ticket is
+            validated against the Steam Web API and a user is created automatically on first login.
+            </remarks>
+        </member>
         <member name="M:OWSPublicAPI.Controllers.UsersController.Logout(OWSPublicAPI.DTOs.LogoutDTO)">
             <summary>
             Logout of a User Session
@@ -163,6 +207,21 @@
             <remarks>
             Removes a Character from the User.  This method permanently deletes the character and all associated data.  In the future, it might make sense to modify this to only mark the character as removed to support restoring an accidentally removed character.
             </remarks>
+        </member>
+        <member name="T:OWSPublicAPI.DTOs.AddOrUpdateCustomDataDTO">
+            <summary>
+            Public custom character data write request.
+            </summary>
+        </member>
+        <member name="P:OWSPublicAPI.DTOs.AddOrUpdateCustomDataDTO.UserSessionGUID">
+            <summary>
+            Authenticated user session.
+            </summary>
+        </member>
+        <member name="P:OWSPublicAPI.DTOs.AddOrUpdateCustomDataDTO.AddOrUpdateCustomCharacterData">
+            <summary>
+            Custom data payload to update.
+            </summary>
         </member>
         <member name="T:OWSPublicAPI.DTOs.CreateCharacterUsingDefaultCharacterValuesDTO">
             <summary>
@@ -219,6 +278,21 @@
             <remarks>
             Contains the Character Name from the request
             </remarks>
+        </member>
+        <member name="T:OWSPublicAPI.DTOs.GetCustomDataDTO">
+            <summary>
+            Public custom character data request.
+            </summary>
+        </member>
+        <member name="P:OWSPublicAPI.DTOs.GetCustomDataDTO.UserSessionGUID">
+            <summary>
+            Authenticated user session.
+            </summary>
+        </member>
+        <member name="P:OWSPublicAPI.DTOs.GetCustomDataDTO.CharacterName">
+            <summary>
+            Character name to read custom data for.
+            </summary>
         </member>
         <member name="T:OWSPublicAPI.DTOs.RegisterUserDTO">
             <summary>
@@ -284,6 +358,11 @@
             Configure the web host.
             </remarks>
         </member>
+        <member name="T:OWSPublicAPI.Requests.Characters.AddOrUpdateCustomDataRequest">
+            <summary>
+            Public, ownership-validated custom character data write.
+            </summary>
+        </member>
         <member name="T:OWSPublicAPI.Requests.Characters.GetByNameRequest">
             <summary>
             GetByNameRequest Handler
@@ -307,6 +386,11 @@
             <remarks>
             Overrides IRequestHandler Handle().
             </remarks>
+        </member>
+        <member name="T:OWSPublicAPI.Requests.Characters.GetCustomDataRequest">
+            <summary>
+            Public, ownership-validated custom character data read.
+            </summary>
         </member>
         <member name="T:OWSPublicAPI.Requests.Users.CreateCharacterRequest">
             <summary>
@@ -547,6 +631,33 @@
             <remarks>
             Overrides IRequestHandler Handle().
             </remarks>
+        </member>
+        <member name="T:OWSPublicAPI.Requests.Users.SteamLoginAndCreateSessionRequest">
+            <summary>
+            SteamLoginAndCreateSessionRequest Handler
+            </summary>
+            <remarks>
+            Handles api/Users/SteamLoginAndCreateSession requests. The client obtains a WebAPI auth
+            ticket via ISteamUser::GetAuthTicketForWebApi and we validate it with Valve, JIT-creating
+            a user for unknown SteamIds.
+            </remarks>
+        </member>
+        <member name="P:OWSPublicAPI.Requests.Users.SteamLoginAndCreateSessionRequest.SteamAuthTicket">
+            <summary>
+            Hex-encoded WebAPI auth ticket from ISteamUser::GetAuthTicketForWebApi.
+            </summary>
+        </member>
+        <member name="M:OWSPublicAPI.Services.ISteamAuthService.ValidateAuthTicket(System.String)">
+            <summary>
+            Validates a WebAPI auth ticket (from ISteamUser::GetAuthTicketForWebApi) against
+            ISteamUserAuth/AuthenticateUserTicket and returns the owning SteamId + ban flags.
+            </summary>
+        </member>
+        <member name="M:OWSPublicAPI.Services.ISteamAuthService.GetPersonaName(System.String)">
+            <summary>
+            Fetches the player's persona (display) name via ISteamUser/GetPlayerSummaries.
+            Returns null on any failure; callers should fall back to a default.
+            </summary>
         </member>
     </members>
 </doc>

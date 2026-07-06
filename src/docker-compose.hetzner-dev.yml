@@ -70,6 +70,10 @@ services:
     restart: unless-stopped
     environment:
       <<: *ows-common-env
+      SteamConfig__WebApiHost: "${STEAM_WEB_API_HOST:-https://api.steampowered.com}"
+      SteamConfig__WebApiKey: "${STEAM_WEB_API_KEY:-}"
+      SteamConfig__AppId: "${STEAM_APP_ID:-}"
+      SteamConfig__Identity: "${STEAM_IDENTITY:-samsarasaga}"
     ports:
       - "${OWS_PUBLIC_API_PORT:-44302}:80"
     mem_limit: "${OWS_PUBLIC_API_MEM_LIMIT:-384m}"

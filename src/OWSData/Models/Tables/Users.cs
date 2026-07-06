@@ -20,6 +20,7 @@ namespace OWSData.Models.Tables
         public DateTime CreateDate { get; set; }
         public DateTime LastAccess { get; set; }
         public string Role { get; set; }
+        public string SteamId { get; set; }
 
         public ICollection<UserSessions> UserSessions { get; set; }
     }

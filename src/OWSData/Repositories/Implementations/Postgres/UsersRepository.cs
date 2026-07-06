@@ -337,6 +337,25 @@ namespace OWSData.Repositories.Implementations.Postgres
             return outputObject;
         }
 
+        public async Task<PlayerLoginAndCreateSession> SteamLoginAndCreateSession(Guid customerGUID, string steamId, string personaName)
+        {
+            PlayerLoginAndCreateSession outputObject;
+
+            using (Connection)
+            {
+                var p = new DynamicParameters();
+                p.Add("@CustomerGUID", customerGUID);
+                p.Add("@SteamId", steamId);
+                p.Add("@PersonaName", personaName);
+
+                outputObject = await Connection.QuerySingleOrDefaultAsync<PlayerLoginAndCreateSession>($"select * from SteamLoginAndCreateSession(@CustomerGUID,@SteamId,@PersonaName)",
+                    p,
+                    commandType: CommandType.Text);
+            }
+
+            return outputObject;
+        }
+
         public async Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid)
         {
             SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();

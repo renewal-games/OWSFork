@@ -308,6 +308,12 @@ namespace OWSData.Repositories.Implementations.MSSQL
             return outputObject;
         }
 
+        public Task<PlayerLoginAndCreateSession> SteamLoginAndCreateSession(Guid customerGUID, string steamId, string personaName)
+        {
+            // Steam login is only implemented for the Postgres backend (see Databases/Postgres/SamsaraUpdates).
+            throw new NotImplementedException("SteamLoginAndCreateSession is not implemented for MSSQL.");
+        }
+
         public async Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid)
         {
             SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();
