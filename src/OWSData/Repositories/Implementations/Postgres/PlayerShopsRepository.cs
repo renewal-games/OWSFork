@@ -273,6 +273,26 @@ namespace OWSData.Repositories.Implementations.Postgres
             return shops;
         }
 
+        public async Task<IEnumerable<PlayerShopView>> GetShopsForOwner(Guid customerGUID, int ownerCharacterID)
+        {
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+
+            var shops = (await conn.QueryAsync<PlayerShopView>(
+                PlayerShopQueries.GetOpenShopsForOwner,
+                new { CustomerGUID = customerGUID, OwnerCharacterID = ownerCharacterID },
+                commandType: CommandType.Text)).ToList();
+
+            foreach (PlayerShopView shop in shops)
+            {
+                shop.Listings = (await conn.QueryAsync<PlayerShopListingView>(
+                    PlayerShopQueries.GetListingsForShop,
+                    new { PlayerShopID = shop.PlayerShopID },
+                    commandType: CommandType.Text)).ToList();
+            }
+            return shops;
+        }
+
         public async Task<PlayerShopView> GetShopSnapshot(Guid customerGUID, long playerShopID)
         {
             using DbConnection conn = CreateConnection();

@@ -54,6 +54,20 @@ namespace OWSCharacterPersistence.Requests.PlayerShops
         public async Task<PlayerShopView> Handle() => await repo.GetShopSnapshot(customerGUID, PlayerShopID);
     }
 
+    public class GetShopsForOwnerRequest
+    {
+        public int OwnerCharacterID { get; set; }
+
+        private Guid customerGUID;
+        private IPlayerShopsRepository repo;
+        public void SetData(IPlayerShopsRepository repo, IHeaderCustomerGUID customerGuid)
+        {
+            this.repo = repo;
+            customerGUID = customerGuid.CustomerGUID;
+        }
+        public async Task<IEnumerable<PlayerShopView>> Handle() => await repo.GetShopsForOwner(customerGUID, OwnerCharacterID);
+    }
+
     public class PurchaseRequest
     {
         public PurchaseInput Input { get; set; }

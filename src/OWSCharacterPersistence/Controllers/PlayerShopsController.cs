@@ -66,6 +66,16 @@ namespace OWSCharacterPersistence.Controllers
         }
 
         [HttpPost]
+        [Route("GetShopsForOwner")]
+        [Produces(typeof(IEnumerable<PlayerShopView>))]
+        public async Task<IActionResult> GetShopsForOwner([FromBody] GetShopsForOwnerRequest request)
+        {
+            if (!ServiceKeyOk()) return Unauthorized();
+            request.SetData(_repo, _customerGuid);
+            return Ok(await request.Handle());
+        }
+
+        [HttpPost]
         [Route("Purchase")]
         [Produces(typeof(PurchaseResult))]
         public async Task<IActionResult> Purchase([FromBody] PurchaseRequest request)

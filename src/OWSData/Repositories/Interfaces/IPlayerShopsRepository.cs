@@ -10,6 +10,7 @@ namespace OWSData.Repositories.Interfaces
         Task<PlayerShopResult> CreateShop(Guid customerGUID, CreateShopInput input);
         Task<IEnumerable<PlayerShopView>> GetShopsForZone(Guid customerGUID, string zoneName);
         Task<PlayerShopView> GetShopSnapshot(Guid customerGUID, long playerShopID);
+        Task<IEnumerable<PlayerShopView>> GetShopsForOwner(Guid customerGUID, int ownerCharacterID);
         Task<PurchaseResult> Purchase(Guid customerGUID, PurchaseInput input);
         Task<SuccessAndErrorMessage> ConfirmDelivery(Guid customerGUID, ConfirmDeliveryInput input);
         Task<ResolveUndeliveredResult> ResolveUndelivered(Guid customerGUID, Guid operationId);

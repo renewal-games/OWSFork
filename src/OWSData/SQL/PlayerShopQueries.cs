@@ -92,6 +92,12 @@ namespace OWSData.SQL
                 FROM PlayerShops
                 WHERE CustomerGUID = @CustomerGUID AND PlayerShopID = @PlayerShopID";
 
+        // The owner's currently-open shop(s) — drives remote manage/close from anywhere.
+        public static readonly string GetOpenShopsForOwner = @"SELECT PlayerShopID, ShopName, OwnerCharName, OwnerCharacterID, ZoneName,
+                    X, Y, Z, RX, RY, RZ, SaleStatus, AppearanceJson
+                FROM PlayerShops
+                WHERE CustomerGUID = @CustomerGUID AND OwnerCharacterID = @OwnerCharacterID AND SaleStatus = 'open'";
+
         public static readonly string GetListingsForShop = @"SELECT PlayerShopItemID, ListingIndex, ItemIDTag, QuantityRemainingForSale, UnitPriceGold, TaxRateBps, CustomData
                 FROM PlayerShopItems
                 WHERE PlayerShopID = @PlayerShopID
