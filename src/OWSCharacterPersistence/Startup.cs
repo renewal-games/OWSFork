@@ -140,10 +140,14 @@ namespace OWSCharacterPersistence
                     case "postgres":
                         container.Register<ICharactersRepository, OWSData.Repositories.Implementations.Postgres.CharactersRepository>(Lifestyle.Scoped);
                         container.Register<IUsersRepository, OWSData.Repositories.Implementations.Postgres.UsersRepository>(Lifestyle.Scoped);
+                        container.Register<IPlayerShopsRepository, OWSData.Repositories.Implementations.Postgres.PlayerShopsRepository>(Lifestyle.Scoped);
                         break;
                     default: // Default to MSSQL
                         container.Register<ICharactersRepository, OWSData.Repositories.Implementations.MSSQL.CharactersRepository>(Lifestyle.Scoped);
                         container.Register<IUsersRepository, OWSData.Repositories.Implementations.MSSQL.UsersRepository>(Lifestyle.Scoped);
+                        // Player shops are Postgres-only; register the Postgres impl regardless so the
+                        // controller resolves. (Deployments run Postgres.)
+                        container.Register<IPlayerShopsRepository, OWSData.Repositories.Implementations.Postgres.PlayerShopsRepository>(Lifestyle.Scoped);
                         break;
                 }
             }

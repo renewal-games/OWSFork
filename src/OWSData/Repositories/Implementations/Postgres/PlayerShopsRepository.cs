@@ -1,0 +1,737 @@
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.Common;
+using System.Linq;
+using System.Text.Json;
+using System.Threading.Tasks;
+using Dapper;
+using Npgsql;
+using Microsoft.Extensions.Options;
+using OWSData.Models.Composites;
+using OWSData.Models.StoredProcs;
+using OWSData.Repositories.Interfaces;
+using OWSData.SQL;
+using OWSShared.Options;
+
+namespace OWSData.Repositories.Implementations.Postgres
+{
+    public class PlayerShopsRepository : IPlayerShopsRepository
+    {
+        private readonly IOptions<StorageOptions> _storageOptions;
+
+        public PlayerShopsRepository(IOptions<StorageOptions> storageOptions)
+        {
+            _storageOptions = storageOptions;
+        }
+
+        private DbConnection CreateConnection()
+        {
+            return new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+        }
+
+        // Row shape returned by the conditional stock decrement.
+        private sealed class DecrementResult
+        {
+            public int QuantityRemainingForSale { get; set; }
+            public string ItemIDTag { get; set; }
+            public string CustomData { get; set; }
+            public int UnitPriceGold { get; set; }
+            public int TaxRateBps { get; set; }
+        }
+
+        private sealed class CharLockRow
+        {
+            public int CharacterID { get; set; }
+            public Guid? UserGUID { get; set; }
+            public int Gold { get; set; }
+            public long EconomyRevision { get; set; }
+        }
+
+        private sealed class ShopLockRow
+        {
+            public long PlayerShopID { get; set; }
+            public int OwnerCharacterID { get; set; }
+            public string SaleStatus { get; set; }
+            public string SettlementStatus { get; set; }
+            public int ProceedsGoldPending { get; set; }
+            public int ProceedsGoldClaimed { get; set; }
+            public int MerchantXpPending { get; set; }
+            public int MerchantXpClaimed { get; set; }
+        }
+
+        private static long TaxFor(long total, int taxRateBps)
+        {
+            if (taxRateBps <= 0) return 0;
+            // ceil(total * bps / 10000) in checked int64.
+            return checked((total * taxRateBps + 9999) / 10000);
+        }
+
+        // Replaces the entire CharInventoryItems set for a character inside the given transaction.
+        private static async Task ReplaceInventory(DbConnection conn, DbTransaction tx, Guid customerGUID,
+            int characterID, IEnumerable<UpdateCharacterInventory> inventory)
+        {
+            int? charInventoryID = await conn.QuerySingleOrDefaultAsync<int?>(
+                PlayerShopQueries.GetCharInventoryIDByCharacterID,
+                new { CustomerGUID = customerGUID, CharacterID = characterID },
+                transaction: tx, commandType: CommandType.Text);
+
+            if (charInventoryID == null)
+            {
+                throw new InvalidOperationException($"No CharInventory row for CharacterID {characterID}.");
+            }
+
+            await conn.ExecuteAsync(PlayerShopQueries.DeleteInventoryItemsByInventoryID,
+                new { CustomerGUID = customerGUID, CharInventoryID = charInventoryID.Value },
+                transaction: tx, commandType: CommandType.Text);
+
+            foreach (UpdateCharacterInventory item in inventory ?? Enumerable.Empty<UpdateCharacterInventory>())
+            {
+                await conn.ExecuteAsync(PlayerShopQueries.InsertInventoryItem,
+                    new
+                    {
+                        CustomerGUID = customerGUID,
+                        CharInventoryID = charInventoryID.Value,
+                        item.ItemIDTag,
+                        item.Quantity,
+                        item.InSlotNumber,
+                        item.CustomData
+                    },
+                    transaction: tx, commandType: CommandType.Text);
+            }
+        }
+
+        private static async Task RecordOperation(DbConnection conn, DbTransaction tx, Guid customerGUID,
+            Guid operationId, string opType, object result)
+        {
+            await conn.ExecuteAsync(PlayerShopQueries.InsertOperation,
+                new
+                {
+                    OperationId = operationId,
+                    CustomerGUID = customerGUID,
+                    OpType = opType,
+                    ResultJson = JsonSerializer.Serialize(result)
+                },
+                transaction: tx, commandType: CommandType.Text);
+        }
+
+        private async Task<T> ReplayOperation<T>(DbConnection conn, Guid customerGUID, Guid operationId) where T : class
+        {
+            OperationResultView existing = await conn.QuerySingleOrDefaultAsync<OperationResultView>(
+                PlayerShopQueries.GetOperation,
+                new { OperationId = operationId, CustomerGUID = customerGUID },
+                commandType: CommandType.Text);
+            if (existing == null) return null;
+            existing.Found = true;
+            return string.IsNullOrEmpty(existing.ResultJson) ? null : JsonSerializer.Deserialize<T>(existing.ResultJson);
+        }
+
+        // ------------------------------------------------------------------
+        // CreateShop
+        // ------------------------------------------------------------------
+        public async Task<PlayerShopResult> CreateShop(Guid customerGUID, CreateShopInput input)
+        {
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+
+            PlayerShopResult replay = await ReplayOperation<PlayerShopResult>(conn, customerGUID, input.OperationId);
+            if (replay != null) return replay;
+
+            using DbTransaction tx = await conn.BeginTransactionAsync();
+            try
+            {
+                CharLockRow character = await conn.QuerySingleOrDefaultAsync<CharLockRow>(
+                    PlayerShopQueries.LockCharacterForUpdate,
+                    new { CustomerGUID = customerGUID, CharacterID = input.OwnerCharacterID },
+                    transaction: tx, commandType: CommandType.Text);
+
+                if (character == null || character.UserGUID == null)
+                    { await tx.RollbackAsync(); return FailResult("bad_request"); }
+                if (character.EconomyRevision != input.ExpectedRevision)
+                    { await tx.RollbackAsync(); return FailResult("stale_revision"); }
+
+                Guid ownerUserGUID = character.UserGUID.Value;
+
+                double secondsSince = await conn.ExecuteScalarAsync<double>(
+                    PlayerShopQueries.SecondsSinceLastShopActivity,
+                    new { CustomerGUID = customerGUID, OwnerCharacterID = input.OwnerCharacterID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (secondsSince < input.ReopenCooldownSeconds)
+                    { await tx.RollbackAsync(); return FailResult("cooldown"); }
+
+                int openCount = await conn.ExecuteScalarAsync<int>(
+                    PlayerShopQueries.CountOpenShopsForAccount,
+                    new { CustomerGUID = customerGUID, OwnerUserGUID = ownerUserGUID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (openCount > 0)
+                    { await tx.RollbackAsync(); return FailResult("account_cap"); }
+
+                int unclaimed = await conn.ExecuteScalarAsync<int>(
+                    PlayerShopQueries.CountUnclaimedShopsForCharacter,
+                    new { CustomerGUID = customerGUID, OwnerCharacterID = input.OwnerCharacterID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (unclaimed > 0)
+                    { await tx.RollbackAsync(); return FailResult("unclaimed_escrow"); }
+
+                int tooClose = await conn.ExecuteScalarAsync<int>(
+                    PlayerShopQueries.CountOpenShopsWithinRadius,
+                    new { CustomerGUID = customerGUID, ZoneName = input.ZoneName, input.X, input.Y, Radius = input.MinShopSpacingUnits },
+                    transaction: tx, commandType: CommandType.Text);
+                if (tooClose > 0)
+                    { await tx.RollbackAsync(); return FailResult("too_close"); }
+
+                string ownerCharName = await GetCharNameById(conn, tx, customerGUID, input.OwnerCharacterID);
+
+                long shopId = await conn.ExecuteScalarAsync<long>(
+                    PlayerShopQueries.InsertShop,
+                    new
+                    {
+                        CustomerGUID = customerGUID,
+                        input.OwnerCharacterID,
+                        OwnerUserGUID = ownerUserGUID,
+                        // OwnerCharName is a display string, sourced from the DB-derived character.
+                        OwnerCharName = ownerCharName,
+                        input.ShopName,
+                        input.ZoneName,
+                        input.X, input.Y, input.Z, input.RX, input.RY, input.RZ,
+                        AppearanceJson = input.AppearanceJson ?? ""
+                    },
+                    transaction: tx, commandType: CommandType.Text);
+
+                foreach (PlayerShopListingInput listing in input.Listings)
+                {
+                    await conn.ExecuteAsync(PlayerShopQueries.InsertShopItem,
+                        new
+                        {
+                            PlayerShopID = shopId,
+                            listing.ListingIndex,
+                            listing.ItemIDTag,
+                            QuantityListed = listing.Quantity,
+                            listing.UnitPriceGold,
+                            listing.TaxRateBps,
+                            listing.CustomData
+                        },
+                        transaction: tx, commandType: CommandType.Text);
+                }
+
+                // Escrow removal + fee burn are already reflected in the submitted snapshot.
+                await ReplaceInventory(conn, tx, customerGUID, input.OwnerCharacterID, input.PostEscrowInventory);
+                long newRevision = await conn.ExecuteScalarAsync<long>(
+                    PlayerShopQueries.SetGoldAndBumpRevision,
+                    new { CustomerGUID = customerGUID, CharacterID = input.OwnerCharacterID, Gold = input.PostEscrowGold },
+                    transaction: tx, commandType: CommandType.Text);
+
+                PlayerShopResult result = new PlayerShopResult
+                {
+                    Success = true, ReasonCode = "", PlayerShopID = shopId, NewRevision = newRevision
+                };
+                await RecordOperation(conn, tx, customerGUID, input.OperationId, "CreateShop", result);
+                await tx.CommitAsync();
+                return result;
+            }
+            catch (PostgresException pg) when (pg.SqlState == "23505")
+            {
+                // Unique violation on the open-per-account index = raced another open.
+                await SafeRollback(tx);
+                return new PlayerShopResult { Success = false, ReasonCode = "account_cap" };
+            }
+            catch
+            {
+                await SafeRollback(tx);
+                throw;
+            }
+        }
+
+        private static async Task<string> GetCharNameById(DbConnection conn, DbTransaction tx, Guid customerGUID, int characterID)
+        {
+            return await conn.ExecuteScalarAsync<string>(
+                "SELECT CharName FROM Characters WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                new { CustomerGUID = customerGUID, CharacterID = characterID },
+                transaction: tx, commandType: CommandType.Text);
+        }
+
+        // ------------------------------------------------------------------
+        // GetShopsForZone / GetShopSnapshot
+        // ------------------------------------------------------------------
+        public async Task<IEnumerable<PlayerShopView>> GetShopsForZone(Guid customerGUID, string zoneName)
+        {
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+
+            var shops = (await conn.QueryAsync<PlayerShopView>(
+                PlayerShopQueries.GetOpenShopsForZone,
+                new { CustomerGUID = customerGUID, ZoneName = zoneName },
+                commandType: CommandType.Text)).ToList();
+
+            foreach (PlayerShopView shop in shops)
+            {
+                shop.Listings = (await conn.QueryAsync<PlayerShopListingView>(
+                    PlayerShopQueries.GetListingsForShop,
+                    new { PlayerShopID = shop.PlayerShopID },
+                    commandType: CommandType.Text)).ToList();
+            }
+            return shops;
+        }
+
+        public async Task<PlayerShopView> GetShopSnapshot(Guid customerGUID, long playerShopID)
+        {
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+
+            PlayerShopView shop = await conn.QuerySingleOrDefaultAsync<PlayerShopView>(
+                PlayerShopQueries.GetShopById,
+                new { CustomerGUID = customerGUID, PlayerShopID = playerShopID },
+                commandType: CommandType.Text);
+            if (shop == null) return null;
+
+            shop.Listings = (await conn.QueryAsync<PlayerShopListingView>(
+                PlayerShopQueries.GetListingsForShop,
+                new { PlayerShopID = playerShopID },
+                commandType: CommandType.Text)).ToList();
+            return shop;
+        }
+
+        // ------------------------------------------------------------------
+        // Purchase
+        // ------------------------------------------------------------------
+        public async Task<PurchaseResult> Purchase(Guid customerGUID, PurchaseInput input)
+        {
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+
+            // Purchases replay off the purchase row itself.
+            var existingPurchase = await conn.QuerySingleOrDefaultAsync(
+                PlayerShopQueries.GetPurchaseByOperationId,
+                new { OperationId = input.OperationId, CustomerGUID = customerGUID },
+                commandType: CommandType.Text);
+            if (existingPurchase != null)
+            {
+                return PurchaseResultFromRow(existingPurchase);
+            }
+
+            using DbTransaction tx = await conn.BeginTransactionAsync();
+            try
+            {
+                // Lock shop, then buyer, in a consistent order (shop id then character id are stable).
+                ShopLockRow shop = await conn.QuerySingleOrDefaultAsync<ShopLockRow>(
+                    PlayerShopQueries.LockShopForUpdate,
+                    new { CustomerGUID = customerGUID, PlayerShopID = input.PlayerShopID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (shop == null) { await tx.RollbackAsync(); return PurchaseFail("bad_request"); }
+                if (shop.SaleStatus != "open") { await tx.RollbackAsync(); return PurchaseFail("sold_out"); }
+
+                DecrementResult dec = await conn.QuerySingleOrDefaultAsync<DecrementResult>(
+                    PlayerShopQueries.TryDecrementStock,
+                    new
+                    {
+                        input.PlayerShopItemID,
+                        input.PlayerShopID,
+                        input.ExpectedUnitPrice,
+                        input.Quantity
+                    },
+                    transaction: tx, commandType: CommandType.Text);
+                if (dec == null) { await tx.RollbackAsync(); return PurchaseFail("stale"); }
+
+                long total = checked((long)dec.UnitPriceGold * input.Quantity);
+                long tax = TaxFor(total, dec.TaxRateBps);
+                long totalWithTax = checked(total + tax);
+                long xp = input.MerchantXpPerGoldBps <= 0 ? 0 : total * input.MerchantXpPerGoldBps / 10000;
+
+                CharLockRow buyer = await conn.QuerySingleOrDefaultAsync<CharLockRow>(
+                    PlayerShopQueries.LockCharacterForUpdate,
+                    new { CustomerGUID = customerGUID, CharacterID = input.BuyerCharacterID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (buyer == null) { await tx.RollbackAsync(); return PurchaseFail("bad_request"); }
+                if (buyer.EconomyRevision != input.BuyerExpectedRevision) { await tx.RollbackAsync(); return PurchaseFail("stale_revision"); }
+                if (buyer.Gold < totalWithTax) { await tx.RollbackAsync(); return PurchaseFail("insufficient_funds"); }
+
+                long newBuyerRevision = await conn.ExecuteScalarAsync<long>(
+                    PlayerShopQueries.SetGoldAndBumpRevision,
+                    new { CustomerGUID = customerGUID, CharacterID = input.BuyerCharacterID, Gold = (int)(buyer.Gold - totalWithTax) },
+                    transaction: tx, commandType: CommandType.Text);
+
+                await conn.ExecuteAsync(PlayerShopQueries.CreditProceedsAndXp,
+                    new { CustomerGUID = customerGUID, PlayerShopID = input.PlayerShopID, Proceeds = (int)total, Xp = (int)xp },
+                    transaction: tx, commandType: CommandType.Text);
+
+                await conn.ExecuteAsync(PlayerShopQueries.InsertPurchase,
+                    new
+                    {
+                        OperationId = input.OperationId,
+                        CustomerGUID = customerGUID,
+                        input.PlayerShopID,
+                        input.PlayerShopItemID,
+                        input.BuyerCharacterID,
+                        input.Quantity,
+                        UnitPriceGold = dec.UnitPriceGold,
+                        TaxPaid = (int)tax,
+                        ProceedsCredited = (int)total,
+                        XpCredited = (int)xp,
+                        dec.ItemIDTag,
+                        dec.CustomData
+                    },
+                    transaction: tx, commandType: CommandType.Text);
+
+                long shopRemaining = await conn.ExecuteScalarAsync<long>(
+                    PlayerShopQueries.CountRemainingStockForShop,
+                    new { PlayerShopID = input.PlayerShopID },
+                    transaction: tx, commandType: CommandType.Text);
+                bool soldOut = shopRemaining <= 0;
+                if (soldOut)
+                {
+                    await conn.ExecuteAsync(PlayerShopQueries.MarkShopSoldOut,
+                        new { PlayerShopID = input.PlayerShopID, CustomerGUID = customerGUID },
+                        transaction: tx, commandType: CommandType.Text);
+                }
+
+                await tx.CommitAsync();
+                return new PurchaseResult
+                {
+                    Success = true,
+                    ItemIDTag = dec.ItemIDTag,
+                    CustomData = dec.CustomData,
+                    QuantityGranted = input.Quantity,
+                    RemainingQuantity = dec.QuantityRemainingForSale,
+                    ShopSoldOut = soldOut,
+                    NewBuyerRevision = newBuyerRevision,
+                    TaxPaid = (int)tax,
+                    ProceedsCredited = (int)total,
+                    XpCredited = (int)xp
+                };
+            }
+            catch
+            {
+                await SafeRollback(tx);
+                throw;
+            }
+        }
+
+        private static PurchaseResult PurchaseFail(string reason) =>
+            new PurchaseResult { Success = false, ReasonCode = reason };
+
+        private static PurchaseResult PurchaseResultFromRow(dynamic row)
+        {
+            string state = (string)row.state;
+            return new PurchaseResult
+            {
+                Success = state != "restocked",
+                ReasonCode = state == "restocked" ? "restocked" : "",
+                ItemIDTag = (string)row.itemidtag,
+                CustomData = row.customdata as string,
+                QuantityGranted = (int)row.quantity,
+                RemainingQuantity = 0,
+                ShopSoldOut = false,
+                TaxPaid = (int)row.taxpaid,
+                ProceedsCredited = (int)row.proceedscredited,
+                XpCredited = (int)row.xpcredited
+            };
+        }
+
+        // ------------------------------------------------------------------
+        // ConfirmDelivery
+        // ------------------------------------------------------------------
+        public async Task<SuccessAndErrorMessage> ConfirmDelivery(Guid customerGUID, ConfirmDeliveryInput input)
+        {
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+            using DbTransaction tx = await conn.BeginTransactionAsync();
+            try
+            {
+                // Lock the purchase implicitly by updating its state; only 'paid' rows transition.
+                var purchase = await conn.QuerySingleOrDefaultAsync(
+                    PlayerShopQueries.GetPurchaseByOperationId,
+                    new { OperationId = input.OperationId, CustomerGUID = customerGUID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (purchase == null) { await tx.RollbackAsync(); return Err("bad_request"); }
+                string state = (string)purchase.state;
+                if (state == "delivered") { await tx.CommitAsync(); return Ok(); } // idempotent
+                if (state != "paid") { await tx.RollbackAsync(); return Err("already_resolved"); }
+
+                CharLockRow buyer = await conn.QuerySingleOrDefaultAsync<CharLockRow>(
+                    PlayerShopQueries.LockCharacterForUpdate,
+                    new { CustomerGUID = customerGUID, CharacterID = input.BuyerCharacterID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (buyer == null) { await tx.RollbackAsync(); return Err("bad_request"); }
+                if (buyer.EconomyRevision != input.ExpectedRevision) { await tx.RollbackAsync(); return Err("stale_revision"); }
+
+                await ReplaceInventory(conn, tx, customerGUID, input.BuyerCharacterID, input.PostDeliveryInventory);
+                await conn.ExecuteAsync(PlayerShopQueries.BumpRevision,
+                    new { CustomerGUID = customerGUID, CharacterID = input.BuyerCharacterID },
+                    transaction: tx, commandType: CommandType.Text);
+                await conn.ExecuteAsync(PlayerShopQueries.MarkPurchaseDelivered,
+                    new { OperationId = input.OperationId, CustomerGUID = customerGUID },
+                    transaction: tx, commandType: CommandType.Text);
+
+                await tx.CommitAsync();
+                return Ok();
+            }
+            catch
+            {
+                await SafeRollback(tx);
+                throw;
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // ResolveUndelivered
+        // ------------------------------------------------------------------
+        public async Task<ResolveUndeliveredResult> ResolveUndelivered(Guid customerGUID, Guid operationId)
+        {
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+            using DbTransaction tx = await conn.BeginTransactionAsync();
+            try
+            {
+                var purchase = await conn.QuerySingleOrDefaultAsync(
+                    PlayerShopQueries.GetPurchaseByOperationId,
+                    new { OperationId = operationId, CustomerGUID = customerGUID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (purchase == null) { await tx.RollbackAsync(); return new ResolveUndeliveredResult { Success = false, ReasonCode = "bad_request" }; }
+                string state = (string)purchase.state;
+                if (state == "restocked") { await tx.CommitAsync(); return new ResolveUndeliveredResult { Success = true, ReasonCode = "restocked" }; }
+                if (state != "paid") { await tx.RollbackAsync(); return new ResolveUndeliveredResult { Success = false, ReasonCode = "already_resolved" }; }
+
+                int buyerCharacterID = (int)purchase.buyercharacterid;
+                int quantity = (int)purchase.quantity;
+                int unitPrice = (int)purchase.unitpricegold;
+                int taxPaid = (int)purchase.taxpaid;
+                int proceeds = (int)purchase.proceedscredited;
+                int xp = (int)purchase.xpcredited;
+                long playerShopID = (long)purchase.playershopid;
+                long playerShopItemID = (long)purchase.playershopitemid;
+                int refund = checked(unitPrice * quantity + taxPaid);
+
+                CharLockRow buyer = await conn.QuerySingleOrDefaultAsync<CharLockRow>(
+                    PlayerShopQueries.LockCharacterForUpdate,
+                    new { CustomerGUID = customerGUID, CharacterID = buyerCharacterID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (buyer == null) { await tx.RollbackAsync(); return new ResolveUndeliveredResult { Success = false, ReasonCode = "bad_request" }; }
+
+                long newRevision = await conn.ExecuteScalarAsync<long>(
+                    PlayerShopQueries.SetGoldAndBumpRevision,
+                    new { CustomerGUID = customerGUID, CharacterID = buyerCharacterID, Gold = (int)Math.Min((long)buyer.Gold + refund, int.MaxValue) },
+                    transaction: tx, commandType: CommandType.Text);
+
+                await conn.ExecuteAsync(PlayerShopQueries.RestockItem,
+                    new { PlayerShopItemID = playerShopItemID, Quantity = quantity },
+                    transaction: tx, commandType: CommandType.Text);
+                await conn.ExecuteAsync(PlayerShopQueries.DecreditProceedsAndXp,
+                    new { CustomerGUID = customerGUID, PlayerShopID = playerShopID, Proceeds = proceeds, Xp = xp },
+                    transaction: tx, commandType: CommandType.Text);
+                await conn.ExecuteAsync(PlayerShopQueries.RevertSoldOutToOpen,
+                    new { CustomerGUID = customerGUID, PlayerShopID = playerShopID },
+                    transaction: tx, commandType: CommandType.Text);
+                await conn.ExecuteAsync(PlayerShopQueries.MarkPurchaseRestocked,
+                    new { OperationId = operationId, CustomerGUID = customerGUID },
+                    transaction: tx, commandType: CommandType.Text);
+
+                await tx.CommitAsync();
+                return new ResolveUndeliveredResult { Success = true, NewBuyerRevision = newRevision, GoldRefunded = refund };
+            }
+            catch
+            {
+                await SafeRollback(tx);
+                throw;
+            }
+        }
+
+        public async Task<IEnumerable<PendingDeliveryView>> GetPendingDeliveries(Guid customerGUID, int buyerCharacterID)
+        {
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+            return await conn.QueryAsync<PendingDeliveryView>(
+                PlayerShopQueries.GetPendingDeliveries,
+                new { CustomerGUID = customerGUID, BuyerCharacterID = buyerCharacterID },
+                commandType: CommandType.Text);
+        }
+
+        // ------------------------------------------------------------------
+        // CloseShop
+        // ------------------------------------------------------------------
+        public async Task<PlayerShopResult> CloseShop(Guid customerGUID, Guid operationId, long playerShopID, int ownerCharacterID)
+        {
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+
+            PlayerShopResult replay = await ReplayOperation<PlayerShopResult>(conn, customerGUID, operationId);
+            if (replay != null) return replay;
+
+            using DbTransaction tx = await conn.BeginTransactionAsync();
+            try
+            {
+                long? closed = await conn.ExecuteScalarAsync<long?>(
+                    PlayerShopQueries.CloseShopSetStatus,
+                    new { PlayerShopID = playerShopID, CustomerGUID = customerGUID, OwnerCharacterID = ownerCharacterID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (closed == null) { await tx.RollbackAsync(); return new PlayerShopResult { Success = false, ReasonCode = "bad_request" }; }
+
+                await conn.ExecuteAsync(PlayerShopQueries.MoveRemainingToPendingReturn,
+                    new { PlayerShopID = playerShopID },
+                    transaction: tx, commandType: CommandType.Text);
+
+                PlayerShopResult result = new PlayerShopResult { Success = true, PlayerShopID = playerShopID };
+                await RecordOperation(conn, tx, customerGUID, operationId, "CloseShop", result);
+                await tx.CommitAsync();
+                return result;
+            }
+            catch
+            {
+                await SafeRollback(tx);
+                throw;
+            }
+        }
+
+        public async Task<IEnumerable<PendingClaimView>> GetPendingClaims(Guid customerGUID, int ownerCharacterID)
+        {
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+
+            var shops = (await conn.QueryAsync<PendingClaimView>(
+                PlayerShopQueries.GetPendingClaimsForCharacter,
+                new { CustomerGUID = customerGUID, OwnerCharacterID = ownerCharacterID },
+                commandType: CommandType.Text)).ToList();
+
+            foreach (PendingClaimView shop in shops)
+            {
+                shop.Items = (await conn.QueryAsync<PendingClaimItemView>(
+                    PlayerShopQueries.GetPendingReturnItems,
+                    new { PlayerShopID = shop.PlayerShopID },
+                    commandType: CommandType.Text)).ToList();
+            }
+            return shops;
+        }
+
+        // ------------------------------------------------------------------
+        // ClaimEscrow
+        // ------------------------------------------------------------------
+        public async Task<ClaimEscrowResult> ClaimEscrow(Guid customerGUID, ClaimEscrowInput input)
+        {
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+
+            ClaimEscrowResult replay = await ReplayOperation<ClaimEscrowResult>(conn, customerGUID, input.OperationId);
+            if (replay != null) return replay;
+
+            using DbTransaction tx = await conn.BeginTransactionAsync();
+            try
+            {
+                ShopLockRow shop = await conn.QuerySingleOrDefaultAsync<ShopLockRow>(
+                    PlayerShopQueries.LockShopForClaim,
+                    new { CustomerGUID = customerGUID, PlayerShopID = input.PlayerShopID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (shop == null || shop.OwnerCharacterID != input.OwnerCharacterID)
+                { await tx.RollbackAsync(); return new ClaimEscrowResult { Success = false, ReasonCode = "bad_request" }; }
+
+                CharLockRow owner = await conn.QuerySingleOrDefaultAsync<CharLockRow>(
+                    PlayerShopQueries.LockCharacterForUpdate,
+                    new { CustomerGUID = customerGUID, CharacterID = input.OwnerCharacterID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (owner == null) { await tx.RollbackAsync(); return new ClaimEscrowResult { Success = false, ReasonCode = "bad_request" }; }
+                if (owner.EconomyRevision != input.ExpectedRevision) { await tx.RollbackAsync(); return new ClaimEscrowResult { Success = false, ReasonCode = "stale_revision" }; }
+
+                // Move claimed item quantities pending->returned. Backend validates each against the row.
+                foreach (ClaimItemInput ci in input.ClaimedItems)
+                {
+                    if (ci.QuantityToReturn <= 0) continue;
+                    long? ok = await conn.ExecuteScalarAsync<long?>(
+                        PlayerShopQueries.ReturnItemQuantity,
+                        new { PlayerShopItemID = ci.PlayerShopItemID, PlayerShopID = input.PlayerShopID, Quantity = ci.QuantityToReturn },
+                        transaction: tx, commandType: CommandType.Text);
+                    if (ok == null) { await tx.RollbackAsync(); return new ClaimEscrowResult { Success = false, ReasonCode = "bad_item" }; }
+                }
+
+                int goldClaimed = 0, xpClaimed = 0;
+                if (input.ClaimGold)
+                {
+                    goldClaimed = shop.ProceedsGoldPending;
+                    await conn.ExecuteAsync(PlayerShopQueries.ClaimGold,
+                        new { PlayerShopID = input.PlayerShopID, CustomerGUID = customerGUID },
+                        transaction: tx, commandType: CommandType.Text);
+                }
+                if (input.ClaimXp)
+                {
+                    xpClaimed = shop.MerchantXpPending;
+                    await conn.ExecuteAsync(PlayerShopQueries.ClaimXp,
+                        new { PlayerShopID = input.PlayerShopID, CustomerGUID = customerGUID },
+                        transaction: tx, commandType: CommandType.Text);
+                }
+
+                // Owner inventory + gold reflect the granted items and claimed gold (snapshot).
+                await ReplaceInventory(conn, tx, customerGUID, input.OwnerCharacterID, input.PostClaimInventory);
+                long newRevision = await conn.ExecuteScalarAsync<long>(
+                    PlayerShopQueries.SetGoldAndBumpRevision,
+                    new { CustomerGUID = customerGUID, CharacterID = input.OwnerCharacterID, Gold = input.PostClaimGold },
+                    transaction: tx, commandType: CommandType.Text);
+
+                // Determine settlement status from residue.
+                var residue = await conn.QuerySingleAsync(
+                    PlayerShopQueries.GetShopSettlementResidue,
+                    new { PlayerShopID = input.PlayerShopID, CustomerGUID = customerGUID },
+                    transaction: tx, commandType: CommandType.Text);
+                long itemsPending = (long)residue.itemspending;
+                int proceedsPending = (int)residue.proceedsgoldpending;
+                int merchantXpPending = (int)residue.merchantxppending;
+                string settlement = (itemsPending == 0 && proceedsPending == 0 && merchantXpPending == 0)
+                    ? "claimed" : "partially_claimed";
+
+                await conn.ExecuteAsync(PlayerShopQueries.SetSettlementStatus,
+                    new { PlayerShopID = input.PlayerShopID, CustomerGUID = customerGUID, SettlementStatus = settlement },
+                    transaction: tx, commandType: CommandType.Text);
+
+                ClaimEscrowResult result = new ClaimEscrowResult
+                {
+                    Success = true, NewRevision = newRevision, GoldClaimed = goldClaimed, XpClaimed = xpClaimed, SettlementStatus = settlement
+                };
+                await RecordOperation(conn, tx, customerGUID, input.OperationId, "ClaimEscrow", result);
+                await tx.CommitAsync();
+                return result;
+            }
+            catch
+            {
+                await SafeRollback(tx);
+                throw;
+            }
+        }
+
+        public async Task<OperationResultView> GetOperationResult(Guid customerGUID, Guid operationId)
+        {
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+
+            // Non-purchase operations.
+            OperationResultView op = await conn.QuerySingleOrDefaultAsync<OperationResultView>(
+                PlayerShopQueries.GetOperation,
+                new { OperationId = operationId, CustomerGUID = customerGUID },
+                commandType: CommandType.Text);
+            if (op != null) { op.Found = true; return op; }
+
+            // Purchase operations.
+            var purchase = await conn.QuerySingleOrDefaultAsync(
+                PlayerShopQueries.GetPurchaseByOperationId,
+                new { OperationId = operationId, CustomerGUID = customerGUID },
+                commandType: CommandType.Text);
+            if (purchase != null)
+            {
+                return new OperationResultView
+                {
+                    Found = true,
+                    OpType = "Purchase",
+                    State = (string)purchase.state,
+                    ResultJson = JsonSerializer.Serialize(PurchaseResultFromRow(purchase))
+                };
+            }
+
+            return new OperationResultView { Found = false };
+        }
+
+        // ------------------------------------------------------------------
+        private static PlayerShopResult FailResult(string reason) => new PlayerShopResult { Success = false, ReasonCode = reason };
+        private static SuccessAndErrorMessage Ok() => new SuccessAndErrorMessage { Success = true, ErrorMessage = "" };
+        private static SuccessAndErrorMessage Err(string reason) => new SuccessAndErrorMessage { Success = false, ErrorMessage = reason };
+
+        private static async Task SafeRollback(DbTransaction tx)
+        {
+            try { await tx.RollbackAsync(); } catch { /* connection already gone */ }
+        }
+    }
+}

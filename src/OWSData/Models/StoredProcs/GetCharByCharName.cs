@@ -45,5 +45,6 @@ namespace OWSData.Models.StoredProcs
         public int MapInstanceID { get; set; }
         public string ClassName { get; set; }
         public int Gold { get; set; }
+        public long EconomyRevision { get; set; }
     }
 }
