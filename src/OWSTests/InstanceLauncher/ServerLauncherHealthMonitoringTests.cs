@@ -13,7 +13,7 @@ namespace OWSTests.InstanceLauncher
             var zoneInstance = ReadyEmptyZoneInstance();
             zoneInstance.MinutesToShutdownAfterEmpty = 0;
 
-            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance);
+            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance, 0);
 
             Assert.False(result);
         }
@@ -24,7 +24,7 @@ namespace OWSTests.InstanceLauncher
             var zoneInstance = ReadyEmptyZoneInstance();
             zoneInstance.LastServerEmptyDate = null;
 
-            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance);
+            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance, 0);
 
             Assert.False(result);
         }
@@ -35,7 +35,7 @@ namespace OWSTests.InstanceLauncher
             var zoneInstance = ReadyEmptyZoneInstance();
             zoneInstance.NumberOfReportedPlayers = 1;
 
-            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance);
+            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance, 0);
 
             Assert.False(result);
         }
@@ -46,7 +46,7 @@ namespace OWSTests.InstanceLauncher
             var zoneInstance = ReadyEmptyZoneInstance();
             zoneInstance.Status = 1;
 
-            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance);
+            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance, 0);
 
             Assert.False(result);
         }
@@ -57,7 +57,7 @@ namespace OWSTests.InstanceLauncher
             var zoneInstance = ReadyEmptyZoneInstance();
             zoneInstance.Status = 3;
 
-            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance);
+            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance, 0);
 
             Assert.False(result);
         }
@@ -69,7 +69,7 @@ namespace OWSTests.InstanceLauncher
             zoneInstance.MinutesToShutdownAfterEmpty = 5;
             zoneInstance.MinutesServerHasBeenEmpty = 4;
 
-            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance);
+            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance, 0);
 
             Assert.False(result);
         }
@@ -81,7 +81,7 @@ namespace OWSTests.InstanceLauncher
             zoneInstance.MinutesToShutdownAfterEmpty = 5;
             zoneInstance.MinutesServerHasBeenEmpty = 6;
 
-            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance);
+            bool result = ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance(zoneInstance, 0);
 
             Assert.True(result);
         }

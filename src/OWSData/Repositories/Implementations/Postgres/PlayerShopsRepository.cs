@@ -676,11 +676,16 @@ namespace OWSData.Repositories.Implementations.Postgres
                         transaction: tx, commandType: CommandType.Text);
                 }
 
-                // Owner inventory + gold reflect the granted items and claimed gold (snapshot).
+                // Owner inventory reflects the granted items (snapshot). Gold is recomputed from the
+                // freshly-locked owner row + the escrow proceeds actually claimed here — never the client's
+                // PostClaimGold snapshot, which can be stale if an untracked gold sink (e.g. an NPC shop that
+                // does not bump EconomyRevision) moved the wallet since the client read it. This matches the
+                // authoritative Purchase/ResolveUndelivered gold writes.
                 await ReplaceInventory(conn, tx, customerGUID, input.OwnerCharacterID, input.PostClaimInventory);
+                int newGold = (int)Math.Min((long)owner.Gold + goldClaimed, int.MaxValue);
                 long newRevision = await conn.ExecuteScalarAsync<long>(
                     PlayerShopQueries.SetGoldAndBumpRevision,
-                    new { CustomerGUID = customerGUID, CharacterID = input.OwnerCharacterID, Gold = input.PostClaimGold },
+                    new { CustomerGUID = customerGUID, CharacterID = input.OwnerCharacterID, Gold = newGold },
                     transaction: tx, commandType: CommandType.Text);
 
                 // Determine settlement status from residue.

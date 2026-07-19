@@ -72,6 +72,9 @@ namespace OWSData.Models.Composites
         public bool ClaimGold { get; set; }
         public bool ClaimXp { get; set; }
         public long ExpectedRevision { get; set; }
+        // Deprecated/ignored: ClaimEscrow now recomputes owner gold authoritatively (locked balance +
+        // claimed proceeds). Kept for wire-compat while the UE client still sends it; safe to remove
+        // once no caller populates it.
         public int PostClaimGold { get; set; }
         public List<ClaimItemInput> ClaimedItems { get; set; } = new List<ClaimItemInput>();
         public List<UpdateCharacterInventory> PostClaimInventory { get; set; } = new List<UpdateCharacterInventory>();
