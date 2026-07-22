@@ -123,7 +123,7 @@ services:
       SteamConfig__AppId: "${STEAM_APP_ID:-}"
       SteamConfig__Identity: "${STEAM_IDENTITY:-samsarasaga}"
     ports:
-      - "127.0.0.1:${OWS_PUBLIC_API_PORT:-44302}:80"
+      - "${OWS_API_BIND:-127.0.0.1}:${OWS_PUBLIC_API_PORT:-44302}:80"
     mem_limit: "${OWS_PUBLIC_API_MEM_LIMIT:-384m}"
     depends_on:
       database:
@@ -185,7 +185,7 @@ services:
     environment:
       <<: *ows-common-env
     ports:
-      - "127.0.0.1:${OWS_GLOBAL_DATA_PORT:-44325}:80"
+      - "${OWS_API_BIND:-127.0.0.1}:${OWS_GLOBAL_DATA_PORT:-44325}:80"
     mem_limit: "${OWS_GLOBAL_DATA_MEM_LIMIT:-256m}"
     depends_on:
       database:
@@ -225,8 +225,8 @@ services:
     environment:
       <<: *ows-common-env
     ports:
-      - "127.0.0.1:${OWS_PARTY_HTTP_PORT:-44306}:80"
-      - "127.0.0.1:${OWS_PARTY_GRPC_PORT:-44364}:50051"
+      - "${OWS_API_BIND:-127.0.0.1}:${OWS_PARTY_HTTP_PORT:-44306}:80"
+      - "${OWS_API_BIND:-127.0.0.1}:${OWS_PARTY_GRPC_PORT:-44364}:50051"
     mem_limit: "${OWS_PARTY_MEM_LIMIT:-384m}"
     depends_on:
       database:
@@ -239,6 +239,11 @@ services:
   proxy:
     image: caddy:2-alpine
     restart: unless-stopped
+    # Opt-in: only starts with `--profile tls`. Until real domains + DNS exist, run without the
+    # profile and set OWS_API_BIND=0.0.0.0 to serve the APIs directly over their host ports.
+    # To switch to HTTPS: set OWS_PUBLIC_API_DOMAIN/OWS_GLOBAL_DATA_DOMAIN, point DNS at the host,
+    # set OWS_API_BIND=127.0.0.1, and deploy with `--profile tls`.
+    profiles: ["tls"]
     ports:
       - "80:80"
       - "443:443"

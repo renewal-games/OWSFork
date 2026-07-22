@@ -202,21 +202,25 @@ Stop-Process -Id <pid> -Force
 
 ## Public Endpoints
 
-The profile now ships a Caddy TLS proxy (`proxy` service, ports 80/443) in front of the
-client-facing HTTP APIs. Publicly exposed:
+There are two exposure modes, controlled by `OWS_API_BIND` and the `tls` compose profile.
 
-- Public API: `https://$OWS_PUBLIC_API_DOMAIN` (rate-limited per client IP; auth
-  endpoints under `/api/Users` get a tighter budget)
-- Global Data API: `https://$OWS_GLOBAL_DATA_DOMAIN`
-- Chat gRPC: `SERVER_IP:50051` (players connect directly; still plaintext —
-  fronting it with TLS is a known follow-up)
+**Current mode — direct IP access (no TLS).** `OWS_API_BIND=0.0.0.0`, deployed without the
+`tls` profile (Caddy does not start). The client-facing APIs are served directly:
 
-Everything else — Postgres, RabbitMQ, Character Persistence, Instance Management,
-Party (REST and gRPC), and the raw loopback ports of Public API (44302) and Global
-Data (44325) — is bound to `127.0.0.1` on the host for admin/debug access and SSH
-tunnels only. The Caddyfile lives at `src/.docker/caddy/Caddyfile`.
+- Public API: `http://SERVER_IP:44302` (still rate-limited per client IP; `/api/Users` tighter)
+- Global Data API: `http://SERVER_IP:44325`
+- Party REST/gRPC: `http://SERVER_IP:44306` / `SERVER_IP:44364`
+- Chat gRPC: `SERVER_IP:50051`
 
-Point the UE client at the HTTPS domains instead of `http://SERVER_IP:port`.
+Character Persistence and Instance Management stay bound to `127.0.0.1` (SSH-tunnel only), as
+before. Postgres, RabbitMQ, and Valkey are loopback-only.
+
+> **TODO — move to HTTPS via domains.** This box currently serves plaintext over IP because no
+> domains/DNS are set up. To switch: set `OWS_PUBLIC_API_DOMAIN`/`OWS_GLOBAL_DATA_DOMAIN`, point
+> their A-records at this host, set `OWS_API_BIND=127.0.0.1`, and deploy with `--profile tls`.
+> Caddy (`src/.docker/caddy/Caddyfile`) then terminates Let's Encrypt TLS in front of the APIs
+> and the UE client/launcher config moves from `http://SERVER_IP:port` to the `https://` domains.
+> Chat gRPC (`:50051`) is direct in both modes; fronting it with TLS is a further follow-up.
 
 ## Logging
 
