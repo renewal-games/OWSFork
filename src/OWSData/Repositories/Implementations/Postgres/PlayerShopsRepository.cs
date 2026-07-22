@@ -27,7 +27,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         private DbConnection CreateConnection()
         {
-            return new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+            return new NpgsqlConnection(PostgresConnectionString.WithPoolDefaults(_storageOptions.Value.OWSDBConnectionString));
         }
 
         // Row shape returned by the conditional stock decrement.

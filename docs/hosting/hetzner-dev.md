@@ -63,6 +63,30 @@ RabbitMQ uses the existing repo config at `.docker/rabbitmq/rabbitmq.conf`, whic
 defaults to `dev` / `test`. The broker ports are bound to `127.0.0.1` on the host
 and are only used internally by OWS services in this profile.
 
+Additional env vars for production hardening (set in `.env.hetzner-dev`):
+
+- `OWS_SAMSARA_SERVICE_KEY` — server-to-server key for the PlayerShops endpoints.
+  **Required outside Development**: the API fails closed (401) when unset. Set the
+  same value in the environment of the machine running the UE dedicated servers
+  (the UE zone server reads the same variable and sends it as `X-Samsara-Service-Key`).
+- `OWS_PUBLIC_API_DOMAIN` / `OWS_GLOBAL_DATA_DOMAIN` — hostnames for the built-in
+  Caddy TLS proxy (e.g. `api.example.com`). Point A records at this host before
+  first start; Caddy provisions Let's Encrypt certificates automatically. When
+  unset, the proxy boots with `.localhost` placeholders and internal certs.
+- `OWS_MIGRATIONS_BASELINE` — see Database Migrations below.
+- `OWS_DB_MAX_POOL_SIZE` / `OWS_DB_MIN_POOL_SIZE` — per-service Npgsql pool bounds. Six
+  services share one Postgres (`max_connections=40`), so the default cap is 5 (6×5=30).
+  Raise once Postgres has more connections or PgBouncer is in front.
+- `UserSessionCacheValkeyPassword` / `OWS_SESSION_CACHE_ENABLED` — the Valkey session cache
+  (loopback-bound `usersessioncache` service). OWSPublicAPI reads sessions through it with a
+  short TTL and DB fallback; a Valkey outage degrades to Postgres via a circuit breaker, so
+  auth never depends on the cache. Set `OWS_SESSION_CACHE_ENABLED=false` to bypass it.
+- `OWS_GRPC_MAX_CONNECTIONS` / `OWS_GRPC_MSGS_PER_WINDOW` / `OWS_GRPC_RATE_WINDOW_SECONDS` —
+  Chat/Party connection cap and per-connection message rate limit (always enforced).
+- `OWS_GRPC_REQUIRE_SESSION_AUTH` — gRPC session validation. Keep `false` until the UE client
+  sends `customerguid`/`usersessionguid` gRPC metadata; enabling it before then rejects all
+  streams. See `docs/hosting/scaling-roadmap.md` (4.1).
+
 Start the lean stack:
 
 ```bash
@@ -76,11 +100,27 @@ docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml ps
 docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml logs -f owspublicapi
 ```
 
-Apply project database updates as needed:
+## Database Migrations
+
+Schema scripts are applied automatically by the `migrations` service (DbUp) before the
+API services start. It runs the scripts listed in `Databases/Postgres/migration-manifest.txt`
+top to bottom, journaling each in the `schemaversions` table so every script runs exactly
+once. Append new scripts to the bottom of the manifest; never reorder applied entries.
+
+**One-time adoption on a database that already has the schema** (i.e. the current dev
+server): the migrator refuses to run against an existing schema with no journal. Baseline
+it once, marking every manifest script as applied without executing anything:
 
 ```bash
-docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml exec -T database \
-  psql -U postgres openworldserver < ../Databases/Postgres/SamsaraUpdates/AddSamsaraCharacterInitialPersistentData_pg.sql
+OWS_MIGRATIONS_BASELINE=true docker compose --env-file .env.hetzner-dev \
+  -f docker-compose.hetzner-dev.yml run --rm migrations
+```
+
+After that, plain `up` runs pending migrations automatically. To apply migrations
+manually without starting anything else:
+
+```bash
+docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml run --rm migrations
 ```
 
 ## Updating The Server
@@ -162,40 +202,21 @@ Stop-Process -Id <pid> -Force
 
 ## Public Endpoints
 
-By default the profile exposes:
+The profile now ships a Caddy TLS proxy (`proxy` service, ports 80/443) in front of the
+client-facing HTTP APIs. Publicly exposed:
 
-- Public API: `http://SERVER_IP:44302`
-- Global Data API: `http://SERVER_IP:44325`
-- Chat gRPC: `SERVER_IP:50051`
-- Party REST: `http://SERVER_IP:44306`
-- Party gRPC: `SERVER_IP:44364`
+- Public API: `https://$OWS_PUBLIC_API_DOMAIN` (rate-limited per client IP; auth
+  endpoints under `/api/Users` get a tighter budget)
+- Global Data API: `https://$OWS_GLOBAL_DATA_DOMAIN`
+- Chat gRPC: `SERVER_IP:50051` (players connect directly; still plaintext —
+  fronting it with TLS is a known follow-up)
 
-Postgres, RabbitMQ, Character Persistence, and Instance Management are bound to
-`127.0.0.1` on the host for admin/debug access and SSH tunnels only.
+Everything else — Postgres, RabbitMQ, Character Persistence, Instance Management,
+Party (REST and gRPC), and the raw loopback ports of Public API (44302) and Global
+Data (44325) — is bound to `127.0.0.1` on the host for admin/debug access and SSH
+tunnels only. The Caddyfile lives at `src/.docker/caddy/Caddyfile`.
 
-For public HTTPS, put Caddy or Nginx in front of these ports. Example Caddy shape:
-
-```caddyfile
-api.example.com {
-	reverse_proxy 127.0.0.1:44302
-}
-
-chat.example.com {
-	reverse_proxy h2c://127.0.0.1:50051
-}
-
-global-data.example.com {
-	reverse_proxy 127.0.0.1:44325
-}
-
-party.example.com {
-	reverse_proxy h2c://127.0.0.1:44364
-}
-
-party-api.example.com {
-	reverse_proxy 127.0.0.1:44306
-}
-```
+Point the UE client at the HTTPS domains instead of `http://SERVER_IP:port`.
 
 ## Logging
 
@@ -232,8 +253,11 @@ docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml exe
 ## Smoke Tests
 
 ```bash
-curl http://SERVER_IP:44302/api/system/status
-curl http://SERVER_IP:44325/api/system/status
+curl https://$OWS_PUBLIC_API_DOMAIN/api/system/status
+curl https://$OWS_GLOBAL_DATA_DOMAIN/api/system/status
+# or from the box itself, bypassing the proxy:
+curl http://127.0.0.1:44302/api/system/status
+curl http://127.0.0.1:44325/api/system/status
 docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml logs --tail=100 owschat
 docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml logs --tail=100 owsparty
 ```
@@ -250,8 +274,17 @@ ssh -N \
   -L 56720:127.0.0.1:5672 \
   -L 18028:127.0.0.1:44328 \
   -L 18023:127.0.0.1:44323 \
+  -L 18025:127.0.0.1:44325 \
+  -L 18002:127.0.0.1:44302 \
+  -L 18006:127.0.0.1:44306 \
+  -L 18064:127.0.0.1:44364 \
   root@SERVER_IP
 ```
+
+Party (REST 44306, gRPC 44364), Global Data (44325), and Public API (44302) are now
+loopback-only on the host, so server-side callers must use the tunnel (or the public
+HTTPS domains for Public API / Global Data). Zone servers hold an outbound connection
+to Party gRPC — update their config to the tunneled port.
 
 Point the local Instance Launcher at:
 
@@ -259,8 +292,10 @@ Point the local Instance Launcher at:
 - RabbitMQ port: `56720`
 - Instance Management URL: `http://127.0.0.1:18028/`
 - Character Persistence URL: `http://127.0.0.1:18023/`
-- Global Data URL: `http://SERVER_IP:44325/`
-- Public API URL: `http://SERVER_IP:44302/`
+- Global Data URL: `http://127.0.0.1:18025/`
+- Public API URL: `http://127.0.0.1:18002/`
+- Party REST URL: `http://127.0.0.1:18006/`
+- Party gRPC: `127.0.0.1:18064`
 
 For UE config while using the tunnel, use the same internal URLs for
 Instance Management and Character Persistence.

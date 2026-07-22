@@ -1,0 +1,12 @@
+# TLS-terminating reverse proxy for the client-facing OWS services.
+# Domains come from the compose environment (OWS_PUBLIC_API_DOMAIN / OWS_GLOBAL_DATA_DOMAIN).
+# Certificates are provisioned automatically via Let's Encrypt; both domains must have
+# A records pointing at this host before first start.
+
+{$OWS_PUBLIC_API_DOMAIN} {
+	reverse_proxy owspublicapi:80
+}
+
+{$OWS_GLOBAL_DATA_DOMAIN} {
+	reverse_proxy owsglobaldata:80
+}

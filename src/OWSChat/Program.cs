@@ -57,6 +57,8 @@ app.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "Chat Auth API v1");
 });
+// gRPC requests carry their own identity; only REST routes require the header.
+StoreCustomerGUIDMiddleware.ProtectedPathPrefixes = new[] { "/api" };
 app.UseMiddleware<StoreCustomerGUIDMiddleware>();
 
 app.UseEndpoints(endpoints =>

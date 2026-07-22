@@ -1,0 +1,35 @@
+# Ordered list of Postgres schema scripts applied by OWSDatabaseMigrations (DbUp).
+# One relative path per line, applied top to bottom, each exactly once (journaled in
+# the schemaversions table). Append new scripts at the bottom — never reorder or edit
+# entries that have already run against a shared database.
+#
+# Existing databases that predate this runner: the migrator refuses to run and asks
+# for a one-time `--baseline` (or OWS_MIGRATIONS_BASELINE=true) run, which marks
+# everything below as applied without executing.
+#
+# Order mirrors the sequence the scripts were actually applied to the original
+# database (by first-commit date): a fresh container seeds the upstream 20230304
+# base schema from src/.docker/postgres/setup.sql, the Samsara scripts from 2024-2025
+# ran against that base, the upstream 20260512 update landed 2026-05-13, and the
+# later fork scripts follow it. The other files in UpdateScripts/ cover older
+# upstream starting points and are intentionally not listed. MigrationFixups/ holds
+# fresh-install shims for conflicts that were resolved by hand historically.
+
+MigrationFixups/DropBaseAddCharacter.sql
+SamsaraUpdates/AddCharacter_10-2-2023_2_pg.sql
+SamsaraUpdates/AddClass_10-2-2023_2_pg.sql
+SamsaraUpdates/AddNewSamsaraProcedures_10_14_2024.sql
+SamsaraUpdates/CumulativeUpdateToCurrentVersion_Samsara10-14-2024_pg.sql
+SamsaraUpdates/CreateCharactersTableModificationScript_10-2-2023_2_pg..sql
+SamsaraUpdates/ModifySamsaraProcedures_2_26_24.sql
+SamsaraUpdates/CharStats_Alter_5_23_2050.pg.sql
+SamsaraUpdates/FixCharInventoryItems_ItemIDTag_2026-03-30.sql
+SamsaraUpdates/AddSamsaraCharacterInitialPersistentData_pg.sql
+SamsaraUpdates/PartyPhase2ModelAndCleanup_pg.sql
+SamsaraUpdates/PartyPhase2PartyNames_pg.sql
+UpdateScripts/20260512UpdateFrom20230304to20260512.sql
+SamsaraUpdates/LoginEmailNormalization_2026-06-06.sql
+SamsaraUpdates/AddCharactersGold_2026-07-02.sql
+SamsaraUpdates/AddUsersSteamIdAndSteamLogin_2026-07-05.sql
+SamsaraUpdates/AddPlayerShops_2026-07-12.sql
+SamsaraUpdates/AddHotPathIndexes_2026-07-20.sql

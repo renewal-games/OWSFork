@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using PartyServiceApp.Protos;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Interfaces;
+using OWSShared.Grpc;
 using Google.Protobuf.WellKnownTypes;
 using OWSParty.Requests.Party;
 
@@ -19,17 +20,27 @@ namespace OWSParty.Service
         public static ConcurrentDictionary<string, ClientInfo> _partyClients = new ConcurrentDictionary<string, ClientInfo>(StringComparer.OrdinalIgnoreCase);
 
         private readonly ICharactersRepository _charactersRepository;
+        private readonly IUsersRepository _usersRepository;
         private readonly IHeaderCustomerGUID _customerGuid;
 
         public PartyService(ICharactersRepository charactersRepository,
+            IUsersRepository usersRepository,
             IHeaderCustomerGUID customerGuid)
         {
             _charactersRepository = charactersRepository;
+            _usersRepository = usersRepository;
             _customerGuid = customerGuid;
         }
 
         public override async Task RegisterParty(PartyRegister request, IServerStreamWriter<PartyToSend> responseStream, ServerCallContext context)
         {
+            // Bound concurrent party streams (each holds a long-lived registration).
+            using GrpcStreamGuard.ConnectionLease lease = GrpcStreamGuard.TryAcquireConnection();
+            if (lease == null)
+            {
+                throw new RpcException(new Status(StatusCode.ResourceExhausted, "Party connection limit reached."));
+            }
+
             if (!Guid.TryParse(request.CustomerGuid, out Guid parsedCustomerGuid) || parsedCustomerGuid == Guid.Empty)
             {
                 return;
@@ -41,6 +52,15 @@ namespace OWSParty.Service
             if (string.IsNullOrWhiteSpace(userName))
             {
                 return;
+            }
+
+            // Session auth is gated off by default (the current client sends no session token).
+            // When enabled, require valid customerguid/usersessionguid metadata, the session must
+            // exist, and it must belong to the character being registered — so a client cannot
+            // register the stream as someone else.
+            if (GrpcSessionAuth.IsRequired && !await IsRegistrationAuthorized(context, parsedCustomerGuid, userName))
+            {
+                throw new RpcException(new Status(StatusCode.Unauthenticated, "Invalid session for party registration."));
             }
 
             ClientInfo clientInfo = new ClientInfo
@@ -77,6 +97,30 @@ namespace OWSParty.Service
                     _partyClients.TryRemove(userName, out _);
                 }
             }
+        }
+
+        private async Task<bool> IsRegistrationAuthorized(ServerCallContext context, Guid requestCustomerGuid, string userName)
+        {
+            if (!GrpcSessionAuth.TryReadCredentials(context, out Guid metaCustomerGuid, out Guid userSessionGuid))
+            {
+                return false;
+            }
+
+            // The credential's customer must match the one the registration claims.
+            if (metaCustomerGuid != requestCustomerGuid)
+            {
+                return false;
+            }
+
+            var session = await _usersRepository.GetUserSession(metaCustomerGuid, userSessionGuid);
+            if (session == null || !session.UserGuid.HasValue)
+            {
+                return false;
+            }
+
+            // Bind the stream identity to the session: the registering character must be the
+            // session's selected character, so a valid session can't register as someone else.
+            return string.Equals(session.SelectedCharacterName?.Trim(), userName, StringComparison.OrdinalIgnoreCase);
         }
 
         public override async Task<Empty> SendPartyMsg(PartyToSend request, ServerCallContext context)

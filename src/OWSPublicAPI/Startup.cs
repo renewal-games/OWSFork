@@ -34,6 +34,8 @@ using Microsoft.OpenApi.Models;
 using Microsoft.Extensions.Hosting;
 using System.IO;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
+using System.Threading.RateLimiting;
 
 
 namespace OWSPublicAPI
@@ -63,6 +65,26 @@ namespace OWSPublicAPI
 
             services.AddMemoryCache();
             //services.AddMvc();
+
+            // Per-client-IP throttling for the internet-facing API. Auth endpoints (login,
+            // register, Steam) get a tighter budget than general traffic to blunt brute force.
+            services.AddRateLimiter(options =>
+            {
+                options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+                options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+                {
+                    string clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                    bool isAuthPath = httpContext.Request.Path.StartsWithSegments("/api/Users");
+                    return RateLimitPartition.GetFixedWindowLimiter(
+                        (isAuthPath ? "auth:" : "general:") + clientIp,
+                        _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = isAuthPath ? 10 : 60,
+                            Window = TimeSpan.FromSeconds(10),
+                            QueueLimit = 0
+                        });
+                });
+            });
 
             services.AddHttpContextAccessor();
 
@@ -137,6 +159,22 @@ namespace OWSPublicAPI
         {
             app.UseSimpleInjector(container);
 
+            // Restore the real client IP forwarded by the TLS proxy so rate limiting keys on it.
+            // Trusting any proxy is safe here because this service is only reachable through the
+            // compose-internal network (Caddy) or a loopback-bound host port.
+            var forwardedHeadersOptions = new ForwardedHeadersOptions
+            {
+                ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+            };
+            forwardedHeadersOptions.KnownNetworks.Clear();
+            forwardedHeadersOptions.KnownProxies.Clear();
+            app.UseForwardedHeaders(forwardedHeadersOptions);
+
+            app.UseRateLimiter();
+
+            // The server-selector list is served to the login screen before the client authenticates.
+            StoreCustomerGUIDMiddleware.AnonymousPathPrefixes =
+                new[] { "/swagger", "/health", "/api/System/Status", "/api/Servers/List" };
             app.UseMiddleware<StoreCustomerGUIDMiddleware>(container);
 
             if (env.IsDevelopment())
@@ -192,6 +230,10 @@ namespace OWSPublicAPI
             }
 
             container.RegisterSingleton<IUserSessionRepository, OWSData.Repositories.Implementations.ValKey.UserSessionRepository>();
+
+            // Read-through session cache. No-op pass-through unless UserSessionCacheOptions.Enabled;
+            // the decorated (Postgres/MSSQL) IUsersRepository above is the source of truth.
+            container.RegisterDecorator<IUsersRepository, OWSData.Repositories.Implementations.CachingUsersRepository>(Lifestyle.Transient);
 
             container.Register<Services.ISteamAuthService, Services.SteamAuthService>(Lifestyle.Singleton);
             container.Register<IPublicAPIInputValidation, DefaultPublicAPIInputValidation>(Lifestyle.Singleton);

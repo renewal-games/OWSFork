@@ -32,7 +32,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         private DbConnection CreateConnection()
         {
-            return new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+            return new NpgsqlConnection(PostgresConnectionString.WithPoolDefaults(_storageOptions.Value.OWSDBConnectionString));
         }
 
         private DbConnection Connection => _scopedConnection.Value ??= new ScopedDbConnection(CreateConnection(), () => _scopedConnection.Value = null);

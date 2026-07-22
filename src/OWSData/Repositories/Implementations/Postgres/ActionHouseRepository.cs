@@ -25,7 +25,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             _storageOptions = storageOptions;
         }
 
-        private IDbConnection Connection => new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+        private IDbConnection Connection => new NpgsqlConnection(PostgresConnectionString.WithPoolDefaults(_storageOptions.Value.OWSDBConnectionString));
 
         public async Task<ActionHousePlayerContainer> GetActionHousePlayerItems(Guid customerGUID, string characterName)
         {

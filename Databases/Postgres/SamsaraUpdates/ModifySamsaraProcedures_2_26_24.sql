@@ -49,7 +49,9 @@ BEGIN
     WHERE customername = 'CustomerName';
 
     IF v_customerGUID IS NULL THEN
-        RAISE EXCEPTION 'Customer not found.';
+        -- Fresh installs have no customer yet; skip the stat seed instead of aborting.
+        RAISE NOTICE 'Customer not found; skipping base stat seed.';
+        RETURN;
     END IF;
 
     FOR v_class IN
@@ -295,7 +297,7 @@ BEGIN
 
     RETURN QUERY SELECT * FROM temp_table;
 END
-$function$
+$function$;
 
 COMMIT;
 

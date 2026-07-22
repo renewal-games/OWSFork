@@ -366,12 +366,16 @@ END $$;
 
 DO $$
 DECLARE
-    CustomerGuid UUID;
-    ClassID INT;
+    -- v_ prefix avoids plpgsql ambiguity with the CustomerGUID / ClassID columns.
+    v_CustomerGuid UUID;
+    v_ClassID INT;
 BEGIN
-    SELECT CustomerGUID INTO CustomerGuid FROM Customers LIMIT 1;
+    SELECT CustomerGUID INTO v_CustomerGuid FROM Customers LIMIT 1;
 
-    IF NOT EXISTS (SELECT 1 FROM Class WHERE CustomerGUID = CustomerGuid AND ClassName = 'Wanderer') THEN
+    -- Fresh installs have no customer yet (one is created later via AddCustomer);
+    -- skip the class seed in that case rather than inserting a NULL CustomerGUID.
+    IF v_CustomerGuid IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM Class WHERE CustomerGUID = v_CustomerGuid AND ClassName = 'Wanderer') THEN
         INSERT INTO Class(
             CustomerGUID,
             ClassName,
@@ -381,19 +385,20 @@ BEGIN
             X, Y, Z, RX, RY, RZ, TeamNumber
         )
         VALUES (
-            CustomerGuid,
+            v_CustomerGuid,
             'Wanderer',
             0,
             '',
             'L_MVP_2',
             -14897.000000, -3839.000000, 2169.000000, 0, 0, 0, 0
-        ) RETURNING ClassID INTO ClassID;
+        ) RETURNING ClassID INTO v_ClassID;
     END IF;
 END $$;
 
 DO $$
 BEGIN
-    INSERT INTO PlayerGroupTypes (PlayerGroupTypeID, PlayerGroupTypeDescription) VALUES
+    -- Column is PlayerGroupTypeDesc in the current base schema (was ...Description in 2024).
+    INSERT INTO PlayerGroupTypes (PlayerGroupTypeID, PlayerGroupTypeDesc) VALUES
         (1, 'Party'),
         (2, 'Raid'),
         (3, 'Guild'),
@@ -431,9 +436,9 @@ EXCEPTION
 END $$;
 
 -- Create functions
-DO $$
-BEGIN
-    CREATE OR REPLACE FUNCTION AddClass(
+-- (CREATE OR REPLACE is idempotent on its own; the original DO $$ wrappers broke
+-- nested dollar-quoting and could never have parsed as written.)
+CREATE OR REPLACE FUNCTION AddClass(
         CustomerGUID UUID,
         ClassName VARCHAR(50),
         Gender SMALLINT,
@@ -447,7 +452,7 @@ BEGIN
         RZ FLOAT,
         TeamNumber INT
     )
-    RETURNS INT AS $$
+    RETURNS INT AS $FUNC$
     DECLARE
         ClassID INT;
     BEGIN
@@ -497,12 +502,8 @@ BEGIN
         END IF;
     END;
     $FUNC$ LANGUAGE plpgsql;
-END
-$$;
 
-DO $$
-BEGIN
-    CREATE OR REPLACE FUNCTION AddCharacter(
+CREATE OR REPLACE FUNCTION AddCharacter(
         p_CustomerGUID UUID,
         p_UserSessionGUID UUID,
         p_CharacterName VARCHAR(50),
@@ -521,7 +522,7 @@ BEGIN
         RZ FLOAT,
         TeamNumber INT,
         Gender INT
-    ) AS $$
+    ) AS $FUNC$
     DECLARE
         v_UserGUID UUID;
         v_Email VARCHAR(256);
@@ -582,8 +583,6 @@ BEGIN
         END IF;
     END;
     $FUNC$ LANGUAGE plpgsql;
-END
-$$;
 
 DO $$
 BEGIN

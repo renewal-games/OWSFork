@@ -97,6 +97,8 @@ namespace OWSManagement
 
             app.UseSimpleInjector(container);
 
+            // The SPA's static assets are served from this same pipeline; only the REST API needs the key.
+            StoreCustomerGUIDMiddleware.ProtectedPathPrefixes = new[] { "/api" };
             app.UseMiddleware<StoreCustomerGUIDMiddleware>(container);
 
             app.UseSwagger();

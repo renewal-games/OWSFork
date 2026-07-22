@@ -392,7 +392,9 @@ BEGIN
     FROM Customers c
     LIMIT 1;
 
-    IF NOT EXISTS (
+    -- Fresh installs have no customer yet; skip the class seed rather than
+    -- inserting a NULL CustomerGUID.
+    IF v_CustomerGuid IS NOT NULL AND NOT EXISTS (
         SELECT 1
         FROM Class c
         WHERE c.CustomerGUID = v_CustomerGuid

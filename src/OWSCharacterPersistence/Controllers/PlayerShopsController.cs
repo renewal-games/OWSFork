@@ -17,10 +17,13 @@ namespace OWSCharacterPersistence.Controllers
         private readonly IHeaderCustomerGUID _customerGuid;
 
         // Server-to-server key. Read from a server-only env var; never present in client configs.
-        // When unset (local dev), the gate is open so it doesn't block iteration.
+        // Fail closed: outside the Development environment, an unset key rejects every request
+        // rather than opening the gate, so a missing env var on a deploy surfaces as 401s.
         private const string ServiceKeyHeader = "X-Samsara-Service-Key";
         private static readonly string ConfiguredServiceKey =
             Environment.GetEnvironmentVariable("OWS_SAMSARA_SERVICE_KEY");
+        private static readonly bool IsDevelopmentEnvironment = string.Equals(
+            Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Development", StringComparison.OrdinalIgnoreCase);
 
         public PlayerShopsController(IPlayerShopsRepository repo, IHeaderCustomerGUID customerGuid)
         {
@@ -30,9 +33,11 @@ namespace OWSCharacterPersistence.Controllers
 
         private bool ServiceKeyOk()
         {
-            if (string.IsNullOrEmpty(ConfiguredServiceKey)) return true; // dev: not configured
+            if (string.IsNullOrEmpty(ConfiguredServiceKey)) return IsDevelopmentEnvironment;
             return Request.Headers.TryGetValue(ServiceKeyHeader, out var provided)
-                   && string.Equals(provided.ToString(), ConfiguredServiceKey, StringComparison.Ordinal);
+                   && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                       System.Text.Encoding.UTF8.GetBytes(provided.ToString()),
+                       System.Text.Encoding.UTF8.GetBytes(ConfiguredServiceKey));
         }
 
         [HttpPost]

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
 using OWSData.Models.StoredProcs;
@@ -10,9 +11,20 @@ using StackExchange.Redis;
 
 namespace OWSData.Repositories.Implementations.ValKey
 {
+    /// <summary>
+    /// Valkey/Redis-backed session cache. Every operation is best-effort: connection or
+    /// serialization failures are swallowed so a cache outage degrades to the database
+    /// instead of breaking authentication.
+    /// </summary>
     public class UserSessionRepository : IUserSessionRepository
     {
         private static readonly ConcurrentDictionary<string, Lazy<ConnectionMultiplexer>> Connections = new();
+
+        // Circuit breaker: after a cache op fails, skip the cache entirely for a cooldown so a
+        // Valkey outage costs at most one slow (timed-out) call per window instead of one per
+        // request. Shared across all repo instances in the process.
+        private static readonly TimeSpan CircuitCooldown = TimeSpan.FromSeconds(10);
+        private static long _skipCacheUntilTicks;
 
         private readonly ConfigurationOptions _configurationOptions;
         private readonly string _connectionKey;
@@ -35,46 +47,93 @@ namespace OWSData.Repositories.Implementations.ValKey
             .Value
             .GetDatabase(_databaseIndex);
 
-        public async Task<GetUserSession> GetUserSession(Guid userGuid)
+        public async Task<GetUserSession> TryGetUserSession(Guid customerGuid, Guid userSessionGuid)
         {
-            string key = ConstructUserSessionKey(userGuid);
-            RedisValue userSessionJson = await Database.StringGetAsync(key);
-
-            if (userSessionJson.IsNullOrEmpty)
+            string key = ConstructUserSessionKey(customerGuid, userSessionGuid);
+            if (key == null || CircuitOpen)
             {
-                return new GetUserSession();
+                return null;
             }
 
             try
             {
-                return JsonSerializer.Deserialize<GetUserSession>(userSessionJson.ToString()) ?? new GetUserSession();
+                RedisValue userSessionJson = await Database.StringGetAsync(key);
+                CircuitReset();
+                if (userSessionJson.IsNullOrEmpty)
+                {
+                    return null;
+                }
+
+                return JsonSerializer.Deserialize<GetUserSession>(userSessionJson.ToString());
             }
-            catch (JsonException)
+            catch (Exception)
             {
-                return new GetUserSession();
+                // Cache unreachable or value unreadable — trip the breaker and treat as a miss.
+                CircuitTrip();
+                return null;
             }
         }
 
-        public async Task SetUserSession(Guid userGuid, GetUserSession userSession)
+        public async Task SetUserSession(Guid customerGuid, Guid userSessionGuid, GetUserSession userSession, TimeSpan timeToLive)
         {
             if (userSession == null)
             {
-                throw new ArgumentNullException(nameof(userSession));
+                return;
             }
 
-            string key = ConstructUserSessionKey(userGuid);
-            string userSessionJson = JsonSerializer.Serialize(userSession);
-            await Database.StringSetAsync(key, userSessionJson);
+            string key = ConstructUserSessionKey(customerGuid, userSessionGuid);
+            if (key == null || CircuitOpen)
+            {
+                return;
+            }
+
+            try
+            {
+                string userSessionJson = JsonSerializer.Serialize(userSession);
+                await Database.StringSetAsync(key, userSessionJson, timeToLive > TimeSpan.Zero ? timeToLive : null);
+                CircuitReset();
+            }
+            catch (Exception)
+            {
+                // Best-effort write; a failure just means the next read is a cache miss.
+                CircuitTrip();
+            }
         }
 
-        private string ConstructUserSessionKey(Guid userGuid)
+        public async Task RemoveUserSession(Guid customerGuid, Guid userSessionGuid)
         {
-            if (userGuid == Guid.Empty)
+            string key = ConstructUserSessionKey(customerGuid, userSessionGuid);
+            if (key == null || CircuitOpen)
             {
-                throw new ArgumentException("A non-empty user GUID is required.", nameof(userGuid));
+                return;
             }
 
-            return $"{_keyPrefix}{userGuid}";
+            try
+            {
+                await Database.KeyDeleteAsync(key);
+                CircuitReset();
+            }
+            catch (Exception)
+            {
+                // Best-effort invalidation; the short TTL bounds staleness if this fails.
+                CircuitTrip();
+            }
+        }
+
+        private static bool CircuitOpen => DateTime.UtcNow.Ticks < Interlocked.Read(ref _skipCacheUntilTicks);
+
+        private static void CircuitTrip() => Interlocked.Exchange(ref _skipCacheUntilTicks, DateTime.UtcNow.Add(CircuitCooldown).Ticks);
+
+        private static void CircuitReset() => Interlocked.Exchange(ref _skipCacheUntilTicks, 0);
+
+        private string ConstructUserSessionKey(Guid customerGuid, Guid userSessionGuid)
+        {
+            if (customerGuid == Guid.Empty || userSessionGuid == Guid.Empty)
+            {
+                return null;
+            }
+
+            return $"{_keyPrefix}{customerGuid}:{userSessionGuid}";
         }
 
         private static ConfigurationOptions BuildConfigurationOptions(UserSessionCacheOptions options)
@@ -85,6 +144,13 @@ namespace OWSData.Repositories.Implementations.ValKey
 
             ConfigurationOptions configurationOptions = ConfigurationOptions.Parse(connectionString);
             configurationOptions.AbortOnConnectFail = false;
+            // Fail fast when the cache is unreachable so a request degrades to the DB quickly
+            // instead of blocking on connect/command timeouts. The circuit breaker then skips
+            // the cache entirely for a cooldown, so only one request per window pays this cost.
+            configurationOptions.ConnectTimeout = 1000;
+            configurationOptions.SyncTimeout = 1000;
+            configurationOptions.AsyncTimeout = 1000;
+            configurationOptions.ConnectRetry = 1;
 
             if (!string.IsNullOrWhiteSpace(options.Password))
             {

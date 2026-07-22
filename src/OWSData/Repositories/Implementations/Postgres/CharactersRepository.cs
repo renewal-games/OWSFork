@@ -1,5 +1,6 @@
 ﻿using Dapper;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
@@ -33,9 +34,55 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         private readonly AsyncLocal<ScopedDbConnection> _scopedConnection = new AsyncLocal<ScopedDbConnection>();
 
+        // Debounce state for instance cleanup. Cleanup used to run inline (and awaited) on
+        // every zone join, holding row locks on the critical path. It only needs to run
+        // periodically, so we now trigger it at most once per interval per customer and do
+        // not block the join on it. Shared across all (transient) repo instances.
+        private static readonly ConcurrentDictionary<Guid, long> _lastInstanceCleanupTicks = new();
+
+        private static int InstanceCleanupIntervalSeconds =>
+            int.TryParse(Environment.GetEnvironmentVariable("OWS_INSTANCE_CLEANUP_INTERVAL_SECONDS"), out int value) && value > 0
+                ? value
+                : 60;
+
         private DbConnection CreateConnection()
         {
-            return new NpgsqlConnection(_storageOptions.Value.OWSDBConnectionString);
+            return new NpgsqlConnection(PostgresConnectionString.WithPoolDefaults(_storageOptions.Value.OWSDBConnectionString));
+        }
+
+        // Runs CleanUpInstances off the request path: skips if it ran within the interval,
+        // claims the slot atomically so concurrent joins don't double-fire, and runs the
+        // cleanup without awaiting so the join isn't blocked. Best-effort — the Instance
+        // Launcher health monitor independently reaps idle/stale zone servers as a backstop.
+        private void TriggerInstanceCleanupIfDue(Guid customerGUID)
+        {
+            long nowTicks = DateTime.UtcNow.Ticks;
+            long intervalTicks = TimeSpan.FromSeconds(InstanceCleanupIntervalSeconds).Ticks;
+            long last = _lastInstanceCleanupTicks.GetOrAdd(customerGUID, 0);
+
+            if (nowTicks - last < intervalTicks)
+            {
+                return;
+            }
+
+            // Only the caller that wins this CAS fires; a concurrent join that lost it skips.
+            if (!_lastInstanceCleanupTicks.TryUpdate(customerGUID, nowTicks, last))
+            {
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await CleanUpInstances(customerGUID);
+                }
+                catch
+                {
+                    // Best-effort maintenance; deliberately swallowed so a cleanup failure
+                    // never surfaces on a player's join. The health monitor is the backstop.
+                }
+            });
         }
 
         private DbConnection Connection => _scopedConnection.Value ??= new ScopedDbConnection(CreateConnection(), () => _scopedConnection.Value = null);
@@ -400,8 +447,8 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task<JoinMapByCharName> JoinMapByCharName(Guid customerGUID, string characterName, string zoneName, int playerGroupType)
         {
-            // TODO: Run Cleanup here for now. Later this can get moved to a scheduler to run periodically.
-            await CleanUpInstances(customerGUID);
+            // Runs periodically off the request path instead of inline on every join.
+            TriggerInstanceCleanupIfDue(customerGUID);
 
             using (DbConnection conn = CreateConnection())
             {

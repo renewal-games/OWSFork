@@ -123,6 +123,8 @@ container.RegisterInstance<IServiceProvider>(app.Services);
 
 app.Services.UseSimpleInjector(container);
 
+// gRPC requests carry the CustomerGUID in the message (PartyService), not the HTTP header.
+StoreCustomerGUIDMiddleware.ProtectedPathPrefixes = new[] { "/api" };
 app.UseMiddleware<StoreCustomerGUIDMiddleware>(container);
 
 if (app.Environment.IsDevelopment())
