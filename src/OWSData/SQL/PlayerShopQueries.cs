@@ -21,6 +21,19 @@ namespace OWSData.SQL
                 WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
                 RETURNING EconomyRevision";
 
+        // Currency-save path keyed by CharName (the persistence API has the name, not the ID).
+        // Locks the row so a currency write serializes with shop economy transactions, and the
+        // paired update bumps EconomyRevision so an in-flight shop op detects the out-of-band
+        // change via its optimistic guard instead of silently reading a clobbered wallet.
+        public static readonly string LockCharacterByNameForUpdate = @"SELECT CharacterID
+                FROM Characters
+                WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName
+                FOR UPDATE";
+
+        public static readonly string SetGoldAndBumpRevisionByName = @"UPDATE Characters
+                SET Gold = @Gold, EconomyRevision = EconomyRevision + 1
+                WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName";
+
         public static readonly string GetCharInventoryIDByCharacterID = @"SELECT CI.CharInventoryID
                 FROM CharInventory CI
                 WHERE CI.CharacterID = @CharacterID

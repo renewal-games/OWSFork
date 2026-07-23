@@ -981,16 +981,31 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold)
         {
-            using (Connection)
+            // Participate in the economy-revision protocol instead of a blind overwrite: lock the
+            // character row (serializing with shop Purchase/ClaimEscrow, which also FOR UPDATE the
+            // row) and bump EconomyRevision on write, so a concurrent shop op detects this
+            // out-of-band gold write via its optimistic guard rather than silently reading a
+            // clobbered wallet. NOTE: this write still carries an absolute total; fully preventing
+            // a stale save from overwriting a newer shop balance also requires the caller to send
+            // an ExpectedRevision (revision-checked write) — a coordinated UE-side change.
+            using IDbConnection conn = CreateConnection();
+            conn.Open();
+            using IDbTransaction transaction = conn.BeginTransaction();
+            try
             {
                 var parameters = new DynamicParameters();
                 parameters.Add("@CustomerGUID", customerGUID);
                 parameters.Add("@CharName", characterName);
                 parameters.Add("@Gold", gold);
 
-                await Connection.ExecuteAsync(GenericQueries.UpdateCharacterCurrency,
-                    parameters,
-                    commandType: CommandType.Text);
+                await transaction.ExecuteAsync(PlayerShopQueries.LockCharacterByNameForUpdate, parameters);
+                await transaction.ExecuteAsync(PlayerShopQueries.SetGoldAndBumpRevisionByName, parameters);
+                transaction.Commit();
+            }
+            catch
+            {
+                transaction.Rollback();
+                throw;
             }
         }
 

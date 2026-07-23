@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
 using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Interfaces;
@@ -24,6 +25,46 @@ namespace OWSCharacterPersistence.Controllers
         {
             _charactersRepository = charactersRepository;
             _customerGuid = customerGuid;
+        }
+
+        // Server-to-server gate for the persistence API (mirrors PlayerShopsController). These
+        // endpoints take a client-supplied CharName and write gold/inventory/stats with no
+        // ownership binding, so on the shared-CustomerGUID model any caller could act as any
+        // character. Gated by OWS_REQUIRE_CHARACTER_WRITE_KEY (default off) because the current UE
+        // persistence calls send only X-CustomerGUID, not the service key — turning it on before
+        // the client sends X-Samsara-Service-Key would reject all persistence traffic. When off,
+        // behaviour is unchanged (middleware CustomerGUID check only).
+        private const string ServiceKeyHeader = "X-Samsara-Service-Key";
+        private static readonly string ConfiguredServiceKey =
+            Environment.GetEnvironmentVariable("OWS_SAMSARA_SERVICE_KEY");
+        private static readonly bool RequireServiceKey =
+            string.Equals(Environment.GetEnvironmentVariable("OWS_REQUIRE_CHARACTER_WRITE_KEY"), "true", StringComparison.OrdinalIgnoreCase);
+
+        public override void OnActionExecuting(ActionExecutingContext context)
+        {
+            if (!ServiceKeyOk())
+            {
+                context.Result = new UnauthorizedResult();
+                return;
+            }
+            base.OnActionExecuting(context);
+        }
+
+        private bool ServiceKeyOk()
+        {
+            if (!RequireServiceKey)
+            {
+                return true;
+            }
+            // Required but unconfigured -> fail closed rather than silently allow.
+            if (string.IsNullOrEmpty(ConfiguredServiceKey))
+            {
+                return false;
+            }
+            return Request.Headers.TryGetValue(ServiceKeyHeader, out var provided)
+                   && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                       System.Text.Encoding.UTF8.GetBytes(provided.ToString()),
+                       System.Text.Encoding.UTF8.GetBytes(ConfiguredServiceKey));
         }
 
         [HttpPost]

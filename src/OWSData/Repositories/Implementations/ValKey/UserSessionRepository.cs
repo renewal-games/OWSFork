@@ -26,6 +26,13 @@ namespace OWSData.Repositories.Implementations.ValKey
         private static readonly TimeSpan CircuitCooldown = TimeSpan.FromSeconds(10);
         private static long _skipCacheUntilTicks;
 
+        // When a session is invalidated (logout / selected-character change) a short-lived
+        // tombstone is written next to the deleted key. A concurrent reader that fetched the
+        // DB row just BEFORE the invalidation committed is blocked from re-populating the cache
+        // with the now-stale session while the tombstone is live — closing the read-repopulate
+        // race that a plain delete leaves open.
+        private static readonly TimeSpan InvalidationTombstoneTtl = TimeSpan.FromSeconds(10);
+
         private readonly ConfigurationOptions _configurationOptions;
         private readonly string _connectionKey;
         private readonly int _databaseIndex;
@@ -89,6 +96,15 @@ namespace OWSData.Repositories.Implementations.ValKey
 
             try
             {
+                // Do not re-populate if an invalidation tombstone is live: this caller may have
+                // read the session from the DB just before a concurrent logout/char-change, so
+                // caching it now would serve a stale-but-"valid" session until the TTL.
+                if (await Database.KeyExistsAsync(TombstoneKey(key)))
+                {
+                    CircuitReset();
+                    return;
+                }
+
                 string userSessionJson = JsonSerializer.Serialize(userSession);
                 await Database.StringSetAsync(key, userSessionJson, timeToLive > TimeSpan.Zero ? timeToLive : null);
                 CircuitReset();
@@ -111,6 +127,9 @@ namespace OWSData.Repositories.Implementations.ValKey
             try
             {
                 await Database.KeyDeleteAsync(key);
+                // Tombstone blocks a straddling reader from re-caching the stale session (see
+                // InvalidationTombstoneTtl). Written after the delete so it always outlives it.
+                await Database.StringSetAsync(TombstoneKey(key), "1", InvalidationTombstoneTtl);
                 CircuitReset();
             }
             catch (Exception)
@@ -119,6 +138,8 @@ namespace OWSData.Repositories.Implementations.ValKey
                 CircuitTrip();
             }
         }
+
+        private string TombstoneKey(string sessionKey) => sessionKey + ":invalidated";
 
         private static bool CircuitOpen => DateTime.UtcNow.Ticks < Interlocked.Read(ref _skipCacheUntilTicks);
 
