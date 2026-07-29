@@ -636,6 +636,20 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     commandType: CommandType.Text);
             }
         }
+        public async Task UpdateCharacterClass(Guid customerGUID, string characterName, string className)
+        {
+            using (Connection)
+            {
+                var parameters = new DynamicParameters();
+                parameters.Add("@CustomerGUID", customerGUID);
+                parameters.Add("@CharName", characterName);
+                parameters.Add("@ClassName", className);
+
+                await Connection.ExecuteAsync(GenericQueries.UpdateCharacterClass,
+                    parameters,
+                    commandType: CommandType.Text);
+            }
+        }
         public async Task UpdatePosition(Guid customerGUID, string characterName, string mapName, float X, float Y, float Z, float RX, float RY, float RZ)
         {
             using (Connection)

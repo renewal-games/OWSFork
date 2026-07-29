@@ -167,6 +167,15 @@ namespace OWSCharacterPersistence.Controllers
         }
 
         [HttpPost]
+        [Route("UpdateCharacterClass")]
+        [Produces(typeof(SuccessAndErrorMessage))]
+        public async Task<SuccessAndErrorMessage> UpdateCharacterClass([FromBody] UpdateCharacterClassRequest request)
+        {
+            request.SetData(_charactersRepository, _customerGuid);
+            return await request.Handle();
+        }
+
+        [HttpPost]
         [Route("UpdateCharacterAbilities")]
         [Produces(typeof(SuccessAndErrorMessage))]
         public async Task<SuccessAndErrorMessage> UpdateCharacterAbilities([FromBody] UpdateCharacterAbilitiesRequest request)

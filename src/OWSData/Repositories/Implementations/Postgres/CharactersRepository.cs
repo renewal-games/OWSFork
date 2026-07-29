@@ -1009,6 +1009,23 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
+        public async Task UpdateCharacterClass(Guid customerGUID, string characterName, string className)
+        {
+            // No economy-revision locking here: ClassID is not currency and is not read-modify-write,
+            // so a plain parameterized UPDATE is enough.
+            using (Connection)
+            {
+                var parameters = new DynamicParameters();
+                parameters.Add("@CustomerGUID", customerGUID);
+                parameters.Add("@CharName", characterName);
+                parameters.Add("@ClassName", className);
+
+                await Connection.ExecuteAsync(GenericQueries.UpdateCharacterClass,
+                    parameters,
+                    commandType: CommandType.Text);
+            }
+        }
+
         public async Task<SuccessAndErrorMessage> UpdateCharacterAbilities(Guid customerGUID, string charName, string abilitiesJson)
         {
             using (Connection)

@@ -306,6 +306,21 @@ namespace OWSData.SQL
                 WHERE CustomerGUID = @CustomerGUID
                   AND CharName = @CharName";
 
+        // Resolves the class NAME to its ClassID and writes it to Characters.ClassID.
+        // The EXISTS guard is deliberate: Characters.ClassID is a NOT NULL FK into Class, and an
+        // unresolvable @ClassName would make the subselect return NULL. Guarding in the WHERE clause
+        // makes an unknown class name affect 0 rows (a harmless no-op) instead of failing the write
+        // or corrupting the FK. Callers that care can check the affected row count.
+        public static readonly string UpdateCharacterClass = @"UPDATE Characters
+                SET ClassID = (SELECT ClassID FROM Class
+                               WHERE ClassName = @ClassName
+                                 AND CustomerGUID = @CustomerGUID)
+                WHERE CustomerGUID = @CustomerGUID
+                  AND CharName = @CharName
+                  AND EXISTS (SELECT 1 FROM Class
+                              WHERE ClassName = @ClassName
+                                AND CustomerGUID = @CustomerGUID)";
+
         public static readonly string UpdateCharacterZone = @"UPDATE Characters
                 SET MapName = @ZoneName
                 WHERE CharacterID = @CharacterID
