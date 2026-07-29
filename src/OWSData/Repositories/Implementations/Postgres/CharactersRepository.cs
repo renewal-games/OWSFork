@@ -391,11 +391,15 @@ namespace OWSData.Repositories.Implementations.Postgres
                 {
                     parameters.Add("@MapInstances", outputMapInstances);
 
-                    await transaction.ExecuteAsync(PostgresQueries.RemoveCharactersFromAllInactiveInstances,
+                    // Detach characters from the reaped instances themselves (mirrors the MSSQL repo).
+                    // The previous copy-paste re-ran the LastAccess-based delete, which left
+                    // CharOnMapInstance rows pointing at deleted MapInstances orphaned forever
+                    // (no FK), permanently inflating HardPlayerCap occupancy for those zones.
+                    await transaction.ExecuteAsync(GenericQueries.RemoveCharacterFromInstances,
                         parameters,
                         commandType: CommandType.Text);
 
-                    await transaction.ExecuteAsync(PostgresQueries.RemoveMapInstances,
+                    await transaction.ExecuteAsync(GenericQueries.RemoveMapInstances,
                         parameters,
                         commandType: CommandType.Text);
 

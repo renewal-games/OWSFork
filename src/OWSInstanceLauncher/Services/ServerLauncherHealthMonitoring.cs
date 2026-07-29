@@ -70,6 +70,11 @@ namespace OWSInstanceLauncher.Services
             //Without this, a server whose DB row was deleted (e.g. by CleanUpInstances after its heartbeat died) is
             //invisible to the DB-driven shutdown above and leaks forever.
             ReconcileOrphanedProcesses(zoneInstances);
+
+            //Deterministic DB sweep of stale CharOnMapInstance rows and dead MapInstances. Without this,
+            //cleanup only ran piggybacked on player joins (exceptions swallowed), so a crashed player's
+            //phantom "online" row could survive indefinitely when nobody else was joining.
+            RunCleanUpInstances();
         }
 
         public static bool ShouldShutdownZoneInstance(GetZoneInstancesForWorldServer zoneInstance, int staleServerShutdownMinutes)
@@ -196,6 +201,26 @@ namespace OWSInstanceLauncher.Services
             }
 
             return output;
+        }
+
+        private void RunCleanUpInstances()
+        {
+            try
+            {
+                var instanceManagementHttpClient = _httpClientFactory.CreateClient("OWSInstanceManagement");
+
+                var cleanUpInstancesRequest = new StringContent("{}", Encoding.UTF8, "application/json");
+                var responseMessage = instanceManagementHttpClient.PostAsync("api/Instance/CleanUpInstances", cleanUpInstancesRequest).Result;
+
+                if (!responseMessage.IsSuccessStatusCode)
+                {
+                    Log.Error($"Server Health Monitoring failed to run CleanUpInstances. HTTP Status: {responseMessage.StatusCode}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Server Health Monitoring failed to run CleanUpInstances: {ex.Message}. Will retry next cycle.");
+            }
         }
 
         private void ShutDownZoneInstance(int worldServerId, int zoneInstanceId)

@@ -88,6 +88,19 @@ namespace OWSInstanceManagement.Controllers
         }
 
         [HttpPost]
+        [Route("CleanUpInstances")]
+        [Produces(typeof(SuccessAndErrorMessage))]
+        //Deterministic sweep of stale CharOnMapInstance rows and dead MapInstances. Called on a
+        //timer by the Instance Launcher health monitor; previously this cleanup only ran
+        //piggybacked on player joins, so with no joins nothing was ever reconciled.
+        public async Task<IActionResult> CleanUpInstances([FromBody] CleanUpInstancesRequest request)
+        {
+            request.SetData(_charactersRepository, _customerGuid);
+
+            return await request.Handle();
+        }
+
+        [HttpPost]
         [Route("RegisterLauncher")]
         [Produces(typeof(SuccessAndErrorMessage))]
         /*[SwaggerOperation("ByName")]
