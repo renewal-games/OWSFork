@@ -283,6 +283,12 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 					MI.MapInstanceID
 				LIMIT 1";
 
+		//Postgres needs = ANY(@MapInstances), not the GenericQueries "IN @MapInstances" form. Dapper only
+		//text-expands an enumerable parameter into "(@p1,@p2,...)" for providers without array support; for
+		//Npgsql it binds the list as a single native array and leaves the SQL untouched, so "IN @MapInstances"
+		//reaches Postgres verbatim as "IN $1" and fails to parse.
+		public static readonly string RemoveCharacterFromInstances = @"DELETE FROM CharOnMapInstance WHERE CustomerGUID = @CustomerGUID AND MapInstanceID = ANY(@MapInstances)";
+
 		public static readonly string RemoveMapInstances = @"DELETE FROM MapInstances WHERE CustomerGUID = @CustomerGUID AND MapInstanceID = ANY(@MapInstances)";
 
         public static readonly string GetZoneInstanceStatusForShutdown = @"SELECT Status

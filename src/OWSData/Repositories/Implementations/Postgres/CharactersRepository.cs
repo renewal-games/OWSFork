@@ -391,25 +391,29 @@ namespace OWSData.Repositories.Implementations.Postgres
                 {
                     parameters.Add("@MapInstances", outputMapInstances);
 
-                    // Detach characters from the reaped instances themselves (mirrors the MSSQL repo).
-                    // The previous copy-paste re-ran the LastAccess-based delete, which left
-                    // CharOnMapInstance rows pointing at deleted MapInstances orphaned forever
-                    // (no FK), permanently inflating HardPlayerCap occupancy for those zones.
-                    await transaction.ExecuteAsync(GenericQueries.RemoveCharacterFromInstances,
+                    // Detach characters from the reaped instances themselves. An earlier copy-paste re-ran
+                    // the LastAccess-based delete here, which left CharOnMapInstance rows pointing at deleted
+                    // MapInstances orphaned forever (no FK), permanently inflating HardPlayerCap occupancy.
+                    // Must use the PostgresQueries "= ANY(@MapInstances)" variants: the GenericQueries
+                    // "IN @MapInstances" form only works on providers where Dapper text-expands the list.
+                    await transaction.ExecuteAsync(PostgresQueries.RemoveCharacterFromInstances,
                         parameters,
                         commandType: CommandType.Text);
 
-                    await transaction.ExecuteAsync(GenericQueries.RemoveMapInstances,
+                    await transaction.ExecuteAsync(PostgresQueries.RemoveMapInstances,
                         parameters,
                         commandType: CommandType.Text);
 
                 }
                 transaction.Commit();
             }
-            catch
+            catch (Exception ex)
             {
                 transaction.Rollback();
-                throw new Exception("Database Exception in CleanUpInstances!");
+                //Keep the provider error attached. Discarding it made a SQL syntax error, a deadlock and a
+                //constraint violation all surface identically as a bare 500 with no detail, which is exactly
+                //how the broken "IN @MapInstances" form above stayed hidden.
+                throw new Exception("Database Exception in CleanUpInstances!", ex);
             }
         }
 

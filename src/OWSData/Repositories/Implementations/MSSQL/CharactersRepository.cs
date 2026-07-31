@@ -213,10 +213,11 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 }
                 transaction.Commit();
             }
-            catch
+            catch (Exception ex)
             {
                 transaction.Rollback();
-                throw new Exception("Database Exception in CleanUpInstances!");
+                //Keep the provider error attached; without it the caller only sees a bare 500 with no detail.
+                throw new Exception("Database Exception in CleanUpInstances!", ex);
             }
         }
         public async Task<CharacterSaveData> GetSaveDataByCharName(Guid customerGUID, string characterName)
