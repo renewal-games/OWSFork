@@ -255,10 +255,10 @@ namespace OWSData.Repositories.Implementations.Postgres
                     transaction: transaction,
                     commandType: CommandType.Text);
 
-                if (outputCharacter.CharacterId > 0)
+                if (outputCharacter?.CharacterId > 0)
                 {
                     parameters.Add("@CharacterID", outputCharacter.CharacterId);
-                    parameters.Add("@ZoneName", outputZone.ZoneName);
+                    parameters.Add("@ZoneName", outputZone?.ZoneName);
 
                     await conn.ExecuteAsync(GenericQueries.RemoveCharacterFromAllInstances,
                         parameters,
@@ -322,7 +322,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     parameters,
                     commandType: CommandType.Text);
 
-                if (outputCharacter.CharacterId > 0)
+                if (outputCharacter?.CharacterId > 0)
                 {
                     parameters.Add("@CharacterID", outputCharacter.CharacterId);
 
@@ -818,7 +818,10 @@ namespace OWSData.Repositories.Implementations.Postgres
                     parameters,
                     commandType: CommandType.Text);
 
-                if (outputCharacter.CharacterId > 0)
+                //QuerySingleOrDefaultAsync returns null when the character name is unknown (renamed,
+                //deleted, or a stale name still held by a zone server). Logging out a character that
+                //no longer exists is a no-op, not a 500.
+                if (outputCharacter?.CharacterId > 0)
                 {
                     parameters.Add("@CharacterID", outputCharacter.CharacterId);
 
