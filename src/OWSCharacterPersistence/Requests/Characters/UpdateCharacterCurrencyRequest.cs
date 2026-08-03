@@ -22,22 +22,22 @@ namespace OWSCharacterPersistence.Requests.Characters
             customerGUID = customerGuid.CustomerGUID;
         }
 
-        public async Task<SuccessAndErrorMessage> Handle()
+        public async Task<UpdateCharacterCurrencyResponse> Handle()
         {
-            SuccessAndErrorMessage successAndErrorMessage = new SuccessAndErrorMessage();
-            successAndErrorMessage.Success = true;
+            UpdateCharacterCurrencyResponse response = new UpdateCharacterCurrencyResponse();
+            response.Success = true;
 
             try
             {
-                await charactersRepository.UpdateCharacterCurrency(customerGUID, CharacterName, Gold);
+                response.NewEconomyRevision = await charactersRepository.UpdateCharacterCurrency(customerGUID, CharacterName, Gold);
             }
             catch (Exception ex)
             {
-                successAndErrorMessage.ErrorMessage = ex.Message;
-                successAndErrorMessage.Success = false;
+                response.ErrorMessage = ex.Message;
+                response.Success = false;
             }
 
-            return successAndErrorMessage;
+            return response;
         }
     }
 }

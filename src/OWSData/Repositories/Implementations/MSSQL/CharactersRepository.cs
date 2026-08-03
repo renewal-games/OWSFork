@@ -623,7 +623,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 }
             }
         }
-        public async Task UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold)
+        public async Task<long> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold)
         {
             using (Connection)
             {
@@ -635,6 +635,9 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 await Connection.ExecuteAsync(GenericQueries.UpdateCharacterCurrency,
                     parameters,
                     commandType: CommandType.Text);
+
+                // MSSQL has no EconomyRevision protocol (player shops are Postgres-only); 0 = "no revision".
+                return 0;
             }
         }
         public async Task UpdateCharacterClass(Guid customerGUID, string characterName, string className)

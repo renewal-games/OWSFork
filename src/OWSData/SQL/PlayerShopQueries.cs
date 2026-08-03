@@ -32,7 +32,8 @@ namespace OWSData.SQL
 
         public static readonly string SetGoldAndBumpRevisionByName = @"UPDATE Characters
                 SET Gold = @Gold, EconomyRevision = EconomyRevision + 1
-                WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName";
+                WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName
+                RETURNING EconomyRevision";
 
         public static readonly string GetCharInventoryIDByCharacterID = @"SELECT CI.CharInventoryID
                 FROM CharInventory CI
