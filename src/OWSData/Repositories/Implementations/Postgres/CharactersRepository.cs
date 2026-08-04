@@ -1073,7 +1073,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     p.Add("@CustomData", Quest.CustomData);
 
 
-                    await Connection.ExecuteAsync(GenericQueries.UpdateCharacterQuest, p);
+                    await Connection.ExecuteAsync(PostgresQueries.UpdateCharacterQuest, p);
                 }
             }
         }

@@ -201,6 +201,31 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
             AND Quest.CustomerGUID = @CustomerGUID::UUID
         )";
 
+        // Postgres form of GenericQueries.UpdateCharacterQuest, which is T-SQL (IF EXISTS / UPDATE alias
+        // FROM) and errors out here. Upserts on the CharQuests primary key, so repeat saves cannot
+        // duplicate rows.
+        public static readonly string UpdateCharacterQuest = @"
+        INSERT INTO CharQuests (
+            CustomerGUID,
+            CharacterID,
+            QuestIDTag,
+            QuestJournalTagContainer,
+            CustomData
+        )
+        SELECT
+            @CustomerGUID::UUID,
+            C.CharacterID,
+            @QuestIDTag,
+            @QuestJournalTagContainer,
+            @CustomData
+        FROM Characters C
+        WHERE C.CharName = @CharName
+        AND C.CustomerGUID = @CustomerGUID::UUID
+        ON CONFLICT (CustomerGUID, CharacterID, QuestIDTag)
+        DO UPDATE SET
+            QuestJournalTagContainer = EXCLUDED.QuestJournalTagContainer,
+            CustomData               = EXCLUDED.CustomData";
+
         #endregion
 
         #region User Queries
