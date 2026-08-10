@@ -26,7 +26,10 @@ namespace OWSData.Repositories.Interfaces
         Task<JoinMapByCharName> JoinMapByCharName(Guid customerGUID, string characterName, string zoneName, int playerGroupType);
         Task UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats);
         Task UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests);
-        Task UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory);
+        // Whole-bag rewrite. expectedRevision is opt-in: pass the Characters.EconomyRevision the bag
+        // was computed from to have a stale snapshot rejected instead of clobbering a shop
+        // transaction that committed in the meantime; pass null for legacy last-write-wins.
+        Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory, long? expectedRevision = null);
         // Returns the post-write EconomyRevision (0 when unsupported) so callers can resync their cached revision.
         Task<long> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold);
         Task UpdateCharacterClass(Guid customerGUID, string characterName, string className);

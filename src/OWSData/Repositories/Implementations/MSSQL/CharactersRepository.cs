@@ -589,38 +589,80 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 }
             }
         }
-        public async Task UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory)
+        // Durability half of the Postgres fix: the DELETE-then-INSERT rewrite runs in one
+        // transaction so a failure mid-loop cannot leave a truncated bag. The economy-revision
+        // protocol is Postgres-only (Characters.EconomyRevision ships in the PlayerShops migration),
+        // so expectedRevision is rejected here rather than silently ignored — a caller that thinks
+        // it has optimistic protection must not be told the write succeeded without it.
+        public async Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName,
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, long? expectedRevision = null)
         {
-            using (Connection)
+            if (expectedRevision.HasValue)
+            {
+                return new UpdateCharacterInventoryResponse
+                {
+                    Success = false,
+                    ErrorMessage = "revision_unsupported",
+                    ReasonCode = "revision_unsupported"
+                };
+            }
+
+            using IDbConnection conn = Connection;
+            conn.Open();
+            using IDbTransaction transaction = conn.BeginTransaction();
+            try
             {
                 var parameters = new DynamicParameters();
                 parameters.Add("@CustomerGUID", customerGUID);
                 parameters.Add("@CharName", characterName);
 
-                IEnumerable<int> InventoryIDs = await Connection.QueryAsync<int>(GenericQueries.GetCharInventoryIDByCharName,
-                parameters,
-                commandType: CommandType.Text);
+                IEnumerable<int> inventoryIDs = await conn.QueryAsync<int>(GenericQueries.GetCharInventoryIDByCharName,
+                    parameters,
+                    transaction: transaction,
+                    commandType: CommandType.Text);
 
-                if (!InventoryIDs.Any())
+                if (!inventoryIDs.Any())
                 {
-                    return;
+                    transaction.Rollback();
+                    return new UpdateCharacterInventoryResponse
+                    {
+                        Success = false,
+                        ErrorMessage = "no_inventory",
+                        ReasonCode = "no_inventory"
+                    };
                 }
-                
-                parameters.Add("@CharInventoryID", InventoryIDs.First());
-                await Connection.ExecuteAsync(GenericQueries.DeleteCharacterInventoryItems,
-                parameters,
-                commandType: CommandType.Text);
 
-                foreach (UpdateCharacterInventory inventoryItem in updateCharacterInventory)
+                int charInventoryID = inventoryIDs.First();
+                parameters.Add("@CharInventoryID", charInventoryID);
+
+                await conn.ExecuteAsync(GenericQueries.DeleteCharacterInventoryItems,
+                    parameters,
+                    transaction: transaction,
+                    commandType: CommandType.Text);
+
+                foreach (UpdateCharacterInventory inventoryItem in updateCharacterInventory ?? Enumerable.Empty<UpdateCharacterInventory>())
                 {
-                    parameters.Add("@ItemIDTag", inventoryItem.ItemIDTag);
-                    parameters.Add("@Quantity", inventoryItem.Quantity);
-                    parameters.Add("@InSlotNumber", inventoryItem.InSlotNumber);
-                    parameters.Add("@CustomData", inventoryItem.CustomData);
-                    await Connection.ExecuteAsync(GenericQueries.UpdateCharacterInventory,
-                        parameters,
+                    await conn.ExecuteAsync(GenericQueries.UpdateCharacterInventory,
+                        new
+                        {
+                            CustomerGUID = customerGUID,
+                            CharInventoryID = charInventoryID,
+                            inventoryItem.ItemIDTag,
+                            inventoryItem.Quantity,
+                            inventoryItem.InSlotNumber,
+                            inventoryItem.CustomData
+                        },
+                        transaction: transaction,
                         commandType: CommandType.Text);
                 }
+
+                transaction.Commit();
+                return new UpdateCharacterInventoryResponse { Success = true, ErrorMessage = "", ReasonCode = "" };
+            }
+            catch
+            {
+                try { transaction.Rollback(); } catch { /* connection already gone */ }
+                throw;
             }
         }
         public async Task<long> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold)

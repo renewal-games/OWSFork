@@ -92,6 +92,18 @@ namespace OWSCharacterPersistence
         {
             app.UseSimpleInjector(container);
 
+            // These endpoints write gold, inventory and stats keyed by a caller-supplied character
+            // name. Outside Development the only thing standing between them and an arbitrary
+            // caller is network isolation unless the service key is required, so say so loudly
+            // instead of leaving it to whoever remembers to check the env var.
+            if (!env.IsDevelopment() && Controllers.CharactersController.IsUnauthenticated)
+            {
+                Serilog.Log.Warning(
+                    "CharacterPersistence write endpoints are UNAUTHENTICATED: X-CustomerGUID is the only gate and it is not a secret. " +
+                    "Set OWS_REQUIRE_CHARACTER_WRITE_KEY=true (with OWS_SAMSARA_SERVICE_KEY) once the UE zone server sends X-Samsara-Service-Key on persistence calls. " +
+                    "See docs/mvp-hardening-spec.md item 4.");
+            }
+
             app.UseMiddleware<StoreCustomerGUIDMiddleware>(container);
 
             if (env.IsDevelopment())

@@ -21,17 +21,27 @@ namespace OWSData.SQL
                 WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
                 RETURNING EconomyRevision";
 
-        // Currency-save path keyed by CharName (the persistence API has the name, not the ID).
-        // Locks the row so a currency write serializes with shop economy transactions, and the
-        // paired update bumps EconomyRevision so an in-flight shop op detects the out-of-band
-        // change via its optimistic guard instead of silently reading a clobbered wallet.
-        public static readonly string LockCharacterByNameForUpdate = @"SELECT CharacterID
+        // Persistence-API save paths keyed by CharName (that API has the name, not the ID).
+        // Locks the row so a currency or inventory write serializes with shop economy
+        // transactions, and returns the current revision so a caller on the optimistic protocol can
+        // check its snapshot against it before writing.
+        public static readonly string LockCharacterByNameForUpdate = @"SELECT CharacterID, EconomyRevision
                 FROM Characters
                 WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName
                 FOR UPDATE";
 
         public static readonly string SetGoldAndBumpRevisionByName = @"UPDATE Characters
                 SET Gold = @Gold, EconomyRevision = EconomyRevision + 1
+                WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName
+                RETURNING EconomyRevision";
+
+        // Revision bump with no wallet change, for inventory writes.
+        // Only used on the opt-in path: a caller that sent an ExpectedRevision has proven it reads
+        // the new value back, so bumping cannot strand it. The default autosave path deliberately
+        // does NOT bump — see UpdateCharacterInventory for why, and note that until the zone server
+        // opts in, a stale bag snapshot can still overwrite a committed shop transaction.
+        public static readonly string BumpRevisionByName = @"UPDATE Characters
+                SET EconomyRevision = EconomyRevision + 1
                 WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName
                 RETURNING EconomyRevision";
 
@@ -155,6 +165,17 @@ namespace OWSData.SQL
         public static readonly string GetPurchaseByOperationId = @"SELECT *
                 FROM PlayerShopPurchases
                 WHERE OperationId = @OperationId AND CustomerGUID = @CustomerGUID";
+
+        // Locking variant for the delivery/refund state machine. ConfirmDelivery and
+        // ResolveUndelivered both transition the same 'paid' row, and with an unlocked read both
+        // observe it as unresolved: one grants the item while the other refunds the gold and
+        // restocks the listing, and the loser's guarded UPDATE quietly matches 0 rows instead of
+        // stopping it. The plain read above stays for the replay probe in Purchase and for
+        // GetOperationResult, which are read-only and run outside a transaction.
+        public static readonly string GetPurchaseByOperationIdForUpdate = @"SELECT *
+                FROM PlayerShopPurchases
+                WHERE OperationId = @OperationId AND CustomerGUID = @CustomerGUID
+                FOR UPDATE";
 
         public static readonly string GetPendingDeliveries = @"SELECT OperationId, PlayerShopID, PlayerShopItemID, ItemIDTag, CustomData, Quantity, UnitPriceGold, TaxPaid
                 FROM PlayerShopPurchases

@@ -18,6 +18,7 @@ namespace OWSData.Repositories.Interfaces
         Task<PlayerShopResult> CloseShop(Guid customerGUID, Guid operationId, long playerShopID, int ownerCharacterID);
         Task<IEnumerable<PendingClaimView>> GetPendingClaims(Guid customerGUID, int ownerCharacterID);
         Task<ClaimEscrowResult> ClaimEscrow(Guid customerGUID, ClaimEscrowInput input);
+        Task<VendorTradeResult> VendorTrade(Guid customerGUID, VendorTradeInput input);
         Task<OperationResultView> GetOperationResult(Guid customerGUID, Guid operationId);
     }
 }

@@ -151,6 +151,16 @@ namespace OWSCharacterPersistence.Controllers
         }
 
         [HttpPost]
+        [Route("VendorTrade")]
+        [Produces(typeof(VendorTradeResult))]
+        public async Task<IActionResult> VendorTrade([FromBody] VendorTradeRequest request)
+        {
+            if (!ServiceKeyOk()) return Unauthorized();
+            request.SetData(_repo, _customerGuid);
+            return Ok(await request.Handle());
+        }
+
+        [HttpPost]
         [Route("GetOperationResult")]
         [Produces(typeof(OperationResultView))]
         public async Task<IActionResult> GetOperationResult([FromBody] GetOperationResultRequest request)

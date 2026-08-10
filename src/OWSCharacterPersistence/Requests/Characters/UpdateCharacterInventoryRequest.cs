@@ -13,8 +13,14 @@ namespace OWSCharacterPersistence.Requests.Characters
     public class UpdateCharacterInventoryRequest
     {
         public string CharacterName { get; set; }
-       
+
         public IEnumerable<UpdateCharacterInventory> Inventory { get; set; }
+
+        // Opt-in optimistic lock. Send the Characters.EconomyRevision this bag was computed from and
+        // a snapshot that lost a race with a shop transaction is rejected with "stale_revision"
+        // instead of overwriting it; resync from NewEconomyRevision, recompute the bag, resend.
+        // Omit (or send <= 0) to keep the legacy last-write-wins behaviour.
+        public long ExpectedRevision { get; set; }
 
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
@@ -25,22 +31,22 @@ namespace OWSCharacterPersistence.Requests.Characters
             customerGUID = customerGuid.CustomerGUID;
         }
 
-        public async Task<SuccessAndErrorMessage> Handle()
+        public async Task<UpdateCharacterInventoryResponse> Handle()
         {
-            SuccessAndErrorMessage successAndErrorMessage = new SuccessAndErrorMessage();
-            successAndErrorMessage.Success = true;
-
             try
             {
-                await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, Inventory);
+                return await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, Inventory,
+                    ExpectedRevision > 0 ? ExpectedRevision : (long?)null);
             }
             catch (Exception ex)
             {
-                successAndErrorMessage.ErrorMessage = ex.Message;
-                successAndErrorMessage.Success = false;
+                return new UpdateCharacterInventoryResponse
+                {
+                    Success = false,
+                    ErrorMessage = ex.Message,
+                    ReasonCode = "exception"
+                };
             }
-
-            return successAndErrorMessage;
         }
     }
 }

@@ -214,11 +214,21 @@ namespace OWSData.Repositories.Implementations.Postgres
                         transaction: tx, commandType: CommandType.Text);
                 }
 
-                // Escrow removal + fee burn are already reflected in the submitted snapshot.
+                // Escrow removal is already reflected in the submitted inventory snapshot, but the
+                // fee is charged here rather than trusted from the snapshot: writing the caller's
+                // PostEscrowGold verbatim made CreateShop an unconditional gold-set primitive, the
+                // one write in the economy where a stale or wrong wallet value won outright.
+                // Recomputed from the freshly-locked row, same rule as Purchase/ClaimEscrow/VendorTrade.
+                if (input.OpeningFeeGold < 0)
+                    { await tx.RollbackAsync(); return FailResult("bad_request"); }
+                long newOwnerGold = (long)character.Gold - input.OpeningFeeGold;
+                if (newOwnerGold < 0)
+                    { await tx.RollbackAsync(); return FailResult("insufficient_funds"); }
+
                 await ReplaceInventory(conn, tx, customerGUID, input.OwnerCharacterID, input.PostEscrowInventory);
                 long newRevision = await conn.ExecuteScalarAsync<long>(
                     PlayerShopQueries.SetGoldAndBumpRevision,
-                    new { CustomerGUID = customerGUID, CharacterID = input.OwnerCharacterID, Gold = input.PostEscrowGold },
+                    new { CustomerGUID = customerGUID, CharacterID = input.OwnerCharacterID, Gold = (int)newOwnerGold },
                     transaction: tx, commandType: CommandType.Text);
 
                 PlayerShopResult result = new PlayerShopResult
@@ -457,9 +467,11 @@ namespace OWSData.Repositories.Implementations.Postgres
             using DbTransaction tx = await conn.BeginTransactionAsync();
             try
             {
-                // Lock the purchase implicitly by updating its state; only 'paid' rows transition.
+                // Lock the purchase row for the whole transition. ResolveUndelivered races this
+                // method for the same row, and both used to read it unlocked: each saw 'paid', this
+                // one handed over the item, and the refund path gave the gold back on top.
                 var purchase = await conn.QuerySingleOrDefaultAsync(
-                    PlayerShopQueries.GetPurchaseByOperationId,
+                    PlayerShopQueries.GetPurchaseByOperationIdForUpdate,
                     new { OperationId = input.OperationId, CustomerGUID = customerGUID },
                     transaction: tx, commandType: CommandType.Text);
                 if (purchase == null) { await tx.RollbackAsync(); return Err("bad_request"); }
@@ -478,9 +490,14 @@ namespace OWSData.Repositories.Implementations.Postgres
                 await conn.ExecuteAsync(PlayerShopQueries.BumpRevision,
                     new { CustomerGUID = customerGUID, CharacterID = input.BuyerCharacterID },
                     transaction: tx, commandType: CommandType.Text);
-                await conn.ExecuteAsync(PlayerShopQueries.MarkPurchaseDelivered,
+
+                // The state guard on this UPDATE is an assertion, not a formality: if it matches no
+                // rows the purchase was resolved by someone else after our read and the item grant
+                // above must not stand.
+                int delivered = await conn.ExecuteAsync(PlayerShopQueries.MarkPurchaseDelivered,
                     new { OperationId = input.OperationId, CustomerGUID = customerGUID },
                     transaction: tx, commandType: CommandType.Text);
+                if (delivered != 1) { await tx.RollbackAsync(); return Err("already_resolved"); }
 
                 await tx.CommitAsync();
                 return Ok();
@@ -502,8 +519,10 @@ namespace OWSData.Repositories.Implementations.Postgres
             using DbTransaction tx = await conn.BeginTransactionAsync();
             try
             {
+                // Locked read: ConfirmDelivery races this method for the same row. See the comment
+                // on GetPurchaseByOperationIdForUpdate.
                 var purchase = await conn.QuerySingleOrDefaultAsync(
-                    PlayerShopQueries.GetPurchaseByOperationId,
+                    PlayerShopQueries.GetPurchaseByOperationIdForUpdate,
                     new { OperationId = operationId, CustomerGUID = customerGUID },
                     transaction: tx, commandType: CommandType.Text);
                 if (purchase == null) { await tx.RollbackAsync(); return new ResolveUndeliveredResult { Success = false, ReasonCode = "bad_request" }; }
@@ -541,9 +560,12 @@ namespace OWSData.Repositories.Implementations.Postgres
                 await conn.ExecuteAsync(PlayerShopQueries.RevertSoldOutToOpen,
                     new { CustomerGUID = customerGUID, PlayerShopID = playerShopID },
                     transaction: tx, commandType: CommandType.Text);
-                await conn.ExecuteAsync(PlayerShopQueries.MarkPurchaseRestocked,
+                // Same assertion as ConfirmDelivery: 0 rows means the purchase was resolved
+                // concurrently and this refund + restock must not stand.
+                int restocked = await conn.ExecuteAsync(PlayerShopQueries.MarkPurchaseRestocked,
                     new { OperationId = operationId, CustomerGUID = customerGUID },
                     transaction: tx, commandType: CommandType.Text);
+                if (restocked != 1) { await tx.RollbackAsync(); return new ResolveUndeliveredResult { Success = false, ReasonCode = "already_resolved" }; }
 
                 await tx.CommitAsync();
                 return new ResolveUndeliveredResult { Success = true, NewBuyerRevision = newRevision, GoldRefunded = refund };
@@ -717,6 +739,88 @@ namespace OWSData.Repositories.Implementations.Postgres
                 throw;
             }
         }
+
+        // ------------------------------------------------------------------
+        // VendorTrade — NPC vendor sell+buy, committed together or not at all.
+        // ------------------------------------------------------------------
+        public async Task<VendorTradeResult> VendorTrade(Guid customerGUID, VendorTradeInput input)
+        {
+            // Validate before the replay probe, not after. OperationId is the idempotency key: a
+            // caller that omits it sends Guid.Empty, the first such trade records its result under
+            // that key, and every later empty-key trade short-circuits on the replay below and
+            // returns the *first* trade's cached result — reporting success with a stale NewGold
+            // while moving no money and no items.
+            if (input == null || input.OperationId == Guid.Empty)
+                return VendorTradeFail("bad_request");
+            if (input.SellGoldTotal < 0 || input.BuyGoldTotal < 0)
+                return VendorTradeFail("bad_request");
+
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+
+            VendorTradeResult replay = await ReplayOperation<VendorTradeResult>(conn, customerGUID, input.OperationId);
+            if (replay != null) return replay;
+
+            using DbTransaction tx = await conn.BeginTransactionAsync();
+            try
+            {
+                CharLockRow character = await conn.QuerySingleOrDefaultAsync<CharLockRow>(
+                    PlayerShopQueries.LockCharacterForUpdate,
+                    new { CustomerGUID = customerGUID, CharacterID = input.CharacterID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (character == null) { await tx.RollbackAsync(); return VendorTradeFail("bad_request"); }
+                if (character.EconomyRevision != input.ExpectedRevision)
+                    { await tx.RollbackAsync(); return VendorTradeFail("stale"); }
+
+                // Gold is recomputed off the freshly-locked row, never trusted from a client snapshot
+                // — same rule as Purchase/ClaimEscrow.
+                long newGold = checked((long)character.Gold + input.SellGoldTotal - input.BuyGoldTotal);
+                if (newGold < 0) { await tx.RollbackAsync(); return VendorTradeFail("insufficient_funds"); }
+                // Characters.Gold is a 32-bit column, so int.MaxValue is the hard cap even when the
+                // caller sends none — without this the cast below would wrap a fortune into a debt.
+                // The configurable cap only blocks trades that *increase* gold: a character already
+                // over the cap (raised then lowered, or credited through a path that does not
+                // enforce it) must still be able to spend its way back down, and a flat
+                // "newGold > cap" would lock them out of every purchase permanently.
+                bool increasesGold = newGold > character.Gold;
+                if (newGold > int.MaxValue || (input.GoldCap > 0 && increasesGold && newGold > input.GoldCap))
+                    { await tx.RollbackAsync(); return VendorTradeFail("gold_cap"); }
+
+                // The bag the zone server computed with BOTH halves applied. Written in the same
+                // transaction as the wallet, so a failure anywhere leaves the player exactly as they
+                // were rather than sold-out-and-empty-handed.
+                await ReplaceInventory(conn, tx, customerGUID, input.CharacterID, input.PostTradeInventory);
+                long newRevision = await conn.ExecuteScalarAsync<long>(
+                    PlayerShopQueries.SetGoldAndBumpRevision,
+                    new { CustomerGUID = customerGUID, CharacterID = input.CharacterID, Gold = (int)newGold },
+                    transaction: tx, commandType: CommandType.Text);
+
+                VendorTradeResult result = new VendorTradeResult
+                {
+                    Success = true, ReasonCode = "", NewRevision = newRevision, NewGold = (int)newGold
+                };
+                // Recorded inside the transaction: a retry of the same OperationId replays this exact
+                // result instead of moving the money a second time.
+                await RecordOperation(conn, tx, customerGUID, input.OperationId, "VendorTrade", result);
+                await tx.CommitAsync();
+                return result;
+            }
+            catch (PostgresException pg) when (pg.SqlState == "23505")
+            {
+                // Two concurrent retries of the same OperationId: the loser replays the winner's row.
+                await SafeRollback(tx);
+                VendorTradeResult committed = await ReplayOperation<VendorTradeResult>(conn, customerGUID, input.OperationId);
+                return committed ?? VendorTradeFail("bad_request");
+            }
+            catch
+            {
+                await SafeRollback(tx);
+                throw;
+            }
+        }
+
+        private static VendorTradeResult VendorTradeFail(string reason) =>
+            new VendorTradeResult { Success = false, ReasonCode = reason };
 
         public async Task<OperationResultView> GetOperationResult(Guid customerGUID, Guid operationId)
         {

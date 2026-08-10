@@ -42,6 +42,27 @@ namespace OWSPublicAPI.Requests.Users
         {
             Output = new JoinMapByCharName();
 
+            //Bind the session to the character before touching it.  CharacterName arrives in the
+            //request body, and without this check the caller can place any character by name, take
+            //over its CharOnMapInstance row, and drive zone spin-ups for characters it does not own.
+            //UserSessionSetSelectedCharacter is what establishes the binding; this enforces it.
+            GetUserSession userSession = await usersRepository.GetUserSession(CustomerGUID, UserSessionGUID);
+
+            if (userSession == null || !userSession.UserGuid.HasValue)
+            {
+                Output.Success = false;
+                Output.ErrorMessage = "GetServerToConnectTo: Invalid or expired User Session.";
+                return new OkObjectResult(Output);
+            }
+
+            if (String.IsNullOrEmpty(userSession.SelectedCharacterName)
+                || !String.Equals(userSession.SelectedCharacterName, CharacterName, StringComparison.OrdinalIgnoreCase))
+            {
+                Output.Success = false;
+                Output.ErrorMessage = "GetServerToConnectTo: CharacterName does not match the selected character for this User Session.  Call UserSessionSetSelectedCharacter first.";
+                return new OkObjectResult(Output);
+            }
+
             //If ZoneName is empty, look it up from the character.  This is used for the inital login.
             if (String.IsNullOrEmpty(ZoneName) || ZoneName == "GETLASTZONENAME")
             {

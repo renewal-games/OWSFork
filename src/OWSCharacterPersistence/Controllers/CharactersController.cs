@@ -40,6 +40,11 @@ namespace OWSCharacterPersistence.Controllers
         private static readonly bool RequireServiceKey =
             string.Equals(Environment.GetEnvironmentVariable("OWS_REQUIRE_CHARACTER_WRITE_KEY"), "true", StringComparison.OrdinalIgnoreCase);
 
+        // True when these endpoints are writing gold/inventory with no credential beyond the
+        // X-CustomerGUID header, which is not a secret. Startup logs this so the posture is visible
+        // rather than inferred from an env var nobody set. See docs/mvp-hardening-spec.md item 4.
+        public static bool IsUnauthenticated => !RequireServiceKey;
+
         public override void OnActionExecuting(ActionExecutingContext context)
         {
             if (!ServiceKeyOk())
@@ -52,19 +57,30 @@ namespace OWSCharacterPersistence.Controllers
 
         private bool ServiceKeyOk()
         {
-            if (!RequireServiceKey)
+            // Nothing configured to verify against. Fail closed when the gate is required, so a
+            // missing env var on a deploy surfaces as 401s instead of silently opening the door.
+            if (string.IsNullOrEmpty(ConfiguredServiceKey))
+            {
+                return !RequireServiceKey;
+            }
+
+            bool headerPresent = Request.Headers.TryGetValue(ServiceKeyHeader, out var provided)
+                   && !string.IsNullOrEmpty(provided.ToString());
+
+            if (headerPresent
+                && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                       System.Text.Encoding.UTF8.GetBytes(provided.ToString()),
+                       System.Text.Encoding.UTF8.GetBytes(ConfiguredServiceKey)))
             {
                 return true;
             }
-            // Required but unconfigured -> fail closed rather than silently allow.
-            if (string.IsNullOrEmpty(ConfiguredServiceKey))
-            {
-                return false;
-            }
-            return Request.Headers.TryGetValue(ServiceKeyHeader, out var provided)
-                   && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
-                       System.Text.Encoding.UTF8.GetBytes(provided.ToString()),
-                       System.Text.Encoding.UTF8.GetBytes(ConfiguredServiceKey));
+
+            // Key configured but not matched. A caller that presented a *wrong* key is rejected
+            // whatever the toggle says: accepting it would let a misconfigured zone server look
+            // healthy right up until the toggle flips. A caller that presented none — including a
+            // proxy that injects the header empty, which is absence, not a wrong key — is still
+            // allowed while the gate is opt-in.
+            return !RequireServiceKey && !headerPresent;
         }
 
         [HttpPost]
@@ -150,8 +166,8 @@ namespace OWSCharacterPersistence.Controllers
 
         [HttpPost]
         [Route("UpdateCharacterInventory")]
-        [Produces(typeof(SuccessAndErrorMessage))]
-        public async Task<SuccessAndErrorMessage> UpdateCharacterInventory([FromBody] UpdateCharacterInventoryRequest request)
+        [Produces(typeof(UpdateCharacterInventoryResponse))]
+        public async Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory([FromBody] UpdateCharacterInventoryRequest request)
         {
             request.SetData(_charactersRepository, _customerGuid);
             return await request.Handle();

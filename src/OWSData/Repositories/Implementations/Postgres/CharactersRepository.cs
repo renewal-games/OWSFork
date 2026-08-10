@@ -955,40 +955,126 @@ namespace OWSData.Repositories.Implementations.Postgres
             return outputCharacter;
         }
 
-        public async Task UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory)
+        private sealed class CharNameLockRow
         {
-            using (Connection)
+            public int CharacterID { get; set; }
+            public long EconomyRevision { get; set; }
+        }
+
+        public async Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName,
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, long? expectedRevision = null)
+        {
+            // A whole-bag rewrite is DELETE-then-INSERT, so it has to be one transaction. This ran
+            // on an auto-committing connection before: a failure part-way through the insert loop
+            // left the player holding a truncated bag with nothing to roll back to, and it is the
+            // most frequent write in the game.
+            // The character row is locked for the duration so the save serializes with the shop
+            // economy transactions (Purchase/ClaimEscrow/VendorTrade) that rewrite the same table.
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+            using DbTransaction tx = await conn.BeginTransactionAsync();
+            try
             {
                 var parameters = new DynamicParameters();
                 parameters.Add("@CustomerGUID", customerGUID);
                 parameters.Add("@CharName", characterName);
 
-                IEnumerable<int> InventoryIDs = await Connection.QueryAsync<int>(GenericQueries.GetCharInventoryIDByCharName,
-                parameters,
-                commandType: CommandType.Text);
+                CharNameLockRow character = await conn.QuerySingleOrDefaultAsync<CharNameLockRow>(
+                    PlayerShopQueries.LockCharacterByNameForUpdate,
+                    parameters,
+                    transaction: tx, commandType: CommandType.Text);
 
-                if (!InventoryIDs.Any())
+                if (character == null)
                 {
-                    return;
+                    await tx.RollbackAsync();
+                    return InventoryFail("bad_request");
                 }
-                
-                parameters.Add("@CharInventoryID", InventoryIDs.First());
-                await Connection.ExecuteAsync(GenericQueries.DeleteCharacterInventoryItems,
-                parameters,
-                commandType: CommandType.Text);
 
-                foreach (UpdateCharacterInventory inventoryItem in updateCharacterInventory)
+                // Opt-in optimistic guard. Serializing on the lock alone does not save a stale
+                // caller: it would still write a pre-transaction bag over a shop op that committed
+                // while it was queued. Only this check stops that, and it needs the caller to tell
+                // us which revision the bag was computed from.
+                if (expectedRevision.HasValue && expectedRevision.Value != character.EconomyRevision)
                 {
-                    parameters.Add("@ItemIDTag", inventoryItem.ItemIDTag);
-                    parameters.Add("@Quantity", inventoryItem.Quantity);
-                    parameters.Add("@InSlotNumber", inventoryItem.InSlotNumber);
-                    parameters.Add("@CustomData", inventoryItem.CustomData);
-                    await Connection.ExecuteAsync(GenericQueries.UpdateCharacterInventory,
+                    await tx.RollbackAsync();
+                    return InventoryFail("stale_revision", character.EconomyRevision);
+                }
+
+                IEnumerable<int> inventoryIDs = await conn.QueryAsync<int>(GenericQueries.GetCharInventoryIDByCharName,
+                    parameters,
+                    transaction: tx, commandType: CommandType.Text);
+
+                // Character creation always inserts a CharInventory row, so a missing one means the
+                // character is malformed. Reported rather than silently succeeding — a save that
+                // writes nothing and claims success is how bag loss stays invisible.
+                if (!inventoryIDs.Any())
+                {
+                    await tx.RollbackAsync();
+                    return InventoryFail("no_inventory", character.EconomyRevision);
+                }
+
+                int charInventoryID = inventoryIDs.First();
+                parameters.Add("@CharInventoryID", charInventoryID);
+
+                await conn.ExecuteAsync(GenericQueries.DeleteCharacterInventoryItems,
+                    parameters,
+                    transaction: tx, commandType: CommandType.Text);
+
+                foreach (UpdateCharacterInventory inventoryItem in updateCharacterInventory ?? Enumerable.Empty<UpdateCharacterInventory>())
+                {
+                    await conn.ExecuteAsync(GenericQueries.UpdateCharacterInventory,
+                        new
+                        {
+                            CustomerGUID = customerGUID,
+                            CharInventoryID = charInventoryID,
+                            inventoryItem.ItemIDTag,
+                            inventoryItem.Quantity,
+                            inventoryItem.InSlotNumber,
+                            inventoryItem.CustomData
+                        },
+                        transaction: tx, commandType: CommandType.Text);
+                }
+
+                // Bump only for callers on the protocol. UpdateCharacterCurrency bumps
+                // unconditionally and gets away with it because the zone server already reads the
+                // revision back off that response; NewEconomyRevision here is a new field nothing
+                // reads yet, so bumping on every autosave would strand the zone server's cached
+                // revision and fail every following shop op with stale_revision.
+                // Consequence, spelled out: on the default path a stale bag snapshot can still
+                // overwrite a committed shop transaction. Closing that needs the zone server to
+                // send ExpectedRevision — see docs/mvp-hardening-spec.md item 2.
+                long newRevision = character.EconomyRevision;
+                if (expectedRevision.HasValue)
+                {
+                    newRevision = await conn.ExecuteScalarAsync<long>(PlayerShopQueries.BumpRevisionByName,
                         parameters,
-                        commandType: CommandType.Text);
+                        transaction: tx, commandType: CommandType.Text);
                 }
+
+                await tx.CommitAsync();
+                return new UpdateCharacterInventoryResponse
+                {
+                    Success = true,
+                    ErrorMessage = "",
+                    ReasonCode = "",
+                    NewEconomyRevision = newRevision
+                };
+            }
+            catch
+            {
+                try { await tx.RollbackAsync(); } catch { /* connection already gone */ }
+                throw;
             }
         }
+
+        private static UpdateCharacterInventoryResponse InventoryFail(string reasonCode, long revision = 0) =>
+            new UpdateCharacterInventoryResponse
+            {
+                Success = false,
+                ErrorMessage = reasonCode,
+                ReasonCode = reasonCode,
+                NewEconomyRevision = revision
+            };
 
         public async Task<long> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold)
         {

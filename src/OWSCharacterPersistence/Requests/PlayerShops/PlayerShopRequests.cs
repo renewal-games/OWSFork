@@ -168,6 +168,20 @@ namespace OWSCharacterPersistence.Requests.PlayerShops
         public async Task<ClaimEscrowResult> Handle() => await repo.ClaimEscrow(customerGUID, Input);
     }
 
+    public class VendorTradeRequest
+    {
+        public VendorTradeInput Input { get; set; }
+
+        private Guid customerGUID;
+        private IPlayerShopsRepository repo;
+        public void SetData(IPlayerShopsRepository repo, IHeaderCustomerGUID customerGuid)
+        {
+            this.repo = repo;
+            customerGUID = customerGuid.CustomerGUID;
+        }
+        public async Task<VendorTradeResult> Handle() => await repo.VendorTrade(customerGUID, Input);
+    }
+
     public class GetOperationResultRequest
     {
         public Guid OperationId { get; set; }

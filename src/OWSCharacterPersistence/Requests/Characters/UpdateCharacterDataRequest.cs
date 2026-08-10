@@ -37,8 +37,24 @@ namespace OWSCharacterPersistence.Requests.Characters
             try
             {
                 await charactersRepository.UpdateCharacterQuests(customerGUID, CharacterName, CharQuests);
-                await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, CharInventory);
+
+                // The inventory write can now fail its own guard (missing CharInventory row, and
+                // stale_revision once callers opt in). It used to return void, so a refused bag save
+                // reported success to the zone server; surface it instead.
+                UpdateCharacterInventoryResponse inventoryResult =
+                    await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, CharInventory);
+
+                // Deliberately NOT an early return. These three are separate transactions, so
+                // bailing here would leave quests committed and silently drop the stats save
+                // forever — a refused bag must not also cost the player their stats. Run the
+                // remaining write, then report the inventory failure.
                 await charactersRepository.UpdateCharacterStats(customerGUID, CharacterName, CharStats);
+
+                if (!inventoryResult.Success)
+                {
+                    successAndErrorMessage.Success = false;
+                    successAndErrorMessage.ErrorMessage = $"UpdateCharacterInventory failed: {inventoryResult.ReasonCode}";
+                }
             }
             catch (Exception ex)
             {

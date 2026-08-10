@@ -58,6 +58,32 @@ namespace OWSData.Models.Composites
         public List<UpdateCharacterInventory> PostDeliveryInventory { get; set; } = new List<UpdateCharacterInventory>();
     }
 
+    // NPC vendor trade. The sell half and the buy half of one Trade used to be two independent
+    // server commands with no rollback: sell succeeded, buy failed (bag full / gold cap / stale
+    // slot) and the player had irreversibly sold and bought nothing. This commits both or neither.
+    // PostTradeInventory is the whole post-trade bag, exactly like ConfirmDelivery/ClaimEscrow.
+    public class VendorTradeInput
+    {
+        public Guid OperationId { get; set; }
+        public int CharacterID { get; set; }
+        public long ExpectedRevision { get; set; }
+        // Proceeds of the sell half and cost of the buy half, both non-negative and both priced by
+        // the authoritative zone server against its own shop tables.
+        public int SellGoldTotal { get; set; }
+        public int BuyGoldTotal { get; set; }
+        // 0 = uncapped. Enforced here so "you can't carry that much gold" fails the WHOLE trade.
+        public int GoldCap { get; set; }
+        public List<UpdateCharacterInventory> PostTradeInventory { get; set; } = new List<UpdateCharacterInventory>();
+    }
+
+    public class VendorTradeResult
+    {
+        public bool Success { get; set; }
+        public string ReasonCode { get; set; } = "";
+        public long NewRevision { get; set; }
+        public int NewGold { get; set; }
+    }
+
     public class ClaimItemInput
     {
         public long PlayerShopItemID { get; set; }
