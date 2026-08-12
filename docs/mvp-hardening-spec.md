@@ -184,6 +184,29 @@ returns a non-throwing result describing what was skipped.
 - **TLS.** The deployment profile ships a Caddy TLS proxy for the public-facing services. Real gap
   only if `OWS_PUBLIC_API_DOMAIN` is unset while `OWS_API_BIND=0.0.0.0`. Config checklist, not code.
 
+## Post-incident correction (item 3, 2026-08-12)
+
+The unconditional session binding shipped in `024aaa9` broke PIE provisioning and was made opt-in
+behind `OWS_REQUIRE_SESSION_CHARACTER_BINDING` (default off) in `e310ce6`. Cross-examination of that
+incident corrected the diagnosis recorded in `e310ce6`'s commit message:
+
+- The mechanism stated there ("the UE plugin does not send UserSessionGUID") came from
+  `plugins/OWSPluginUE5` in this repo, which is **stale**. The shipping client
+  (`ragna-remake/Plugins/OWSPlugin` in Perforce) has `UserSessionGUID` on
+  `FTravelToLastZoneServerJSONPost`, populates it on both travel paths the game actually uses
+  (`TravelToLastZoneServer`, `GetZoneServerToTravelTo`), and game code never calls
+  `LaunchZoneInstance` at all. What actually rejected the shipping client was the
+  **SelectedCharacterName requirement**: flows that skip the character-select screen (PIE
+  provisioning) create sessions with `SelectedCharacterName = NULL`. The normal login-screen flow
+  sets it and passed the check throughout.
+- Consequence: enabling the flag likely requires **no client changes** — the enabled-mode check
+  verifies session validity + character ownership by UserGUID, both of which the shipping client's
+  flows can already satisfy. Verify by enabling on dev and running PIE; the client logs
+  "no UserSessionGUID" client-side (`PlayerCharacterGASController.cpp:5292`) if a path still sends
+  an empty session.
+- Standing rule: diagnose client behaviour from the Perforce plugin copy, never from the repo
+  bundle.
+
 ## Post-review amendments
 
 Applied after code review of the implementation:
