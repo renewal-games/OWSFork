@@ -1,4 +1,4 @@
-using OWSData.Models.Tables;
+using OWSData.Models.Composites;
 using OWSData.Repositories.Interfaces;
 using System;
 using System.Collections.Generic;
@@ -19,7 +19,7 @@ namespace OWSManagement.Requests.Users
             _usersRepository = usersRepository;
         }
 
-        public async Task<IEnumerable<User>> Handle()
+        public async Task<IEnumerable<AdminUserSummary>> Handle()
         {
             return await _usersRepository.SearchUsers(_customerGuid, _searchText);
         }
