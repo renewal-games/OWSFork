@@ -16,6 +16,9 @@ export default {
     updateUser(data: Record<string, unknown>) {
         return client.put('/Users', data);
     },
+    setUserNetworkTestFlag(data: Record<string, unknown>) {
+        return client.put('/Users/NetworkTestFlag', data);
+    },
     searchCharacters(search: string) {
         return client.get('/Characters', { params: { search } });
     },

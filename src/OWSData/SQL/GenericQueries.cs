@@ -178,15 +178,28 @@ namespace OWSData.SQL
         // Bounded counterpart to GetUsers, which has no LIMIT and returns every row in the
         // customer. Matches email, either name, or SteamId. An empty search returns the first
         // page. Only the management console calls it.
-        public static readonly string SearchUsers = @"SELECT UserGUID, FirstName, LastName, Email, SteamId, CreateDate, LastAccess, Role
-                FROM Users
-                WHERE CustomerGUID = @CustomerGUID
-                  AND (LOWER(Email) LIKE @SearchPattern
-                    OR LOWER(FirstName) LIKE @SearchPattern
-                    OR LOWER(LastName) LIKE @SearchPattern
-                    OR LOWER(COALESCE(SteamId, '')) LIKE @SearchPattern)
-                ORDER BY Email
+        public static readonly string SearchUsers = @"SELECT U.UserGUID, U.FirstName, U.LastName, U.Email, U.SteamId,
+                    U.CreateDate, U.LastAccess, U.Role,
+                    (SELECT COUNT(*) FROM Characters C
+                      WHERE C.CustomerGUID = U.CustomerGUID AND C.UserGUID = U.UserGUID) AS CharacterCount,
+                    (SELECT COUNT(*) FROM Characters C
+                      WHERE C.CustomerGUID = U.CustomerGUID AND C.UserGUID = U.UserGUID
+                        AND C.IsInternalNetworkTestUser) AS NetworkTestCharacterCount
+                FROM Users U
+                WHERE U.CustomerGUID = @CustomerGUID
+                  AND (LOWER(U.Email) LIKE @SearchPattern
+                    OR LOWER(U.FirstName) LIKE @SearchPattern
+                    OR LOWER(U.LastName) LIKE @SearchPattern
+                    OR LOWER(COALESCE(U.SteamId, '')) LIKE @SearchPattern)
+                ORDER BY U.Email
                 OFFSET 0 ROWS FETCH NEXT 200 ROWS ONLY";
+
+        // Account-level convenience: the flag lives on Characters, so setting it "for a user"
+        // means setting it on every character they own. Characters with a NULL UserGUID
+        // (legacy rows created before accounts were linked) are unreachable this way.
+        public static readonly string UpdateNetworkTestFlagForUser = @"UPDATE Characters
+                SET IsInternalNetworkTestUser = @IsInternalNetworkTestUser
+              WHERE CustomerGUID = @CustomerGUID AND UserGUID = @UserGUID";
 
         public static readonly string UpdateUser = @"UPDATE Users
                 SET FirstName = @FirstName

@@ -14,6 +14,7 @@
         addingANewUser: boolean,
         search: string,
         loading: boolean,
+        savingUserGuid: string,
         message: string,
         messageType: string
     }
@@ -25,7 +26,8 @@
             { title: 'Last Name', key: 'lastName' },
             { title: 'Email', key: 'email' },
             { title: 'Steam ID', key: 'steamId' },
-            { title: 'Role', key: 'role' }
+            { title: 'Role', key: 'role' },
+            { title: 'Net Test', key: 'networkTestCharacterCount', sortable: false }
         ],
         rows: [],
         roles: ['Player', 'Moderator', 'GameMaster', 'Admin'],
@@ -35,6 +37,7 @@
         addingANewUser: false,
         search: '',
         loading: false,
+        savingUserGuid: '',
         message: '',
         messageType: 'success'
     });
@@ -93,8 +96,52 @@
         data.showEditingUserDialog = false;
     }
 
+    // The flag lives on Characters, so an account is "on" only when every character has it.
+    // A partial state (some characters flagged from the Characters page) shows as off with a
+    // count, and switching on brings the rest into line.
+    function netTestState(user: Record<string, any>) {
+        const total = user.characterCount ?? 0;
+        const flagged = user.networkTestCharacterCount ?? 0;
+        return {
+            total,
+            flagged,
+            all: total > 0 && flagged === total,
+            partial: flagged > 0 && flagged < total
+        };
+    }
+
+    function setNetTest(user: Record<string, any>, value: boolean) {
+        data.savingUserGuid = user.userGUID;
+        data.message = '';
+
+        owsApi.setUserNetworkTestFlag({
+            userGUID: user.userGUID,
+            isInternalNetworkTestUser: value
+        }).then((response: any) => {
+            if (response.data && response.data.success) {
+                user.networkTestCharacterCount = value ? (user.characterCount ?? 0) : 0;
+                data.messageType = 'success';
+                data.message = response.data.errorMessage
+                    ? `${user.email}: ${response.data.errorMessage}`
+                    : `${user.email}: network test ${value ? 'on' : 'off'} for all `
+                      + `${user.characterCount} character(s). Applies on their next connect.`;
+            }
+            else {
+                data.messageType = 'error';
+                data.message = response.data?.errorMessage || 'Unable to set the flag.';
+            }
+        }).catch((error: any) => {
+            data.messageType = 'error';
+            data.message = 'Could not save: ' + (error?.message ?? 'unknown error');
+        }).finally(function () {
+            data.savingUserGuid = '';
+        });
+    }
+
     function viewCharacters(user: Record<string, any>) {
-        router.push({ path: '/characters', query: { userGuid: user.userGuid } });
+        // AdminUserSummary.UserGUID serialises as userGUID, not userGuid as the old User
+        // model did. The route's own query key stays userGuid; CharactersGrid reads that.
+        router.push({ path: '/characters', query: { userGuid: user.userGUID } });
     }
 
     function deleteUser(userToDelete: Record<string, unknown>) {
@@ -197,6 +244,28 @@
                         </v-alert>
                     </template>
 
+                    <template v-slot:item.networkTestCharacterCount="{ item }">
+                        <div class="d-flex align-center">
+                            <v-switch :model-value="netTestState(item.raw).all"
+                                      color="info"
+                                      density="compact"
+                                      hide-details
+                                      :disabled="data.savingUserGuid === item.raw.userGUID || netTestState(item.raw).total === 0"
+                                      @update:modelValue="() => setNetTest(item.raw, !netTestState(item.raw).all)"></v-switch>
+                            <span v-if="netTestState(item.raw).partial"
+                                  class="text-caption"
+                                  style="margin-left:6px; white-space:nowrap;"
+                                  :title="'Set on some characters only'">
+                                {{ netTestState(item.raw).flagged }}/{{ netTestState(item.raw).total }}
+                            </span>
+                            <span v-else-if="netTestState(item.raw).total === 0"
+                                  class="text-caption text-disabled"
+                                  style="margin-left:6px; white-space:nowrap;">
+                                no chars
+                            </span>
+                        </div>
+                    </template>
+
                     <template v-slot:no-data>
                         <div class="pa-4">No users matched.</div>
                     </template>
@@ -230,6 +299,15 @@
                 not see someone. Steam accounts store the persona name in First Name and get a
                 synthetic <code>steam_&lt;id&gt;@steam.samsarasaga.invalid</code> email, so searching
                 the Steam ID finds them either way.
+            </v-alert>
+
+            <v-alert type="warning" density="compact" style="margin-top: 12px;">
+                <strong>Net Test</strong> sets <code>Characters.IsInternalNetworkTestUser</code> on
+                <em>every</em> character the account owns, so the server hands them
+                <code>127.0.0.1</code> instead of the zone server's real IP. Only useful when that
+                player is on the same machine as the zone server - for anyone else it makes the
+                game unjoinable until switched back off. A <code>2/4</code> badge means it was set
+                per character on the Characters page; switching on here brings the rest into line.
             </v-alert>
 
             <v-alert type="info" density="compact" style="margin-top: 12px;">

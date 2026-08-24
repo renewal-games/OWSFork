@@ -712,7 +712,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 return outputObject;
             }
         }
-        public async Task<IEnumerable<User>> SearchUsers(Guid customerGuid, string searchText)
+        public async Task<IEnumerable<AdminUserSummary>> SearchUsers(Guid customerGuid, string searchText)
         {
             using (Connection)
             {
@@ -721,7 +721,43 @@ namespace OWSData.Repositories.Implementations.Postgres
                 // Wildcards travel as data in a bound parameter, never concatenated into SQL.
                 p.Add("@SearchPattern", "%" + (searchText ?? string.Empty).Trim().ToLowerInvariant() + "%");
 
-                return await Connection.QueryAsync<User>(GenericQueries.SearchUsers, p);
+                return await Connection.QueryAsync<AdminUserSummary>(GenericQueries.SearchUsers, p);
+            }
+        }
+
+        public async Task<SuccessAndErrorMessage> SetNetworkTestFlagForUser(Guid customerGuid, Guid userGuid, bool isInternalNetworkTestUser)
+        {
+            SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();
+
+            try
+            {
+                using (Connection)
+                {
+                    var p = new DynamicParameters();
+                    p.Add("@CustomerGUID", customerGuid);
+                    p.Add("@UserGUID", userGuid);
+                    p.Add("@IsInternalNetworkTestUser", isInternalNetworkTestUser);
+
+                    int rowsAffected = await Connection.ExecuteAsync(GenericQueries.UpdateNetworkTestFlagForUser,
+                        p,
+                        commandType: CommandType.Text);
+
+                    // Zero rows is not an error: the account may simply have no characters yet.
+                    // Say which it was rather than reporting a silent success.
+                    outputObject.Success = true;
+                    outputObject.ErrorMessage = rowsAffected < 1
+                        ? "No characters found for this user - nothing to change."
+                        : "";
+
+                    return outputObject;
+                }
+            }
+            catch (Exception ex)
+            {
+                outputObject.Success = false;
+                outputObject.ErrorMessage = ex.Message;
+
+                return outputObject;
             }
         }
 

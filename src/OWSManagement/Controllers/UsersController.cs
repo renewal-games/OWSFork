@@ -46,8 +46,8 @@ namespace OWSManagement.Controllers
         /// </remarks>
         [HttpGet]
         [Route("")]
-        [Produces(typeof(IEnumerable<User>))]
-        public async Task<IEnumerable<User>> Get([FromQuery] string search)
+        [Produces(typeof(IEnumerable<AdminUserSummary>))]
+        public async Task<IEnumerable<AdminUserSummary>> Get([FromQuery] string search)
         {
             SearchUsersRequest searchUsersRequest = new SearchUsersRequest(_customerGuid.CustomerGUID, search, _usersRepository);
 
@@ -83,6 +83,26 @@ namespace OWSManagement.Controllers
             AddUserRequest addUserRequest = new AddUserRequest(_customerGuid.CustomerGUID, addUserDTO, _usersRepository);
 
             return await addUserRequest.Handle();
+        }
+
+        /// <summary>
+        /// Set the network test flag for a whole account
+        /// </summary>
+        /// <remarks>
+        /// Sets Characters.IsInternalNetworkTestUser on every character this user owns, which
+        /// makes GetServerToConnectTo hand those characters 127.0.0.1 instead of the zone
+        /// server's real IP. There is no account-level column - the flag lives on Characters -
+        /// so this is a fan-out, and characters with a NULL UserGUID cannot be reached by it.
+        /// Use the Characters page to set it on one character at a time.
+        /// </remarks>
+        [HttpPut]
+        [Route("NetworkTestFlag")]
+        [Produces(typeof(SuccessAndErrorMessage))]
+        public async Task<SuccessAndErrorMessage> SetNetworkTestFlag([FromBody] SetUserNetworkTestFlagDTO dto)
+        {
+            SetUserNetworkTestFlagRequest request = new SetUserNetworkTestFlagRequest(_customerGuid.CustomerGUID, dto, _usersRepository);
+
+            return await request.Handle();
         }
 
         /// <summary>

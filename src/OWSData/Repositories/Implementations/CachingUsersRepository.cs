@@ -104,8 +104,11 @@ namespace OWSData.Repositories.Implementations
         public Task<IEnumerable<User>> GetUsers(Guid customerGuid)
             => _inner.GetUsers(customerGuid);
 
-        public Task<IEnumerable<User>> SearchUsers(Guid customerGuid, string searchText)
+        public Task<IEnumerable<AdminUserSummary>> SearchUsers(Guid customerGuid, string searchText)
             => _inner.SearchUsers(customerGuid, searchText);
+
+        public Task<SuccessAndErrorMessage> SetNetworkTestFlagForUser(Guid customerGuid, Guid userGuid, bool isInternalNetworkTestUser)
+            => _inner.SetNetworkTestFlagForUser(customerGuid, userGuid, isInternalNetworkTestUser);
 
         public Task<GetUserSession> GetUserSessionORM(Guid customerGUID, Guid userSessionGUID)
             => _inner.GetUserSessionORM(customerGUID, userSessionGUID);
