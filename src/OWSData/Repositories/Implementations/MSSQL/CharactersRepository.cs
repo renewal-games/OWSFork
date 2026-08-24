@@ -555,7 +555,10 @@ namespace OWSData.Repositories.Implementations.MSSQL
 
             return new MapInstances { MapInstanceId = -1 };
         }
-        public async Task UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats)
+        // MSSQL is not a deployment target (Postgres only), so the zone-ownership guard is not
+        // implemented here. The parameter is accepted and ignored rather than refused: refusing would
+        // block every save instead of only the stale ones.
+        public async Task<bool> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, int? callerZoneInstanceId = null)
         {
             using (Connection)
             {
@@ -569,9 +572,10 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 p.Add("@StatValues", statVals);
 
                 await Connection.ExecuteAsync(GenericQueries.UpsertManyCharacterStats, p, commandType: CommandType.Text);
+                return true;
             }
         }
-        public async Task UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests)
+        public async Task<bool> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, int? callerZoneInstanceId = null)
         {
             using (Connection)
             {
@@ -587,6 +591,8 @@ namespace OWSData.Repositories.Implementations.MSSQL
 
                     await Connection.ExecuteAsync(GenericQueries.UpdateCharacterQuest, p);
                 }
+
+                return true;
             }
         }
         // Durability half of the Postgres fix: the DELETE-then-INSERT rewrite runs in one
@@ -665,7 +671,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 throw;
             }
         }
-        public async Task<long> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold)
+        public async Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, long? expectedRevision = null)
         {
             using (Connection)
             {
@@ -678,8 +684,9 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     parameters,
                     commandType: CommandType.Text);
 
-                // MSSQL has no EconomyRevision protocol (player shops are Postgres-only); 0 = "no revision".
-                return 0;
+                // MSSQL has no EconomyRevision protocol (player shops are Postgres-only), so there is
+                // nothing to check expectedRevision against; 0 = "no revision", matching the contract.
+                return new UpdateCharacterCurrencyResponse { Success = true, NewEconomyRevision = 0 };
             }
         }
         public async Task UpdateCharacterClass(Guid customerGUID, string characterName, string className)
@@ -1121,6 +1128,77 @@ namespace OWSData.Repositories.Implementations.MSSQL
         public Task<IEnumerable<CharacterAbilityDto>> GetCharacterAbilities(Guid customerGUID, string characterName)
         {
             throw new NotImplementedException();
+        }
+
+        public async Task<IEnumerable<AdminCharacterSummary>> GetCharactersForUser(Guid customerGUID, Guid userGUID)
+        {
+            using (Connection)
+            {
+                var p = new DynamicParameters();
+                p.Add("@CustomerGUID", customerGUID);
+                p.Add("@UserGUID", userGUID);
+
+                return await Connection.QueryAsync<AdminCharacterSummary>(GenericQueries.GetCharactersForUser,
+                    p,
+                    commandType: CommandType.Text);
+            }
+        }
+
+        public async Task<IEnumerable<AdminCharacterSummary>> SearchCharacters(Guid customerGUID, string searchText)
+        {
+            using (Connection)
+            {
+                var p = new DynamicParameters();
+                p.Add("@CustomerGUID", customerGUID);
+                // Passed as a parameter, so the wildcards are data rather than SQL. An empty
+                // search matches everything, capped at 200 rows inside the query itself.
+                p.Add("@SearchPattern", "%" + (searchText ?? string.Empty).Trim().ToLowerInvariant() + "%");
+
+                return await Connection.QueryAsync<AdminCharacterSummary>(GenericQueries.SearchCharacters,
+                    p,
+                    commandType: CommandType.Text);
+            }
+        }
+
+        public async Task<SuccessAndErrorMessage> SetCharacterAdminFlags(Guid customerGUID, int characterID, bool isAdmin, bool isModerator)
+        {
+            SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();
+
+            try
+            {
+                using (Connection)
+                {
+                    var p = new DynamicParameters();
+                    p.Add("@CustomerGUID", customerGUID);
+                    p.Add("@CharacterID", characterID);
+                    p.Add("@IsAdmin", isAdmin);
+                    p.Add("@IsModerator", isModerator);
+
+                    int rowsAffected = await Connection.ExecuteAsync(GenericQueries.UpdateCharacterAdminFlags,
+                        p,
+                        commandType: CommandType.Text);
+
+                    if (rowsAffected < 1)
+                    {
+                        outputObject.Success = false;
+                        outputObject.ErrorMessage = "Character not found.";
+
+                        return outputObject;
+                    }
+                }
+
+                outputObject.Success = true;
+                outputObject.ErrorMessage = "";
+
+                return outputObject;
+            }
+            catch (Exception ex)
+            {
+                outputObject.Success = false;
+                outputObject.ErrorMessage = ex.Message;
+
+                return outputObject;
+            }
         }
     }
 }

@@ -1,15 +1,19 @@
-﻿<script setup lang="ts">
-    import { ref, reactive, onMounted } from 'vue';
+<script setup lang="ts">
+    import { reactive, onMounted } from 'vue';
     import UsersAdd from "./UsersAdd.vue";
     import owsApi from '../owsApi';
+    import router from '../router';
 
     interface Data {
         headers: Array<object>,
-        rows: Array<object>,
+        rows: Array<Record<string, any>>,
+        roles: Array<string>,
         showEditingUserDialog: boolean,
-        editUser: Record<string, unknown>,
+        editUser: Record<string, any>,
         editUserIndex: number,
-        addingANewUser: boolean
+        addingANewUser: boolean,
+        message: string,
+        messageType: string
     }
 
     const data: Data = reactive({
@@ -21,10 +25,13 @@
             { title: 'Role', key: 'role' }
         ],
         rows: [],
+        roles: ['Player', 'Moderator', 'GameMaster', 'Admin'],
         showEditingUserDialog: false,
         editUser: {},
         editUserIndex: -1,
-        addingANewUser: false
+        addingANewUser: false,
+        message: '',
+        messageType: 'success'
     });
 
     function loadUsersGrid() {
@@ -32,11 +39,17 @@
             if (response.data != null) {
                 data.rows = response.data;
             }
-
         }).catch((error: any) => {
-            console.log(error);
-        }).finally(function () {
+            data.messageType = 'error';
+            data.message = 'Could not load users: ' + (error?.message ?? 'unknown error');
+        });
 
+        owsApi.getRoles().then((response: any) => {
+            if (Array.isArray(response.data) && response.data.length > 0) {
+                data.roles = response.data;
+            }
+        }).catch(() => {
+            // Fall back to the hardcoded list; not worth surfacing.
         });
     }
 
@@ -52,25 +65,28 @@
 
     function editUserSave() {
         owsApi.updateUser(data.editUser).then((response: any) => {
-            if (response.data != null) {
-                if (response.data) {
-                    data.rows[data.editUserIndex] = data.editUser;
-                    data.showEditingUserDialog = false;
-                }
-                else {
-                    alert("Unable to update the user!");
-                }
+            if (response.data && response.data.success) {
+                data.rows[data.editUserIndex] = data.editUser;
+                data.showEditingUserDialog = false;
+                data.messageType = 'success';
+                data.message = 'Saved ' + data.editUser.email + ' as ' + data.editUser.role + '.';
             }
-
+            else {
+                data.messageType = 'error';
+                data.message = response.data?.errorMessage || 'Unable to update the user.';
+            }
         }).catch((error: any) => {
-            console.log(error);
-        }).finally(function () {
-
+            data.messageType = 'error';
+            data.message = 'Could not save: ' + (error?.message ?? 'unknown error');
         });
     }
 
     function editUserClose() {
         data.showEditingUserDialog = false;
+    }
+
+    function viewCharacters(user: Record<string, any>) {
+        router.push({ path: '/characters', query: { userGuid: user.userGuid } });
     }
 
     function deleteUser(userToDelete: Record<string, unknown>) {
@@ -88,15 +104,15 @@
 <v-container>
     <div class="users-container">
         <div v-if="data.addingANewUser">
-            <UsersAdd />
+            <UsersAdd :roles="data.roles" />
         </div>
         <div v-else>
             <div>
                 <v-data-table :headers="data.headers"
                               :items="data.rows"
-                              :items-per-page="5"
+                              :items-per-page="10"
                               class="elevation-1 users-table">
-                        
+
                     <template v-slot:top>
                         <v-toolbar flat>
                             <v-toolbar-title>Users</v-toolbar-title>
@@ -107,7 +123,7 @@
                             <v-btn rounded="pill"
                                    color="primary"
                                    @click="clickAddNewUser">
-                                <v-icon icon="mdi-plus"></v-icon> Add New Player User
+                                <v-icon icon="mdi-plus"></v-icon> Add New User
                             </v-btn>
                             <v-dialog v-model="data.showEditingUserDialog"
                                       max-width="500px">
@@ -117,23 +133,22 @@
                                     <v-card-text>
                                         <v-container>
                                             <v-row>
-                                                <v-col cols="10"
-                                                       sm="10"
-                                                       md="10">
+                                                <v-col cols="12">
                                                     <v-text-field v-model="data.editUser.firstName"
                                                                   label="First Name"></v-text-field>
                                                 </v-col>
-                                                <v-col cols="10"
-                                                       sm="10"
-                                                       md="10">
+                                                <v-col cols="12">
                                                     <v-text-field v-model="data.editUser.lastName"
                                                                   label="Last Name"></v-text-field>
                                                 </v-col>
-                                                <v-col cols="10"
-                                                       sm="10"
-                                                       md="10">
+                                                <v-col cols="12">
                                                     <v-text-field v-model="data.editUser.email"
                                                                   label="Email"></v-text-field>
+                                                </v-col>
+                                                <v-col cols="12">
+                                                    <v-select v-model="data.editUser.role"
+                                                              :items="data.roles"
+                                                              label="Role"></v-select>
                                                 </v-col>
                                             </v-row>
                                         </v-container>
@@ -153,22 +168,41 @@
                                 </v-card>
                             </v-dialog>
                         </v-toolbar>
+
+                        <v-alert v-if="data.message" :type="data.messageType as any" density="compact" class="ma-2">
+                            {{ data.message }}
+                        </v-alert>
                     </template>
 
                     <template v-slot:item.actions="{ item }">
                         <v-icon size="small"
                                 class="me-2"
+                                title="Edit user"
                                 @click="editUser(item.raw)"
                                 style="margin-right:10px;">
                             mdi-pencil
                         </v-icon>
                         <v-icon size="small"
+                                class="me-2"
+                                title="Characters"
+                                @click="viewCharacters(item.raw)"
+                                style="margin-right:10px;">
+                            mdi-account-group
+                        </v-icon>
+                        <v-icon size="small"
+                                title="Delete user"
                                 @click="deleteUser(item.raw)">
                             mdi-delete
                         </v-icon>
                     </template>
                 </v-data-table>
             </div>
+
+            <v-alert type="info" density="compact" style="margin-top: 24px;">
+                Role is stored on <code>Users.Role</code>. Nothing in the API checks it yet, so
+                it records intent rather than granting access. In-game admin comes from the
+                per-character flags on the Characters page.
+            </v-alert>
         </div>
     </div>
 </v-container>
@@ -177,9 +211,5 @@
 <style scoped>
     .users-container {
         margin-top: 0px;
-    }
-
-    .users-table table thead th {
-        background-color: blue;
     }
 </style>

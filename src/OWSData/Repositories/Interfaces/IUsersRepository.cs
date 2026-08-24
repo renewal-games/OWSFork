@@ -25,7 +25,10 @@ namespace OWSData.Repositories.Interfaces
         Task<PlayerLoginAndCreateSession> SteamLoginAndCreateSession(Guid customerGUID, string steamId, string personaName);
         Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid);
         Task<SuccessAndErrorMessage> UserSessionSetSelectedCharacter(Guid customerGUID, Guid userSessionGUID, string selectedCharacterName);
-        Task<SuccessAndErrorMessage> RegisterUser(Guid customerGUID, string userName, string password, string firstName, string lastName);
+        Task<SuccessAndErrorMessage> RegisterUser(Guid customerGUID, string userName, string password, string firstName, string lastName, string role = null);
+        // Management-console only. role must already be normalised via UserRoles.TryNormalize;
+        // Users.Role is VARCHAR(10) and nothing downstream re-validates it.
+        Task<SuccessAndErrorMessage> UpdateUserRole(Guid customerGuid, Guid userGuid, string role);
         Task<GetUserSession> GetUserFromEmail(Guid customerGUID, string email);
         Task<SuccessAndErrorMessage> RemoveCharacter(Guid customerGUID, Guid userSessionGUID, string characterName);
         Task<SuccessAndErrorMessage> UpdateUser(Guid customerGuid, Guid userGuid, string firstName, string lastName, string email);

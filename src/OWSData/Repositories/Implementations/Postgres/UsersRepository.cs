@@ -417,7 +417,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        public async Task<SuccessAndErrorMessage> RegisterUser(Guid customerGUID, string email, string password, string firstName, string lastName)
+        public async Task<SuccessAndErrorMessage> RegisterUser(Guid customerGUID, string email, string password, string firstName, string lastName, string role = null)
         {
             SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();
 
@@ -431,7 +431,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     p.Add("@Password", password);
                     p.Add("@FirstName", firstName);
                     p.Add("@LastName", lastName);
-                    p.Add("@Role", "Player");
+                    p.Add("@Role", UserRoles.NormalizeOrDefault(role));
 
                     await Connection.ExecuteAsync("select * from AddUser(@CustomerGUID, @FirstName, @LastName, @Email, @Password, @Role)",
                         p,
@@ -649,6 +649,54 @@ namespace OWSData.Repositories.Implementations.Postgres
                     await Connection.ExecuteAsync(GenericQueries.UpdateUser,
                         p,
                         commandType: CommandType.Text);
+                }
+
+                outputObject.Success = true;
+                outputObject.ErrorMessage = "";
+
+                return outputObject;
+            }
+            catch (Exception ex)
+            {
+                outputObject.Success = false;
+                outputObject.ErrorMessage = ex.Message;
+
+                return outputObject;
+            }
+        }
+
+        public async Task<SuccessAndErrorMessage> UpdateUserRole(Guid customerGuid, Guid userGuid, string role)
+        {
+            SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();
+
+            if (!UserRoles.TryNormalize(role, out string normalizedRole))
+            {
+                outputObject.Success = false;
+                outputObject.ErrorMessage = $"Unknown role: {role}";
+
+                return outputObject;
+            }
+
+            try
+            {
+                using (Connection)
+                {
+                    var p = new DynamicParameters();
+                    p.Add("@CustomerGUID", customerGuid);
+                    p.Add("@UserGUID", userGuid);
+                    p.Add("@Role", normalizedRole);
+
+                    int rowsAffected = await Connection.ExecuteAsync(GenericQueries.UpdateUserRole,
+                        p,
+                        commandType: CommandType.Text);
+
+                    if (rowsAffected < 1)
+                    {
+                        outputObject.Success = false;
+                        outputObject.ErrorMessage = "User not found.";
+
+                        return outputObject;
+                    }
                 }
 
                 outputObject.Success = true;

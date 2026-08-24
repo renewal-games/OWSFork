@@ -1,4 +1,36 @@
-# OWS Hetzner Tunnel Tray
+# OWS Hetzner Helpers
+
+Two unrelated tools live here: the tunnel tray for local UE instance launching, and the
+admin console launcher.
+
+## Admin Console
+
+Starts the loopback-only admin console on the dev server, tunnels to it, opens the browser,
+and stops it again when you close the window with Ctrl+C.
+
+Double-click:
+
+```text
+Update-AdminConsole.cmd     first run, and after pushing any console change
+Start-AdminConsole.cmd      every time after that
+```
+
+`Update-AdminConsole.cmd` pulls `origin/main` on the server and rebuilds the image, so it is
+the slow one; `Start-AdminConsole.cmd` just starts what is already built.
+
+Both pass extra arguments through to `Start-AdminConsole.ps1`:
+
+```powershell
+.\Start-AdminConsole.cmd -KeepRunning        # leave it running server-side
+.\Start-AdminConsole.cmd -Port 44411         # if 44410 is busy on this PC
+.\Start-AdminConsole.cmd -Server 1.2.3.4     # a different box
+```
+
+`admin-console.sh` is the server-side half (`up` / `rebuild` / `down` / `status` / `logs`);
+run it directly on the box when you do not want the tunnel. See
+`docs/hosting/hetzner-dev.md` for why the console must stay on 127.0.0.1.
+
+## OWS Hetzner Tunnel Tray
 
 Use this on the Windows PC that runs your local `OWSInstanceLauncher` and UE
 server/editor instances.

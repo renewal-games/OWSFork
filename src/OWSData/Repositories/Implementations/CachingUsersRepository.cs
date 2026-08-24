@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
@@ -116,8 +116,8 @@ namespace OWSData.Repositories.Implementations
         public Task<PlayerLoginAndCreateSession> SteamLoginAndCreateSession(Guid customerGUID, string steamId, string personaName)
             => _inner.SteamLoginAndCreateSession(customerGUID, steamId, personaName);
 
-        public Task<SuccessAndErrorMessage> RegisterUser(Guid customerGUID, string userName, string password, string firstName, string lastName)
-            => _inner.RegisterUser(customerGUID, userName, password, firstName, lastName);
+        public Task<SuccessAndErrorMessage> RegisterUser(Guid customerGUID, string userName, string password, string firstName, string lastName, string role = null)
+            => _inner.RegisterUser(customerGUID, userName, password, firstName, lastName, role);
 
         public Task<GetUserSession> GetUserFromEmail(Guid customerGUID, string email)
             => _inner.GetUserFromEmail(customerGUID, email);
@@ -127,5 +127,12 @@ namespace OWSData.Repositories.Implementations
 
         public Task<SuccessAndErrorMessage> UpdateUser(Guid customerGuid, Guid userGuid, string firstName, string lastName, string email)
             => _inner.UpdateUser(customerGuid, userGuid, firstName, lastName, email);
+
+        // GetUserSession carries Role, and the cache is keyed by UserSessionGUID, so there is
+        // no way to invalidate by UserGUID without a scan. A role change is therefore visible
+        // to new sessions at once but to an already-cached session only after its TTL. Harmless
+        // while nothing authorizes on Role; revisit if that changes.
+        public Task<SuccessAndErrorMessage> UpdateUserRole(Guid customerGuid, Guid userGuid, string role)
+            => _inner.UpdateUserRole(customerGuid, userGuid, role);
     }
 }

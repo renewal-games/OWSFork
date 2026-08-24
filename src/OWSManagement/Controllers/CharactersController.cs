@@ -1,0 +1,96 @@
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
+using OWSData.Models.Composites;
+using OWSData.Repositories.Interfaces;
+using OWSManagement.DTOs;
+using OWSManagement.Requests.Characters;
+using OWSShared.Interfaces;
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+namespace OWSManagement.Controllers
+{
+    /// <summary>
+    /// Character administration for the management console.
+    /// </summary>
+    /// <remarks>
+    /// These endpoints read and write across every user in the customer. They are gated by
+    /// the X-CustomerGUID header alone, which is a tenant identifier rather than a
+    /// credential, so this service must stay bound to localhost and be reached over an SSH
+    /// tunnel until a real admin credential exists.
+    /// </remarks>
+    [Route("api/[controller]")]
+    [ApiController]
+    public class CharactersController : Controller
+    {
+        private readonly IHeaderCustomerGUID _customerGuid;
+        private readonly ICharactersRepository _charactersRepository;
+
+        public CharactersController(IHeaderCustomerGUID customerGuid, ICharactersRepository charactersRepository)
+        {
+            _customerGuid = customerGuid;
+            _charactersRepository = charactersRepository;
+        }
+
+        public override void OnActionExecuting(ActionExecutingContext context)
+        {
+            if (_customerGuid.CustomerGUID == Guid.Empty)
+            {
+                context.Result = new UnauthorizedResult();
+            }
+        }
+
+        /// <summary>
+        /// Search Characters
+        /// </summary>
+        /// <remarks>
+        /// Finds characters in this CustomerGUID whose name or owning email contains the
+        /// search text. An empty search returns the first page of all characters. Capped at
+        /// 200 rows.
+        /// </remarks>
+        [HttpGet]
+        [Route("")]
+        [Produces(typeof(IEnumerable<AdminCharacterSummary>))]
+        public async Task<IEnumerable<AdminCharacterSummary>> Search([FromQuery] string search)
+        {
+            SearchCharactersRequest request = new SearchCharactersRequest(_customerGuid.CustomerGUID, search, _charactersRepository);
+
+            return await request.Handle();
+        }
+
+        /// <summary>
+        /// Get Characters for a User
+        /// </summary>
+        /// <remarks>
+        /// Gets every character owned by the given UserGUID.
+        /// </remarks>
+        [HttpGet]
+        [Route("ForUser/{userGuid:guid}")]
+        [Produces(typeof(IEnumerable<AdminCharacterSummary>))]
+        public async Task<IEnumerable<AdminCharacterSummary>> GetForUser(Guid userGuid)
+        {
+            GetCharactersForUserRequest request = new GetCharactersForUserRequest(_customerGuid.CustomerGUID, userGuid, _charactersRepository);
+
+            return await request.Handle();
+        }
+
+        /// <summary>
+        /// Set the Admin and Moderator flags on a Character
+        /// </summary>
+        /// <remarks>
+        /// Sets Characters.IsAdmin and Characters.IsModerator. Both flags are sent every
+        /// time; the character sees the change on its next login, since the client reads
+        /// them from GetCharByCharName at connect.
+        /// </remarks>
+        [HttpPut]
+        [Route("AdminFlags")]
+        [Produces(typeof(SuccessAndErrorMessage))]
+        public async Task<SuccessAndErrorMessage> SetAdminFlags([FromBody] SetCharacterAdminFlagsDTO dto)
+        {
+            SetCharacterAdminFlagsRequest request = new SetCharacterAdminFlagsRequest(_customerGuid.CustomerGUID, dto, _charactersRepository);
+
+            return await request.Handle();
+        }
+    }
+}

@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using OWSData.Models;
 using OWSData.Models.Composites;
 using OWSData.Models.Tables;
 using OWSData.Repositories.Interfaces;
@@ -49,6 +50,21 @@ namespace OWSManagement.Controllers
             GetUsersRequest getUsersRequest = new GetUsersRequest(_customerGuid.CustomerGUID, _usersRepository);
 
             return await getUsersRequest.Handle();
+        }
+
+        /// <summary>
+        /// Get the valid Roles
+        /// </summary>
+        /// <remarks>
+        /// Returns the Users.Role values the API accepts, so the console does not have to
+        /// hardcode them.
+        /// </remarks>
+        [HttpGet]
+        [Route("Roles")]
+        [Produces(typeof(IEnumerable<string>))]
+        public IEnumerable<string> Roles()
+        {
+            return UserRoles.All;
         }
 
         /// <summary>

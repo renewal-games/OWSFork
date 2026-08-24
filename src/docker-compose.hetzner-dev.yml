@@ -204,6 +204,32 @@ services:
       migrations:
         condition: service_completed_successfully
 
+  # Admin console (REST API + Vue SPA). Bound to loopback with no exception, because its
+  # only credential is the X-CustomerGUID header, which the game client already sends on
+  # every public call. Reach it with an SSH tunnel:
+  #   ssh -L 44410:127.0.0.1:44410 <user>@<host>   then open http://localhost:44410
+  # Do not add it to the Caddy proxy or move it off 127.0.0.1 until it has a real login.
+  owsmanagement:
+    image: ${REGISTRY:-ows}/owsmanagement:${PLATFORM:-linux}-${TAG:-latest}
+    build:
+      context: .
+      dockerfile: OWSManagement/Dockerfile
+    # Opt-in: only starts with `--profile admin`, so a plain `up -d` leaves it alone. The
+    # other services already reserve 3328m of a 4 GB host; the console is an occasional-use
+    # tool and does not need to hold memory between sessions.
+    profiles: ["admin"]
+    restart: unless-stopped
+    environment:
+      <<: *ows-common-env
+    ports:
+      - "127.0.0.1:${OWS_MANAGEMENT_HOST_PORT:-44410}:80"
+    mem_limit: "${OWS_MANAGEMENT_MEM_LIMIT:-256m}"
+    depends_on:
+      database:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+
   owschat:
     image: ${REGISTRY:-ows}/owschat:${PLATFORM:-linux}-${TAG:-latest}
     build:

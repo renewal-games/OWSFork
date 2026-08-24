@@ -755,10 +755,34 @@ namespace OWSData.Repositories.Implementations.Postgres
             return outputObject.ServerIP;
         }
 
-        public async Task UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats)
+        // A zone server that no longer owns this character must not write to it. The handoff swaps the
+        // CharOnMapInstance row inside AddCharacterToMapInstanceByCharName's transaction, so this flips
+        // the moment the destination takes ownership. A character owned by nobody (logout, instance
+        // cleanup) is still writable, so a late save from the last zone is not lost.
+        private async Task<bool> IsStaleZoneWrite(Guid customerGUID, string characterName, int? callerZoneInstanceId)
+        {
+            if (!callerZoneInstanceId.HasValue || callerZoneInstanceId.Value <= 0)
+            {
+                return false;
+            }
+
+            var p = new DynamicParameters();
+            p.Add("@CustomerGUID", customerGUID);
+            p.Add("@CharName", characterName);
+            p.Add("@CallerZoneInstanceID", callerZoneInstanceId.Value);
+
+            return await Connection.ExecuteScalarAsync<bool>(PostgresQueries.IsCharacterOwnedByOtherZoneInstance, p);
+        }
+
+        public async Task<bool> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, int? callerZoneInstanceId = null)
         {
             using (Connection)
             {
+                if (await IsStaleZoneWrite(customerGUID, characterName, callerZoneInstanceId))
+                {
+                    return false;
+                }
+
                 var statIds = updateCharacterStats.Select(s => s.StatIdentifier).ToArray();
                 var statVals = updateCharacterStats.Select(s => s.Value).ToArray();
 
@@ -769,6 +793,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 p.Add("@StatValues", statVals, dbType: DbType.Object, direction: ParameterDirection.Input);
 
                 await Connection.ExecuteAsync(GenericQueries.UpsertManyCharacterStats, p, commandType: CommandType.Text);
+                return true;
             }
         }
 
@@ -959,6 +984,7 @@ namespace OWSData.Repositories.Implementations.Postgres
         {
             public int CharacterID { get; set; }
             public long EconomyRevision { get; set; }
+            public int Gold { get; set; }
         }
 
         public async Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName,
@@ -1076,7 +1102,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 NewEconomyRevision = revision
             };
 
-        public async Task<long> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold)
+        public async Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, long? expectedRevision = null)
         {
             // Participate in the economy-revision protocol instead of a blind overwrite: lock the
             // character row (serializing with shop Purchase/ClaimEscrow, which also FOR UPDATE the
@@ -1094,10 +1120,47 @@ namespace OWSData.Repositories.Implementations.Postgres
                 parameters.Add("@CharName", characterName);
                 parameters.Add("@Gold", gold);
 
-                await transaction.ExecuteAsync(PlayerShopQueries.LockCharacterByNameForUpdate, parameters);
+                CharNameLockRow character = await conn.QuerySingleOrDefaultAsync<CharNameLockRow>(
+                    PlayerShopQueries.LockCharacterByNameForUpdate,
+                    parameters,
+                    transaction: transaction, commandType: CommandType.Text);
+
+                if (character == null)
+                {
+                    transaction.Rollback();
+                    return new UpdateCharacterCurrencyResponse
+                    {
+                        Success = false,
+                        ErrorMessage = "Character not found.",
+                        ReasonCode = "bad_request"
+                    };
+                }
+
+                // Opt-in optimistic guard, same reasoning as UpdateCharacterInventory. This write is
+                // absolute, so without the guard a wallet computed before a purchase can be written
+                // back over it: a buyer whose Purchase response was lost keeps its pre-purchase gold
+                // locally, and the next save — the stale-revision resync or just the periodic
+                // currency autosave — refunds the spend while the purchase row stays paid.
+                if (expectedRevision.HasValue && expectedRevision.Value != character.EconomyRevision)
+                {
+                    transaction.Rollback();
+                    return new UpdateCharacterCurrencyResponse
+                    {
+                        Success = true,
+                        ReasonCode = "stale_revision",
+                        NewEconomyRevision = character.EconomyRevision,
+                        AuthoritativeGold = character.Gold
+                    };
+                }
+
                 long newRevision = await transaction.ExecuteScalarAsync<long>(PlayerShopQueries.SetGoldAndBumpRevisionByName, parameters);
                 transaction.Commit();
-                return newRevision;
+                return new UpdateCharacterCurrencyResponse
+                {
+                    Success = true,
+                    NewEconomyRevision = newRevision,
+                    AuthoritativeGold = gold
+                };
             }
             catch
             {
@@ -1145,10 +1208,15 @@ namespace OWSData.Repositories.Implementations.Postgres
             };
         }
 
-        public async Task UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests)
+        public async Task<bool> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, int? callerZoneInstanceId = null)
         {
             using (Connection)
             {
+                if (await IsStaleZoneWrite(customerGUID, characterName, callerZoneInstanceId))
+                {
+                    return false;
+                }
+
                 foreach (UpdateCharacterQuest Quest in updateCharacterQuests)
                 {
                     var p = new DynamicParameters();
@@ -1161,6 +1229,8 @@ namespace OWSData.Repositories.Implementations.Postgres
 
                     await Connection.ExecuteAsync(PostgresQueries.UpdateCharacterQuest, p);
                 }
+
+                return true;
             }
         }
 
@@ -2112,6 +2182,77 @@ namespace OWSData.Repositories.Implementations.Postgres
         Task ICharactersRepository.UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities)
         {
             return UpdateCharacterAbilities(customerGUID, characterName, characterAbilities);
+        }
+
+        public async Task<IEnumerable<AdminCharacterSummary>> GetCharactersForUser(Guid customerGUID, Guid userGUID)
+        {
+            using (Connection)
+            {
+                var p = new DynamicParameters();
+                p.Add("@CustomerGUID", customerGUID);
+                p.Add("@UserGUID", userGUID);
+
+                return await Connection.QueryAsync<AdminCharacterSummary>(GenericQueries.GetCharactersForUser,
+                    p,
+                    commandType: CommandType.Text);
+            }
+        }
+
+        public async Task<IEnumerable<AdminCharacterSummary>> SearchCharacters(Guid customerGUID, string searchText)
+        {
+            using (Connection)
+            {
+                var p = new DynamicParameters();
+                p.Add("@CustomerGUID", customerGUID);
+                // Passed as a parameter, so the wildcards are data rather than SQL. An empty
+                // search matches everything, capped at 200 rows inside the query itself.
+                p.Add("@SearchPattern", "%" + (searchText ?? string.Empty).Trim().ToLowerInvariant() + "%");
+
+                return await Connection.QueryAsync<AdminCharacterSummary>(GenericQueries.SearchCharacters,
+                    p,
+                    commandType: CommandType.Text);
+            }
+        }
+
+        public async Task<SuccessAndErrorMessage> SetCharacterAdminFlags(Guid customerGUID, int characterID, bool isAdmin, bool isModerator)
+        {
+            SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();
+
+            try
+            {
+                using (Connection)
+                {
+                    var p = new DynamicParameters();
+                    p.Add("@CustomerGUID", customerGUID);
+                    p.Add("@CharacterID", characterID);
+                    p.Add("@IsAdmin", isAdmin);
+                    p.Add("@IsModerator", isModerator);
+
+                    int rowsAffected = await Connection.ExecuteAsync(GenericQueries.UpdateCharacterAdminFlags,
+                        p,
+                        commandType: CommandType.Text);
+
+                    if (rowsAffected < 1)
+                    {
+                        outputObject.Success = false;
+                        outputObject.ErrorMessage = "Character not found.";
+
+                        return outputObject;
+                    }
+                }
+
+                outputObject.Success = true;
+                outputObject.ErrorMessage = "";
+
+                return outputObject;
+            }
+            catch (Exception ex)
+            {
+                outputObject.Success = false;
+                outputObject.ErrorMessage = ex.Message;
+
+                return outputObject;
+            }
         }
     }
 }

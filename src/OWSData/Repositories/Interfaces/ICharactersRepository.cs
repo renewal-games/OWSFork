@@ -24,14 +24,20 @@ namespace OWSData.Repositories.Interfaces
         Task<IEnumerable<GetCharInventoryByCharName>> GetCharInventoryByCharName(Guid customerGUID, string characterName);
         Task<GetCharByCharName> GetCharByCharName(Guid customerGUID, string characterName);
         Task<JoinMapByCharName> JoinMapByCharName(Guid customerGUID, string characterName, string zoneName, int playerGroupType);
-        Task UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats);
-        Task UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests);
+        // callerZoneInstanceId is the MapInstanceID of the zone server issuing the save. When supplied,
+        // the write is refused if the character has since been handed to a different instance. Returns
+        // false when refused. Null keeps the legacy last-write-wins behaviour.
+        Task<bool> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, int? callerZoneInstanceId = null);
+        Task<bool> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, int? callerZoneInstanceId = null);
         // Whole-bag rewrite. expectedRevision is opt-in: pass the Characters.EconomyRevision the bag
         // was computed from to have a stale snapshot rejected instead of clobbering a shop
         // transaction that committed in the meantime; pass null for legacy last-write-wins.
         Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory, long? expectedRevision = null);
-        // Returns the post-write EconomyRevision (0 when unsupported) so callers can resync their cached revision.
-        Task<long> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold);
+        // Absolute wallet write. expectedRevision is opt-in, mirroring UpdateCharacterInventory: pass the
+        // Characters.EconomyRevision the wallet was computed from to have a stale copy rejected instead of
+        // undoing a shop transaction that committed in the meantime; pass null for legacy last-write-wins.
+        // Response carries the post-write EconomyRevision (0 when unsupported) so callers can resync.
+        Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, long? expectedRevision = null);
         Task UpdateCharacterClass(Guid customerGUID, string characterName, string className);
         Task UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities);
         Task UpdatePosition(Guid customerGUID, string characterName, string mapName, float X, float Y, float Z, float RX, float RY, float RZ);
@@ -58,5 +64,12 @@ namespace OWSData.Repositories.Interfaces
 
         Task<GuildToSend> AddGuildAbilities(Guid customerGUID, GuildToSend guildInfo);
         Task<IEnumerable<CharacterAbilityDto>> GetCharacterAbilities(Guid customerGUID, string characterName);
+
+        // Management-console character administration. These are cross-user lookups and
+        // writes with no session check of their own, so they must only be reached from
+        // OWSManagement, never from the public API.
+        Task<IEnumerable<AdminCharacterSummary>> GetCharactersForUser(Guid customerGUID, Guid userGUID);
+        Task<IEnumerable<AdminCharacterSummary>> SearchCharacters(Guid customerGUID, string searchText);
+        Task<SuccessAndErrorMessage> SetCharacterAdminFlags(Guid customerGUID, int characterID, bool isAdmin, bool isModerator);
     }
 }

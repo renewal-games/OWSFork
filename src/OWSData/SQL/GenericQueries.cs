@@ -181,6 +181,38 @@ namespace OWSData.SQL
                   , Email = @Email
               WHERE CustomerGUID = @CustomerGUID AND UserGUID = @UserGUID";
 
+        public static readonly string UpdateUserRole = @"UPDATE Users
+                SET Role = @Role
+              WHERE CustomerGUID = @CustomerGUID AND UserGUID = @UserGUID";
+
+        // Admin console character lookups. Both are cross-user by design (the caller is an
+        // operator, not a player), so they are only ever reached from OWSManagement.
+        public static readonly string GetCharactersForUser = @"SELECT C.CharacterID, C.UserGUID, C.CharName, C.Email,
+                    C.CharacterLevel, C.MapName, C.IsAdmin, C.IsModerator, C.LastActivity, C.CreateDate,
+                    COALESCE(CL.ClassName,'') AS ClassName
+                FROM Characters C
+                LEFT JOIN Class CL
+                    ON CL.ClassID = C.ClassID
+                WHERE C.CustomerGUID = @CustomerGUID
+                  AND C.UserGUID = @UserGUID
+                ORDER BY C.CharName";
+
+        public static readonly string SearchCharacters = @"SELECT C.CharacterID, C.UserGUID, C.CharName, C.Email,
+                    C.CharacterLevel, C.MapName, C.IsAdmin, C.IsModerator, C.LastActivity, C.CreateDate,
+                    COALESCE(CL.ClassName,'') AS ClassName
+                FROM Characters C
+                LEFT JOIN Class CL
+                    ON CL.ClassID = C.ClassID
+                WHERE C.CustomerGUID = @CustomerGUID
+                  AND (LOWER(C.CharName) LIKE @SearchPattern OR LOWER(C.Email) LIKE @SearchPattern)
+                ORDER BY C.CharName
+                OFFSET 0 ROWS FETCH NEXT 200 ROWS ONLY";
+
+        public static readonly string UpdateCharacterAdminFlags = @"UPDATE Characters
+                SET IsAdmin = @IsAdmin
+                  , IsModerator = @IsModerator
+              WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID";
+
         public static readonly string HasCustomCharacterDataForField = @"SELECT 1
                 FROM CustomCharacterData
                 WHERE CustomerGUID = @CustomerGUID

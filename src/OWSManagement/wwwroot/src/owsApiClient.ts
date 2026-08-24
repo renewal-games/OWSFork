@@ -1,5 +1,6 @@
-﻿import axios from 'axios';
+import axios from 'axios';
 import { AxiosInstance } from 'axios';
+import { getCustomerGuid } from './customerGuid';
 
 /**
  * Create a new Axios client instance
@@ -11,13 +12,20 @@ const getClient = (baseUrl = "") => {
         baseURL: baseUrl,
         headers: {
             'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'X-CustomerGUID': ''
+            'Accept': 'application/json'
         },
         timeout: 60000
     };
 
     const client = axios.create(options);
+
+    // Read the GUID per request rather than at client construction, so saving it on the
+    // Settings page takes effect without a reload.
+    client.interceptors.request.use(function (config) {
+        config.headers = config.headers ?? {};
+        config.headers['X-CustomerGUID'] = getCustomerGuid();
+        return config;
+    });
 
     client.interceptors.response.use(
         function (response) {
@@ -31,8 +39,10 @@ const getClient = (baseUrl = "") => {
             }
             else {
                 if (res.status === 401) {
-                    window.location.href = "/";
-                    console.error("Unauthorized API Call!");
+                    console.error("Unauthorized API call - check the CustomerGUID on the Settings page.");
+                    if (window.location.pathname !== "/settings") {
+                        window.location.href = "/settings";
+                    }
                 }
                 if (res.status === 500) {
                     alert("An error has occured!");

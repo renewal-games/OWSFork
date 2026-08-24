@@ -6,6 +6,7 @@ import WorldServersGrid from "../components/WorldServersGrid.vue";
 import ZonesGrid from "../components/ZonesGrid.vue";
 import ZoneInstancesGrid from "../components/ZoneInstancesGrid.vue";
 import GlobalDataGrid from "../components/GlobalDataGrid.vue";
+import Settings from "../components/Settings.vue";
 
 const routes = [
     {
@@ -60,6 +61,14 @@ const routes = [
         path: "/globaldata",
         name: "GlobalDataGrid",
         component: GlobalDataGrid,
+        meta: {
+            requiresAuth: false
+        }
+    },
+    {
+        path: "/settings",
+        name: "Settings",
+        component: Settings,
         meta: {
             requiresAuth: false
         }

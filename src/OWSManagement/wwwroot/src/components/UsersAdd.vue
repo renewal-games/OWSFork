@@ -1,14 +1,19 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
     import router from '../router';
-    import { ref, reactive, onMounted } from 'vue';
+    import { ref, reactive } from 'vue';
     import owsApi from '../owsApi';
+
+    const props = withDefaults(defineProps<{ roles?: Array<string> }>(), {
+        roles: () => ['Player', 'Moderator', 'GameMaster', 'Admin']
+    });
 
     interface Data {
         valid: boolean,
         addUserForm: Record<string, unknown>,
         nameRules: Array<any>,
         emailRules: Array<any>,
-        passwordRules: Array<any>
+        passwordRules: Array<any>,
+        errorMessage: string
     }
 
     const data: Data = reactive({
@@ -17,7 +22,8 @@
             firstName: '',
             lastName: '',
             email: '',
-            password: ''
+            password: '',
+            role: 'Player'
         },
         nameRules: [
             (v: string) => !!v || 'Name is required',
@@ -31,6 +37,7 @@
             (v: string) => !!v || 'Password is required',
             (v: HTMLFormElement) => (v && v.length >= 6) || 'Password must be 6 or more characters in length',
         ],
+        errorMessage: ''
     });
 
     const form: any = ref(null);
@@ -40,21 +47,17 @@
 
         if (data.valid)
         {
+            data.errorMessage = '';
+
             owsApi.addUser(data.addUserForm).then((response: any) => {
-                if (response.data != null) {
-                    if (response.data) {
-                        router.go(0);
-                    }
-                    else
-                    {
-                        alert("Unable to add the new user!");
-                    }
+                if (response.data && response.data.success) {
+                    router.go(0);
                 }
-
+                else {
+                    data.errorMessage = response.data?.errorMessage || 'Unable to add the new user.';
+                }
             }).catch((error: any) => {
-                console.log(error);
-            }).finally(function () {
-
+                data.errorMessage = 'Could not add the user: ' + (error?.message ?? 'unknown error');
             });
         }
     }
@@ -67,7 +70,7 @@
 <template>
     <v-container class="container">
     <v-card class="add-a-new-player-card">
-        <v-card-title>Add a new Player User</v-card-title>
+        <v-card-title>Add a new User</v-card-title>
         <v-card-text>
             <v-form ref="form"
                     v-model="data.valid"
@@ -94,9 +97,16 @@
                               :rules="data.passwordRules"
                               label="Password"
                               type="password"
-                              style="margin-bottom:30px;"
                               required></v-text-field>
 
+                <v-select v-model="data.addUserForm.role"
+                          :items="props.roles"
+                          label="Role"
+                          style="margin-bottom:30px;"></v-select>
+
+                <v-alert v-if="data.errorMessage" type="error" density="compact" style="margin-bottom:20px;">
+                    {{ data.errorMessage }}
+                </v-alert>
 
                 <v-btn color="success"
                        class="mr-4"
@@ -113,7 +123,7 @@
             </v-form>
         </v-card-text>
     </v-card>
-    
+
     </v-container>
 </template>
 
@@ -122,13 +132,10 @@
     {
         min-width: 300px;
         justify-content: center;
-        
-            
     }
     .container
     {
         justify-content: center;
         display: flex;
     }
-    
 </style>

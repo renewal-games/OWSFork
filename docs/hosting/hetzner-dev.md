@@ -14,7 +14,9 @@ It is an add-on deployment configuration only; it does not change the base OWS A
 - Postgres
 - RabbitMQ
 
-The profile intentionally omits ELK, OWSGuild, OWSActionHouse, OWSManagement, and UE dedicated servers.
+- OWSManagement (admin console) — **opt-in**, see below
+
+The profile intentionally omits ELK, OWSGuild, OWSActionHouse, and UE dedicated servers.
 
 ## Recommended Host
 
@@ -99,6 +101,52 @@ Check status and logs:
 docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml ps
 docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml logs -f owspublicapi
 ```
+
+## Admin Console
+
+`owsmanagement` serves a REST API plus a Vue SPA for editing accounts and characters:
+account role (`Users.Role`), and the per-character `IsAdmin` / `IsModerator` flags the game
+client reads at login. No schema change is involved — every column it writes already exists.
+
+It sits behind the `admin` compose profile, so a plain `up -d` never starts it. Two reasons:
+the other services already reserve 3328 MB of a 4 GB host, and the console is occasional-use.
+
+> **It has no login.** Its only credential is the `X-CustomerGUID` header, which
+> `StoreCustomerGUIDMiddleware` checks for a parseable GUID and nothing more — and the game
+> client already sends that same GUID on every public call. Anyone who can reach the port can
+> edit every account in the customer. It is therefore bound to `127.0.0.1` with no
+> `OWS_API_BIND` escape hatch. **Do not** add it to the Caddy proxy or move it off loopback
+> until it has a real admin credential.
+
+From your Windows PC — starts it, tunnels, opens the browser, and stops it again on Ctrl+C.
+Double-click one of these in `scripts/hetzner/`:
+
+```text
+Update-AdminConsole.cmd     first run, and after pushing any console change
+Start-AdminConsole.cmd      every time after that
+```
+
+Both wrap `Start-AdminConsole.ps1` and pass extra arguments through
+(`-KeepRunning`, `-Port`, `-Server`, `-User`, `-KeyPath`, `-NoBrowser`).
+
+Or drive it from the box directly:
+
+```bash
+./scripts/hetzner/admin-console.sh up       # start (never touches the database container)
+./scripts/hetzner/admin-console.sh rebuild  # rebuild from current source, then start
+./scripts/hetzner/admin-console.sh status
+./scripts/hetzner/admin-console.sh down
+```
+
+Then tunnel by hand if you are not using the PowerShell helper:
+
+```bash
+ssh -L 44410:127.0.0.1:44410 root@SERVER_IP
+# open http://localhost:44410, Settings page first to set the CustomerGUID
+```
+
+Optional `.env.hetzner-dev` keys: `OWS_MANAGEMENT_HOST_PORT` (default 44410) and
+`OWS_MANAGEMENT_MEM_LIMIT` (default 256m).
 
 ## Database Migrations
 
