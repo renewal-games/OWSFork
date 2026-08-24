@@ -13,6 +13,11 @@ namespace OWSCharacterPersistence.Requests.Characters
 
         public int Gold { get; set; }
 
+        // Opt-in: the Characters.EconomyRevision this wallet was computed from. Sent, the write is
+        // refused with ReasonCode "stale_revision" when it no longer matches rather than overwriting a
+        // shop transaction that committed in between. Omitted (null), behaviour is legacy last-write-wins.
+        public long? ExpectedRevision { get; set; }
+
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
 
@@ -29,7 +34,7 @@ namespace OWSCharacterPersistence.Requests.Characters
 
             try
             {
-                response.NewEconomyRevision = await charactersRepository.UpdateCharacterCurrency(customerGUID, CharacterName, Gold);
+                response = await charactersRepository.UpdateCharacterCurrency(customerGUID, CharacterName, Gold, ExpectedRevision);
             }
             catch (Exception ex)
             {
