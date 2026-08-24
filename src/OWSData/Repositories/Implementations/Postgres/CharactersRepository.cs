@@ -2214,9 +2214,17 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        public async Task<SuccessAndErrorMessage> SetCharacterAdminFlags(Guid customerGUID, int characterID, bool isAdmin, bool isModerator)
+        public async Task<SuccessAndErrorMessage> SetCharacterFlags(Guid customerGUID, int characterID, bool? isAdmin, bool? isModerator, bool? isInternalNetworkTestUser)
         {
             SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();
+
+            if (!isAdmin.HasValue && !isModerator.HasValue && !isInternalNetworkTestUser.HasValue)
+            {
+                outputObject.Success = false;
+                outputObject.ErrorMessage = "No flags supplied.";
+
+                return outputObject;
+            }
 
             try
             {
@@ -2225,10 +2233,13 @@ namespace OWSData.Repositories.Implementations.Postgres
                     var p = new DynamicParameters();
                     p.Add("@CustomerGUID", customerGUID);
                     p.Add("@CharacterID", characterID);
-                    p.Add("@IsAdmin", isAdmin);
-                    p.Add("@IsModerator", isModerator);
+                    // Explicit DbType: a null bool? otherwise reaches Npgsql as an untyped
+                    // DBNull and the COALESCE fails with "could not determine data type".
+                    p.Add("@IsAdmin", isAdmin, DbType.Boolean);
+                    p.Add("@IsModerator", isModerator, DbType.Boolean);
+                    p.Add("@IsInternalNetworkTestUser", isInternalNetworkTestUser, DbType.Boolean);
 
-                    int rowsAffected = await Connection.ExecuteAsync(GenericQueries.UpdateCharacterAdminFlags,
+                    int rowsAffected = await Connection.ExecuteAsync(GenericQueries.UpdateCharacterFlags,
                         p,
                         commandType: CommandType.Text);
 

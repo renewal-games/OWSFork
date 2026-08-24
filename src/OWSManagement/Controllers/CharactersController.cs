@@ -76,19 +76,24 @@ namespace OWSManagement.Controllers
         }
 
         /// <summary>
-        /// Set the Admin and Moderator flags on a Character
+        /// Set the per-character flags
         /// </summary>
         /// <remarks>
-        /// Sets Characters.IsAdmin and Characters.IsModerator. Both flags are sent every
-        /// time; the character sees the change on its next login, since the client reads
-        /// them from GetCharByCharName at connect.
+        /// Sets Characters.IsAdmin, Characters.IsModerator and
+        /// Characters.IsInternalNetworkTestUser. Any flag omitted from the body is left
+        /// unchanged, so one can be toggled without knowing the others.
+        ///
+        /// IsAdmin and IsModerator are read by the client from GetCharByCharName at connect,
+        /// so they take effect on that character's next login.
+        /// IsInternalNetworkTestUser is read server-side on every connect: it makes
+        /// GetServerToConnectTo hand back 127.0.0.1 instead of the zone server's real IP.
         /// </remarks>
         [HttpPut]
-        [Route("AdminFlags")]
+        [Route("Flags")]
         [Produces(typeof(SuccessAndErrorMessage))]
-        public async Task<SuccessAndErrorMessage> SetAdminFlags([FromBody] SetCharacterAdminFlagsDTO dto)
+        public async Task<SuccessAndErrorMessage> SetFlags([FromBody] SetCharacterFlagsDTO dto)
         {
-            SetCharacterAdminFlagsRequest request = new SetCharacterAdminFlagsRequest(_customerGuid.CustomerGUID, dto, _charactersRepository);
+            SetCharacterFlagsRequest request = new SetCharacterFlagsRequest(_customerGuid.CustomerGUID, dto, _charactersRepository);
 
             return await request.Handle();
         }

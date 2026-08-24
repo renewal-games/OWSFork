@@ -13,6 +13,7 @@
         className: string,
         isAdmin: boolean,
         isModerator: boolean,
+        isInternalNetworkTestUser: boolean,
         lastActivity: string
     }
 
@@ -36,6 +37,7 @@
             { title: 'Zone', key: 'mapName' },
             { title: 'Admin', key: 'isAdmin', sortable: false },
             { title: 'Moderator', key: 'isModerator', sortable: false },
+            { title: 'Net Test', key: 'isInternalNetworkTestUser', sortable: false },
             { title: 'Last Activity', key: 'lastActivity' }
         ],
         rows: [],
@@ -77,21 +79,32 @@
         window.location.href = '/characters';
     }
 
-    function saveFlags(row: CharacterRow, field: 'isAdmin' | 'isModerator', value: boolean) {
+    type FlagField = 'isAdmin' | 'isModerator' | 'isInternalNetworkTestUser';
+
+    const FLAG_LABELS: Record<FlagField, string> = {
+        isAdmin: 'admin',
+        isModerator: 'moderator',
+        isInternalNetworkTestUser: 'network test user'
+    };
+
+    function saveFlags(row: CharacterRow, field: FlagField, value: boolean) {
         const previous = row[field];
         row[field] = value;
         data.savingCharacterID = row.characterID;
         data.message = '';
 
-        owsApi.setCharacterAdminFlags({
-            characterID: row.characterID,
-            isAdmin: row.isAdmin,
-            isModerator: row.isModerator
-        }).then((response: any) => {
+        // Send only the flag that changed. The API leaves omitted flags alone, so two
+        // people editing different flags on the same character cannot clobber each other.
+        const payload: Record<string, unknown> = { characterID: row.characterID };
+        payload[field] = value;
+
+        owsApi.setCharacterFlags(payload).then((response: any) => {
             if (response.data && response.data.success) {
                 data.messageType = 'success';
-                data.message = `${row.charName}: admin=${row.isAdmin}, moderator=${row.isModerator}. `
-                    + 'Takes effect the next time that character logs in.';
+                const effect = field === 'isInternalNetworkTestUser'
+                    ? 'Applies on the next connect: the server will hand this character 127.0.0.1 instead of the zone server IP.'
+                    : 'Takes effect the next time that character logs in.';
+                data.message = `${row.charName}: ${FLAG_LABELS[field]} ${value ? 'on' : 'off'}. ${effect}`;
             }
             else {
                 row[field] = previous;
@@ -165,15 +178,33 @@
                           @update:modelValue="() => saveFlags(item.raw, 'isModerator', !item.raw.isModerator)"></v-switch>
             </template>
 
+            <template v-slot:item.isInternalNetworkTestUser="{ item }">
+                <v-switch :model-value="item.raw.isInternalNetworkTestUser"
+                          color="info"
+                          density="compact"
+                          hide-details
+                          :disabled="data.savingCharacterID === item.raw.characterID"
+                          @update:modelValue="() => saveFlags(item.raw, 'isInternalNetworkTestUser', !item.raw.isInternalNetworkTestUser)"></v-switch>
+            </template>
+
             <template v-slot:no-data>
                 <div class="pa-4">No characters matched. Search results are capped at 200 rows.</div>
             </template>
         </v-data-table>
 
         <v-alert type="info" density="compact" style="margin-top: 24px;">
-            These flags set <code>Characters.IsAdmin</code> and <code>Characters.IsModerator</code>,
-            which the game client reads once at login. The server does not currently check them,
-            so any power they unlock needs its own server-side check.
+            <strong>Admin</strong> and <strong>Moderator</strong> set
+            <code>Characters.IsAdmin</code> / <code>IsModerator</code>, which the game client reads
+            once at login. The server does not check them, so any power they unlock needs its own
+            server-side check.
+        </v-alert>
+
+        <v-alert type="warning" density="compact" style="margin-top: 12px;">
+            <strong>Net Test</strong> sets <code>Characters.IsInternalNetworkTestUser</code>, and
+            this one the server does act on: <code>GetServerToConnectTo</code> hands the character
+            <code>127.0.0.1</code> rather than the zone server's real IP. Only useful when the
+            player is on the same machine as the zone server - for anyone else it makes the game
+            unjoinable until it is switched back off.
         </v-alert>
     </div>
 </v-container>

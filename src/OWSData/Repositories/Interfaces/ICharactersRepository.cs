@@ -70,6 +70,7 @@ namespace OWSData.Repositories.Interfaces
         // OWSManagement, never from the public API.
         Task<IEnumerable<AdminCharacterSummary>> GetCharactersForUser(Guid customerGUID, Guid userGUID);
         Task<IEnumerable<AdminCharacterSummary>> SearchCharacters(Guid customerGUID, string searchText);
-        Task<SuccessAndErrorMessage> SetCharacterAdminFlags(Guid customerGUID, int characterID, bool isAdmin, bool isModerator);
+        // Null leaves a flag unchanged, so a caller can toggle one without knowing the others.
+        Task<SuccessAndErrorMessage> SetCharacterFlags(Guid customerGUID, int characterID, bool? isAdmin, bool? isModerator, bool? isInternalNetworkTestUser);
     }
 }

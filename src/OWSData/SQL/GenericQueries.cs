@@ -188,7 +188,8 @@ namespace OWSData.SQL
         // Admin console character lookups. Both are cross-user by design (the caller is an
         // operator, not a player), so they are only ever reached from OWSManagement.
         public static readonly string GetCharactersForUser = @"SELECT C.CharacterID, C.UserGUID, C.CharName, C.Email,
-                    C.CharacterLevel, C.MapName, C.IsAdmin, C.IsModerator, C.LastActivity, C.CreateDate,
+                    C.CharacterLevel, C.MapName, C.IsAdmin, C.IsModerator, C.IsInternalNetworkTestUser,
+                    C.LastActivity, C.CreateDate,
                     COALESCE(CL.ClassName,'') AS ClassName
                 FROM Characters C
                 LEFT JOIN Class CL
@@ -198,7 +199,8 @@ namespace OWSData.SQL
                 ORDER BY C.CharName";
 
         public static readonly string SearchCharacters = @"SELECT C.CharacterID, C.UserGUID, C.CharName, C.Email,
-                    C.CharacterLevel, C.MapName, C.IsAdmin, C.IsModerator, C.LastActivity, C.CreateDate,
+                    C.CharacterLevel, C.MapName, C.IsAdmin, C.IsModerator, C.IsInternalNetworkTestUser,
+                    C.LastActivity, C.CreateDate,
                     COALESCE(CL.ClassName,'') AS ClassName
                 FROM Characters C
                 LEFT JOIN Class CL
@@ -208,9 +210,12 @@ namespace OWSData.SQL
                 ORDER BY C.CharName
                 OFFSET 0 ROWS FETCH NEXT 200 ROWS ONLY";
 
-        public static readonly string UpdateCharacterAdminFlags = @"UPDATE Characters
-                SET IsAdmin = @IsAdmin
-                  , IsModerator = @IsModerator
+        // COALESCE so a caller can send one flag without clobbering the others: a null parameter
+        // leaves that column as it is. Callers that pass every flag still behave as before.
+        public static readonly string UpdateCharacterFlags = @"UPDATE Characters
+                SET IsAdmin = COALESCE(@IsAdmin, IsAdmin)
+                  , IsModerator = COALESCE(@IsModerator, IsModerator)
+                  , IsInternalNetworkTestUser = COALESCE(@IsInternalNetworkTestUser, IsInternalNetworkTestUser)
               WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID";
 
         public static readonly string HasCustomCharacterDataForField = @"SELECT 1

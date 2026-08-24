@@ -6,13 +6,13 @@ using System.Threading.Tasks;
 
 namespace OWSManagement.Requests.Characters
 {
-    public class SetCharacterAdminFlagsRequest
+    public class SetCharacterFlagsRequest
     {
         private readonly Guid _customerGuid;
-        private readonly SetCharacterAdminFlagsDTO _dto;
+        private readonly SetCharacterFlagsDTO _dto;
         private readonly ICharactersRepository _charactersRepository;
 
-        public SetCharacterAdminFlagsRequest(Guid customerGuid, SetCharacterAdminFlagsDTO dto, ICharactersRepository charactersRepository)
+        public SetCharacterFlagsRequest(Guid customerGuid, SetCharacterFlagsDTO dto, ICharactersRepository charactersRepository)
         {
             _customerGuid = customerGuid;
             _dto = dto;
@@ -30,7 +30,8 @@ namespace OWSManagement.Requests.Characters
                 };
             }
 
-            return await _charactersRepository.SetCharacterAdminFlags(_customerGuid, _dto.CharacterID, _dto.IsAdmin, _dto.IsModerator);
+            return await _charactersRepository.SetCharacterFlags(_customerGuid, _dto.CharacterID,
+                _dto.IsAdmin, _dto.IsModerator, _dto.IsInternalNetworkTestUser);
         }
     }
 }

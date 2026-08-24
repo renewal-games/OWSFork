@@ -22,8 +22,8 @@ export default {
     getCharactersForUser(userGuid: string) {
         return client.get('/Characters/ForUser/' + userGuid);
     },
-    setCharacterAdminFlags(data: Record<string, unknown>) {
-        return client.put('/Characters/AdminFlags', data);
+    setCharacterFlags(data: Record<string, unknown>) {
+        return client.put('/Characters/Flags', data);
     },
     // Upstream stubs. These routes do not exist on OWSManagement (they belong to
     // OWSInstanceManagement), so the Zones / Zone Instances grids remain non-functional.

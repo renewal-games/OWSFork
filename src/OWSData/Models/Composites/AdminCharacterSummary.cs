@@ -17,6 +17,9 @@ namespace OWSData.Models.Composites
         public string ClassName { get; set; }
         public bool IsAdmin { get; set; }
         public bool IsModerator { get; set; }
+        // Makes GetClientServerIp hand this character 127.0.0.1 instead of the zone server's
+        // real IP, so a client on the same machine as the zone server can connect.
+        public bool IsInternalNetworkTestUser { get; set; }
         public DateTime LastActivity { get; set; }
         public DateTime CreateDate { get; set; }
     }
