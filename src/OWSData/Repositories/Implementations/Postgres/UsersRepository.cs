@@ -712,5 +712,18 @@ namespace OWSData.Repositories.Implementations.Postgres
                 return outputObject;
             }
         }
+        public async Task<IEnumerable<User>> SearchUsers(Guid customerGuid, string searchText)
+        {
+            using (Connection)
+            {
+                var p = new DynamicParameters();
+                p.Add("@CustomerGUID", customerGuid);
+                // Wildcards travel as data in a bound parameter, never concatenated into SQL.
+                p.Add("@SearchPattern", "%" + (searchText ?? string.Empty).Trim().ToLowerInvariant() + "%");
+
+                return await Connection.QueryAsync<User>(GenericQueries.SearchUsers, p);
+            }
+        }
+
     }
 }

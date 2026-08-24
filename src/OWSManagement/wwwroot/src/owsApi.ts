@@ -4,8 +4,8 @@ const client: owsApiClient = new owsApiClient("/api");
 
 export default {
 
-    getUsers() {
-        return client.get('/Users');
+    searchUsers(search: string) {
+        return client.get('/Users', { params: { search } });
     },
     getRoles() {
         return client.get('/Users/Roles');

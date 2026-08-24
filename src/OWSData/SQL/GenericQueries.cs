@@ -175,6 +175,19 @@ namespace OWSData.SQL
                 FROM Users
                 WHERE CustomerGUID = @CustomerGUID";
 
+        // Bounded counterpart to GetUsers, which has no LIMIT and returns every row in the
+        // customer. Matches email, either name, or SteamId. An empty search returns the first
+        // page. Only the management console calls it.
+        public static readonly string SearchUsers = @"SELECT UserGUID, FirstName, LastName, Email, SteamId, CreateDate, LastAccess, Role
+                FROM Users
+                WHERE CustomerGUID = @CustomerGUID
+                  AND (LOWER(Email) LIKE @SearchPattern
+                    OR LOWER(FirstName) LIKE @SearchPattern
+                    OR LOWER(LastName) LIKE @SearchPattern
+                    OR LOWER(COALESCE(SteamId, '')) LIKE @SearchPattern)
+                ORDER BY Email
+                OFFSET 0 ROWS FETCH NEXT 200 ROWS ONLY";
+
         public static readonly string UpdateUser = @"UPDATE Users
                 SET FirstName = @FirstName
                   , LastName = @LastName

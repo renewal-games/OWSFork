@@ -25,10 +25,13 @@
 
     function test() {
         setCustomerGuid(data.customerGuid);
-        owsApi.getUsers().then((response: any) => {
+        owsApi.searchUsers('').then((response: any) => {
             const count = Array.isArray(response.data) ? response.data.length : 0;
             data.testOk = true;
-            data.testResult = `Connected. ${count} user(s) visible for this CustomerGUID.`;
+            // The search endpoint caps at 200, so this is a floor, not the account total.
+            data.testResult = count >= 200
+                ? 'Connected. 200+ users visible for this CustomerGUID.'
+                : `Connected. ${count} user(s) visible for this CustomerGUID.`;
         }).catch((error: any) => {
             data.testOk = false;
             data.testResult = error?.response?.status === 401

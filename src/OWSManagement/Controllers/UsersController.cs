@@ -37,19 +37,21 @@ namespace OWSManagement.Controllers
 
 
         /// <summary>
-        /// Get all Users
+        /// Search Users
         /// </summary>
         /// <remarks>
-        /// Gets a list of all users for this CustomerGUID
+        /// Finds users in this CustomerGUID whose email, first name, last name or SteamId
+        /// contains the search text. An empty search returns the first page. Capped at 200
+        /// rows, so this no longer returns the whole table the way the old unbounded list did.
         /// </remarks>
         [HttpGet]
         [Route("")]
         [Produces(typeof(IEnumerable<User>))]
-        public async Task<IEnumerable<User>> Get()
+        public async Task<IEnumerable<User>> Get([FromQuery] string search)
         {
-            GetUsersRequest getUsersRequest = new GetUsersRequest(_customerGuid.CustomerGUID, _usersRepository);
+            SearchUsersRequest searchUsersRequest = new SearchUsersRequest(_customerGuid.CustomerGUID, search, _usersRepository);
 
-            return await getUsersRequest.Handle();
+            return await searchUsersRequest.Handle();
         }
 
         /// <summary>

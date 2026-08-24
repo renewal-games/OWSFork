@@ -104,6 +104,9 @@ namespace OWSData.Repositories.Implementations
         public Task<IEnumerable<User>> GetUsers(Guid customerGuid)
             => _inner.GetUsers(customerGuid);
 
+        public Task<IEnumerable<User>> SearchUsers(Guid customerGuid, string searchText)
+            => _inner.SearchUsers(customerGuid, searchText);
+
         public Task<GetUserSession> GetUserSessionORM(Guid customerGUID, Guid userSessionGUID)
             => _inner.GetUserSessionORM(customerGUID, userSessionGUID);
 

@@ -12,6 +12,8 @@
         editUser: Record<string, any>,
         editUserIndex: number,
         addingANewUser: boolean,
+        search: string,
+        loading: boolean,
         message: string,
         messageType: string
     }
@@ -22,6 +24,7 @@
             { title: 'First Name', align: 'start', key: 'firstName', },
             { title: 'Last Name', key: 'lastName' },
             { title: 'Email', key: 'email' },
+            { title: 'Steam ID', key: 'steamId' },
             { title: 'Role', key: 'role' }
         ],
         rows: [],
@@ -30,18 +33,23 @@
         editUser: {},
         editUserIndex: -1,
         addingANewUser: false,
+        search: '',
+        loading: false,
         message: '',
         messageType: 'success'
     });
 
     function loadUsersGrid() {
-        owsApi.getUsers().then((response: any) => {
-            if (response.data != null) {
-                data.rows = response.data;
-            }
+        data.loading = true;
+        data.message = '';
+
+        owsApi.searchUsers(data.search).then((response: any) => {
+            data.rows = Array.isArray(response.data) ? response.data : [];
         }).catch((error: any) => {
             data.messageType = 'error';
             data.message = 'Could not load users: ' + (error?.message ?? 'unknown error');
+        }).finally(function () {
+            data.loading = false;
         });
 
         owsApi.getRoles().then((response: any) => {
@@ -110,6 +118,7 @@
             <div>
                 <v-data-table :headers="data.headers"
                               :items="data.rows"
+                              :loading="data.loading"
                               :items-per-page="10"
                               class="elevation-1 users-table">
 
@@ -119,6 +128,20 @@
                             <v-divider class="mx-4"
                                        inset
                                        vertical></v-divider>
+                            <v-text-field v-model="data.search"
+                                          label="Search by email, name or Steam ID"
+                                          density="compact"
+                                          hide-details
+                                          single-line
+                                          clearable
+                                          @keyup.enter="loadUsersGrid"></v-text-field>
+                            <v-btn rounded="pill"
+                                   color="primary"
+                                   class="ml-2"
+                                   style="margin-left:8px;"
+                                   @click="loadUsersGrid">
+                                <v-icon icon="mdi-magnify"></v-icon> Search
+                            </v-btn>
                             <v-spacer></v-spacer>
                             <v-btn rounded="pill"
                                    color="primary"
@@ -174,6 +197,10 @@
                         </v-alert>
                     </template>
 
+                    <template v-slot:no-data>
+                        <div class="pa-4">No users matched.</div>
+                    </template>
+
                     <template v-slot:item.actions="{ item }">
                         <v-icon size="small"
                                 class="me-2"
@@ -199,6 +226,13 @@
             </div>
 
             <v-alert type="info" density="compact" style="margin-top: 24px;">
+                Results are capped at 200 rows - narrow the search rather than paging if you do
+                not see someone. Steam accounts store the persona name in First Name and get a
+                synthetic <code>steam_&lt;id&gt;@steam.samsarasaga.invalid</code> email, so searching
+                the Steam ID finds them either way.
+            </v-alert>
+
+            <v-alert type="info" density="compact" style="margin-top: 12px;">
                 Role is stored on <code>Users.Role</code>. Nothing in the API checks it yet, so
                 it records intent rather than granting access. In-game admin comes from the
                 per-character flags on the Characters page.

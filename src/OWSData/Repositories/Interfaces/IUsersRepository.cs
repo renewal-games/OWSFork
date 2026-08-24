@@ -18,6 +18,8 @@ namespace OWSData.Repositories.Interfaces
         Task<IEnumerable<GetAllSamsaraCharacters>> GetAllSamsaraCharacters(Guid customerGUID, Guid userSessionGUID);
         Task<User> GetUser(Guid customerGuid, Guid userGuid);
         Task<IEnumerable<User>> GetUsers(Guid customerGuid);
+        // Management-console search, capped at 200 rows. Empty text returns the first page.
+        Task<IEnumerable<User>> SearchUsers(Guid customerGuid, string searchText);
         Task<GetUserSession> GetUserSession(Guid customerGUID, Guid userSessionGUID);
         Task<GetUserSession> GetUserSessionORM(Guid customerGUID, Guid userSessionGUID);
         Task<GetUserSessionComposite> GetUserSessionParallel(Guid customerGUID, Guid userSessionGUID);
