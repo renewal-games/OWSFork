@@ -396,6 +396,18 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
             ahi.*
         FROM character_check cc
         LEFT JOIN action_house_items ahi ON 1=1;";
+
+        public static string IsCharacterOwnedByOtherZoneInstance = @"
+            SELECT EXISTS (
+                SELECT 1
+                FROM CharOnMapInstance COMI
+                INNER JOIN Characters C
+                    ON C.CharacterID = COMI.CharacterID
+                   AND C.CustomerGUID = COMI.CustomerGUID
+                WHERE C.CustomerGUID = @CustomerGUID
+                  AND C.CharName = @CharName
+                  AND COMI.MapInstanceID <> @CallerZoneInstanceID
+            );";
         }
 
         #endregion
