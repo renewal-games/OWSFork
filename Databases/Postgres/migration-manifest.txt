@@ -35,3 +35,4 @@ SamsaraUpdates/AddPlayerShops_2026-07-12.sql
 SamsaraUpdates/AddHotPathIndexes_2026-07-20.sql
 SamsaraUpdates/AddQuestTable_2026-08-02.sql
 SamsaraUpdates/WidenCharQuestsJournal_2026-08-03.sql
+SamsaraUpdates/AddPlayerClassRows_2026-08-30.sql
