@@ -82,11 +82,15 @@ namespace OWSData.SQL
                   AND C.CustomerGUID = @CustomerGUID
                 WHERE CS.CharacterID = C.CharacterID";
 
-        public static readonly string GetCharQuestsByCharName = @"SELECT CQ.* , Q.QuestClassName
+        // LEFT JOIN, not INNER: Samsara keeps quest definitions in a UE DataTable, so the Quest
+        // registry table is empty and an inner join returned no saved quests for anyone - the journal
+        // and task progress in CharQuests persisted fine and were never read back. QuestClassName is
+        // optional on the UE side (it falls back to the DataTable's actor class).
+        public static readonly string GetCharQuestsByCharName = @"SELECT CQ.* , COALESCE(Q.QuestClassName, '') AS QuestClassName
                 FROM Characters C INNER JOIN CharQuests CQ
                 ON C.CharName = @CharName
                 AND C.CustomerGUID = @CustomerGUID
-                INNER JOIN Quest Q
+                LEFT JOIN Quest Q
                 ON Q.CustomerGUID = @CustomerGUID
                 AND Q.QuestIDTag = CQ.QuestIDTag
                 WHERE CQ.CharacterID = C.CharacterID";
