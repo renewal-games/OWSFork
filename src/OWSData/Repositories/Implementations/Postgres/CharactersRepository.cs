@@ -193,7 +193,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                 transaction);
         }
 
-        private static async Task<bool> IsPartyNameAvailable(DbConnection connection, IDbTransaction transaction, Guid customerGUID, string partyName)
+        // excludePartyId lets a rename keep its own current name; PartyID is a positive serial, so the
+        // default 0 excludes nothing.
+        private static async Task<bool> IsPartyNameAvailable(DbConnection connection, IDbTransaction transaction, Guid customerGUID, string partyName, int excludePartyId = 0)
         {
             string normalizedPartyName = PartyNameGenerator.Normalize(partyName);
             if (!PartyNameGenerator.IsValid(normalizedPartyName))
@@ -206,8 +208,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                 FROM Party
                 WHERE CustomerGUID = @CustomerGUID
                     AND LOWER(PartyName) = LOWER(@PartyName)
-                    AND DisbandedAt IS NULL",
-                new { CustomerGUID = customerGUID, PartyName = normalizedPartyName },
+                    AND DisbandedAt IS NULL
+                    AND PartyID <> @ExcludePartyID",
+                new { CustomerGUID = customerGUID, PartyName = normalizedPartyName, ExcludePartyID = excludePartyId },
                 transaction);
 
             return existingNameCount == 0;
@@ -1690,6 +1693,83 @@ namespace OWSData.Repositories.Implementations.Postgres
             using DbConnection connection = CreateConnection();
             await connection.OpenAsync();
             return await GenerateAvailablePartyName(connection, null, customerGUID);
+        }
+
+        public async Task<PartyToSend> UpdatePartyName(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, string partyName)
+        {
+            if (partyGuid == Guid.Empty)
+            {
+                throw new InvalidOperationException("A valid party GUID is required.");
+            }
+
+            if (string.IsNullOrWhiteSpace(actorCharName) && string.IsNullOrWhiteSpace(actorCharGuid))
+            {
+                throw new InvalidOperationException("An acting character is required.");
+            }
+
+            string normalizedPartyName = PartyNameGenerator.Normalize(partyName);
+            if (!PartyNameGenerator.IsValid(normalizedPartyName))
+            {
+                throw new InvalidOperationException($"Party name must be 1 to {PartyNameGenerator.MaxPartyNameLength} characters.");
+            }
+
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync();
+            using IDbTransaction transaction = connection.BeginTransaction();
+
+            try
+            {
+                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                if (partyId == null)
+                {
+                    throw new InvalidOperationException("Party was not found.");
+                }
+
+                int? actorCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(actorCharGuid), actorCharName);
+                if (actorCharacterId == null)
+                {
+                    throw new InvalidOperationException("Party actor character was not found.");
+                }
+
+                bool actorIsLeader = await connection.QuerySingleAsync<bool>(
+                    @"SELECT EXISTS (
+                        SELECT 1
+                        FROM PartyMember
+                        WHERE CustomerGUID = @CustomerGUID
+                            AND PartyID = @PartyID
+                            AND CharacterID = @CharacterID
+                            AND PartyLeader = TRUE
+                    )",
+                    new { CustomerGUID = customerGUID, PartyID = partyId.Value, CharacterID = actorCharacterId.Value },
+                    transaction);
+
+                if (!actorIsLeader)
+                {
+                    throw new InvalidOperationException("Only the party leader can rename the party.");
+                }
+
+                if (!await IsPartyNameAvailable(connection, transaction, customerGUID, normalizedPartyName, partyId.Value))
+                {
+                    throw new InvalidOperationException("Party name is already in use.");
+                }
+
+                await connection.ExecuteAsync(
+                    @"UPDATE Party
+                    SET PartyName = @PartyName,
+                        UpdatedAt = CURRENT_TIMESTAMP
+                    WHERE CustomerGUID = @CustomerGUID AND PartyID = @PartyID",
+                    new { CustomerGUID = customerGUID, PartyID = partyId.Value, PartyName = normalizedPartyName },
+                    transaction);
+
+                IEnumerable<PartyStateRow> rows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
+                transaction.Commit();
+                return BuildPartyToSend(customerGUID, PartyAction.MessageTypeUpdateInfo, rows);
+            }
+            catch
+            {
+                transaction.Rollback();
+                throw;
+            }
         }
 
         public async Task<PartyToSend> UpdatePartyDescription(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, string partyDescription)

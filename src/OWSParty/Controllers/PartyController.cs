@@ -102,7 +102,7 @@ namespace OWSParty.Controllers
                     request.ActorCharGuid,
                     request.PartyDescription);
 
-                await PartyService.BroadcastPartyUpdate(party.PartyMembers, party);
+                await PartyService.BroadcastPartyUpdate(party.PartyMembers, party, _logger);
 
                 return Ok(new UpdatePartyDescriptionResponse
                 {
@@ -160,7 +160,7 @@ namespace OWSParty.Controllers
                     request.ActorCharGuid,
                     request.ExpDistributionMode);
 
-                await PartyService.BroadcastPartyUpdate(party.PartyMembers, party);
+                await PartyService.BroadcastPartyUpdate(party.PartyMembers, party, _logger);
 
                 return Ok(new UpdatePartyExpDistributionResponse
                 {
@@ -218,7 +218,7 @@ namespace OWSParty.Controllers
                     request.ActorCharGuid,
                     request.LootDistributionMode);
 
-                await PartyService.BroadcastPartyUpdate(party.PartyMembers, party);
+                await PartyService.BroadcastPartyUpdate(party.PartyMembers, party, _logger);
 
                 return Ok(new UpdatePartyLootDistributionResponse
                 {

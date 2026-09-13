@@ -11,6 +11,7 @@ using OWSData.Repositories.Interfaces;
 using OWSShared.Interfaces;
 using OWSShared.Grpc;
 using Google.Protobuf.WellKnownTypes;
+using Microsoft.Extensions.Logging;
 using OWSParty.Requests.Party;
 
 namespace OWSParty.Service
@@ -22,14 +23,17 @@ namespace OWSParty.Service
         private readonly ICharactersRepository _charactersRepository;
         private readonly IUsersRepository _usersRepository;
         private readonly IHeaderCustomerGUID _customerGuid;
+        private readonly ILogger<PartyService> _logger;
 
         public PartyService(ICharactersRepository charactersRepository,
             IUsersRepository usersRepository,
-            IHeaderCustomerGUID customerGuid)
+            IHeaderCustomerGUID customerGuid,
+            ILogger<PartyService> logger)
         {
             _charactersRepository = charactersRepository;
             _usersRepository = usersRepository;
             _customerGuid = customerGuid;
+            _logger = logger;
         }
 
         public override async Task RegisterParty(PartyRegister request, IServerStreamWriter<PartyToSend> responseStream, ServerCallContext context)
@@ -133,30 +137,36 @@ namespace OWSParty.Service
             switch (request.PartyAction)
             {
                 case PartyAction.MessageTypeAsk:
-                    await ExecutePartyAction(() => HandleAsk(request));
+                    await ExecutePartyAction(request.PartyAction, () => HandleAsk(request));
                     break;
 
                 case PartyAction.MessageTypeCreate:
                 case PartyAction.MessageTypeAdd:
-                    await ExecutePartyAction(() => HandleCreateOrAdd(request));
+                    await ExecutePartyAction(request.PartyAction, () => HandleCreateOrAdd(request));
                     break;
 
                 case PartyAction.MessageTypeKick:
                 case PartyAction.MessageTypeLeave:
                 case PartyAction.MessageTypeDismiss:
-                    await ExecutePartyAction(() => HandleRemoveOrDismiss(request));
+                    await ExecutePartyAction(request.PartyAction, () => HandleRemoveOrDismiss(request));
                     break;
 
                 case PartyAction.MessageTypeMakeLead:
-                    await ExecutePartyAction(() => HandleMakeLeader(request));
+                    await ExecutePartyAction(request.PartyAction, () => HandleMakeLeader(request));
+                    break;
+
+                case PartyAction.MessageTypeUpdateInfo:
+                    await ExecutePartyAction(request.PartyAction, () => HandleUpdateInfo(request));
                     break;
 
                 case PartyAction.MessageTypeRaid:
                 case PartyAction.MessageTypeLoot:
+                    _logger.LogWarning("Party action {PartyAction} is not implemented.", request.PartyAction);
                     ThrowInvalidArgument($"{request.PartyAction} is not implemented.");
                     break;
 
                 default:
+                    _logger.LogWarning("Unsupported party action {PartyAction}.", request.PartyAction);
                     ThrowInvalidArgument($"Unsupported party action: {request.PartyAction}.");
                     break;
             }
@@ -171,6 +181,7 @@ namespace OWSParty.Service
             PartyMemberInfo target = request.PartyMembers[1];
             if (!_partyClients.TryGetValue(target.CharName, out ClientInfo client) || client == null)
             {
+                _logger.LogWarning("Party ask for {TargetCharName} dropped: the target has no registered party stream.", target.CharName);
                 return;
             }
 
@@ -242,6 +253,27 @@ namespace OWSParty.Service
             await BroadcastToMembers(party.PartyMembers, party);
         }
 
+        // Only party_info.party_name is applied. Description, exp and loot distribution reach the same
+        // party through their own validated PUT endpoints and stay authoritative there, so a rename
+        // cannot clobber a concurrent change to one of them.
+        private async Task HandleUpdateInfo(PartyToSend request)
+        {
+            Guid customerGuid = ValidateCustomerGuid(request);
+            ValidateUpdateInfo(request);
+
+            _customerGuid.CustomerGUID = customerGuid;
+            PartyMemberInfo leader = GetLeader(request);
+
+            PartyToSend party = await _charactersRepository.UpdatePartyName(
+                customerGuid,
+                Guid.Parse(request.PartyInfo.PartyGuid),
+                leader.CharName,
+                leader.CharGuid,
+                request.PartyInfo.PartyName);
+
+            await BroadcastToMembers(party.PartyMembers, party);
+        }
+
         private async Task HandleMakeLeader(PartyToSend request)
         {
             Guid customerGuid = ValidateCustomerGuid(request);
@@ -255,34 +287,42 @@ namespace OWSParty.Service
             await BroadcastToMembers(partyLeaderChanged.PartyMembers, partyLeaderChanged);
         }
 
-        private static async Task ExecutePartyAction(Func<Task> action)
+        private async Task ExecutePartyAction(PartyAction partyAction, Func<Task> action)
         {
             try
             {
                 await action();
             }
-            catch (RpcException)
+            catch (RpcException ex)
             {
+                _logger.LogWarning("Party action {PartyAction} rejected: {StatusCode} {Detail}", partyAction, ex.StatusCode, ex.Status.Detail);
                 throw;
             }
             catch (Exception ex) when (IsValidationException(ex))
             {
-                throw new RpcException(new Status(StatusCode.InvalidArgument, GetClientSafeValidationMessage(ex)));
+                string reason = GetClientSafeValidationMessage(ex);
+                _logger.LogWarning(ex, "Party action {PartyAction} rejected: {Reason}", partyAction, reason);
+                throw new RpcException(new Status(StatusCode.InvalidArgument, reason));
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.LogError(ex, "Party action {PartyAction} failed.", partyAction);
                 throw new RpcException(new Status(StatusCode.Internal, "Party action failed."));
             }
         }
 
-        private static async Task BroadcastToMembers(IEnumerable<PartyMemberInfo> partyMembers, PartyToSend message)
+        private async Task BroadcastToMembers(IEnumerable<PartyMemberInfo> partyMembers, PartyToSend message)
         {
-            await BroadcastPartyUpdate(partyMembers, message);
+            await BroadcastPartyUpdate(partyMembers, message, _logger);
         }
 
-        public static async Task BroadcastPartyUpdate(IEnumerable<PartyMemberInfo> partyMembers, PartyToSend message)
+        // A member with no registered RegisterParty stream is skipped, and the caller still sees the
+        // action succeed — the roster simply never reaches them. Log it: silence here is the reason a
+        // working party action looks like nothing happened.
+        public static async Task BroadcastPartyUpdate(IEnumerable<PartyMemberInfo> partyMembers, PartyToSend message, ILogger logger = null)
         {
             List<Task> partyTasks = new List<Task>();
+            List<string> unreachableMembers = new List<string>();
 
             foreach (PartyMemberInfo partyMember in partyMembers)
             {
@@ -293,10 +333,21 @@ namespace OWSParty.Service
 
                 if (!_partyClients.TryGetValue(partyMember.CharName, out ClientInfo client) || client == null)
                 {
+                    unreachableMembers.Add(partyMember.CharName);
                     continue;
                 }
 
                 partyTasks.Add(client.ServerStreamWriter.WriteAsync(message));
+            }
+
+            if (unreachableMembers.Count > 0)
+            {
+                logger?.LogWarning(
+                    "Party {PartyAction} update not delivered to {UnreachableCount} of {MemberCount} member(s) with no registered party stream: {Members}.",
+                    message.PartyAction,
+                    unreachableMembers.Count,
+                    unreachableMembers.Count + partyTasks.Count,
+                    string.Join(", ", unreachableMembers));
             }
 
             await Task.WhenAll(partyTasks);
@@ -451,6 +502,25 @@ namespace OWSParty.Service
             RequireMemberName(target, "target");
             RequireDifferentCharacters(leader, target, "Leader cannot grant leader to themself.");
             RequireDistinctMemberNames(request.PartyMembers);
+        }
+
+        private static void ValidateUpdateInfo(PartyToSend request)
+        {
+            ValidateCustomerGuid(request);
+            ValidatePartyGuid(request);
+
+            PartyMemberInfo leader = GetLeader(request);
+            if (leader == null)
+            {
+                ThrowInvalidArgument("Update info requires the acting leader with party_leader set to true.");
+            }
+
+            RequireMemberName(leader, "leader");
+
+            if (string.IsNullOrWhiteSpace(request.PartyInfo?.PartyName))
+            {
+                ThrowInvalidArgument("A party_info.party_name is required.");
+            }
         }
 
         private static PartyMemberInfo GetLeader(PartyToSend request)

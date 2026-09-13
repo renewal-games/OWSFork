@@ -971,6 +971,11 @@ namespace OWSData.Repositories.Implementations.MSSQL
             throw new InvalidOperationException("Unable to generate a unique party name.");
         }
 
+        public Task<PartyToSend> UpdatePartyName(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, string partyName)
+        {
+            throw new NotSupportedException("Party name updates require the Phase 2 party model for this DB backend.");
+        }
+
         public Task<PartyToSend> UpdatePartyDescription(Guid customerGUID, Guid partyGuid, string actorCharName, string actorCharGuid, string partyDescription)
         {
             throw new NotSupportedException("Party description updates require the Phase 2 party model for this DB backend.");
