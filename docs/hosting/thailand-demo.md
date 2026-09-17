@@ -32,9 +32,23 @@ of this runbook required stopping the PC launcher for the duration of the demo.
   command-line flags and all ini values work unchanged. GlobalData/Party/Chat are reached
   directly on the API box's public ports.
 
+## Live deployment (2026-09-17)
+
+| | |
+|---|---|
+| VM | `ubuntu-16gb-sin-2`, CCX23, Singapore (`ap-southeast`), 160 GB |
+| Public IP | `5.223.91.8` |
+| Launcher GUID | `bed5b54a-b9f8-401b-9b29-fc08542f8fe8` (self-generated, region `SEA`) |
+| API box key | line commented `ows-thailand-demo` in `/root/.ssh/authorized_keys` on 87.99.150.89 |
+| Env backup | `/opt/owsfork/src/.env.hetzner-dev.bak-preregion-*` (before the `OWS_SERVER_SEA_*` keys) |
+| Server list | `Samsara` (NA-EAST, the PC) and `Samsara Asia` (SEA, this VM), both `online` |
+
+To hide the SEA row again without tearing anything down, set `OWS_SERVER_SEA_STATUS=maintenance`
+(or blank `OWS_SERVER_SEA_NAME`) and recreate `owspublicapi`.
+
 ## VM
 
-- `ccx33` (dedicated vCPU) or `ccx23`, `ubuntu-22.04`, location `sin`, name `ows-demo-sin`.
+- `ccx33` (dedicated vCPU) or `ccx23`, `ubuntu-22.04`, location `sin`.
 - Firewall: TCP 22 from admin IP only; **UDP 7778-7787 open** (game traffic);
   **TCP 8181 open** (the launcher's `/ping`, which the login screen times to show latency);
   everything else closed.
