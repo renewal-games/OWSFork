@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpsPolicy;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -154,6 +155,18 @@ namespace OWSInstanceLauncher
                 // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
                 app.UseHsts();
             }
+
+            //Liveness probe for the login screen's server selector, which times a plain GET against the
+            //PingHost of each entry to show a latency figure. Deliberately ahead of UseHttpsRedirection:
+            //this app configures no HTTPS endpoint, so a redirect would be a dead end for the probe.
+            //Reachability also needs Kestrel bound off localhost (see the VM's appsettings.json) and the
+            //host's firewall opened on 8181 - both are deployment-side, not code.
+            app.Map("/ping", branch => branch.Run(async context =>
+            {
+                context.Response.StatusCode = 200;
+                context.Response.ContentType = "text/plain";
+                await context.Response.WriteAsync("ok");
+            }));
 
             app.UseHttpsRedirection();
             app.UseStaticFiles();

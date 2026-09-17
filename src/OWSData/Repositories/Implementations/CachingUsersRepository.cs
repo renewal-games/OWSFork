@@ -140,5 +140,10 @@ namespace OWSData.Repositories.Implementations
         // while nothing authorizes on Role; revisit if that changes.
         public Task<SuccessAndErrorMessage> UpdateUserRole(Guid customerGuid, Guid userGuid, string role)
             => _inner.UpdateUserRole(customerGuid, userGuid, role);
+
+        // No session invalidation: GetUserSession does not carry PreferredServerRegion, and the routing
+        // path reads the column straight from Users on every join rather than from the cached session.
+        public Task<SuccessAndErrorMessage> SetPreferredServerRegion(Guid customerGuid, Guid userGuid, string region)
+            => _inner.SetPreferredServerRegion(customerGuid, userGuid, region);
     }
 }

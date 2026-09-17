@@ -184,6 +184,21 @@ docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml up 
 
 Keep `.env.hetzner-dev` local to the server. Do not commit it.
 
+Region routing (`Users.PreferredServerRegion` / `WorldServers.ServerRegion`) touches OWSData SQL
+and adds two columns, so it deploys as schema-first, then only the two services that execute the
+changed code:
+
+```bash
+docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml run --rm migrations
+docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml up -d --no-deps --build owspublicapi owsinstancemanagement
+```
+
+The `WorldServers.ServerRegion` column default covers the window between the two commands, in
+which an `owsinstancemanagement` image predating the change can still register a launcher. The
+`OWS_SERVER_SEA_*` keys below control the second entry of the login screen's server list; editing
+them needs `up -d --no-deps --force-recreate owspublicapi` (no rebuild). See
+`docs/hosting/thailand-demo.md`.
+
 > **CAUTION — `--build` also recreates the `database` container.** The `database`
 > service has a `build:` context, so `up --build` rebuilds and **recreates** it, which
 > severs every service's live Postgres connection pool. On reconnect, any service still

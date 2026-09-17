@@ -16,6 +16,11 @@ namespace OWSCharacterPersistence.Requests.Characters
        
         public IEnumerable<UpdateCharacterQuest> CharacterQuests { get; set; }
 
+        // MapInstanceID of the zone server sending this save. The backend refuses the write if the
+        // character has since been handed to a different instance, so an in-flight save from the zone
+        // the player just left cannot overwrite the destination's newer state. Omit for legacy callers.
+        public int? ZoneInstanceID { get; set; }
+
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
 
@@ -32,7 +37,12 @@ namespace OWSCharacterPersistence.Requests.Characters
 
             try
             {
-                await charactersRepository.UpdateCharacterQuests(customerGUID, CharacterName, CharacterQuests);
+                if (!await charactersRepository.UpdateCharacterQuests(customerGUID, CharacterName, CharacterQuests, ZoneInstanceID))
+                {
+                    // Success stays true: the caller is fire-and-forget and must not retry a write that
+                    // was refused precisely because a newer zone owns the character.
+                    successAndErrorMessage.ErrorMessage = "stale_zone";
+                }
             }
             catch (Exception ex)
             {

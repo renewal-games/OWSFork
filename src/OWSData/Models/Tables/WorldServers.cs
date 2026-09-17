@@ -14,5 +14,7 @@ namespace OWSData.Models.Tables
         public byte ServerStatus { get; set; }
         public string InternalServerIp { get; set; }
         public int StartingMapInstancePort { get; set; }
+        //Routing region tag. See OWSData.Models.ServerRegions.
+        public string ServerRegion { get; set; }
     }
 }

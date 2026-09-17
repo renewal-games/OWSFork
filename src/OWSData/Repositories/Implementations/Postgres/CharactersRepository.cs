@@ -519,6 +519,21 @@ namespace OWSData.Repositories.Implementations.Postgres
                     };
                 }
 
+                //Region is a property of the account. Characters carries UserGUID, so this is one extra
+                //PK lookup rather than a join - GetCharacterByName is SELECT * and nothing else needs Users.
+                //A character with no owner (legacy rows) and a user who never picked a server both fall back
+                //to the default region, so existing players keep landing exactly where they always did.
+                string serverRegion = ServerRegions.Default;
+
+                if (outputCharacter.UserGuid.HasValue)
+                {
+                    string preferredServerRegion = await conn.QuerySingleOrDefaultAsync<string>(GenericQueries.GetPreferredServerRegionByUserGUID,
+                        new { CustomerGUID = customerGUID, UserGUID = outputCharacter.UserGuid.Value },
+                        commandType: CommandType.Text);
+
+                    serverRegion = ServerRegions.Normalize(preferredServerRegion);
+                }
+
                 PlayerGroup outputPlayerGroup = new PlayerGroup();
 
                 if (playerGroupType > 0)
@@ -537,6 +552,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 parameters.Add("@PlayerGroupID", outputPlayerGroup.PlayerGroupId);
                 parameters.Add("@MapID", outputMap.MapId);
                 parameters.Add("@CharacterID", outputCharacter.CharacterId);
+                parameters.Add("@ServerRegion", serverRegion);
 
                 using IDbTransaction transaction = conn.BeginTransaction();
 
@@ -561,7 +577,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     }
                     else
                     {
-                        MapInstances outputMapInstance = await SpinUpInstance(conn, transaction, customerGUID, outputMap, outputPlayerGroup.PlayerGroupId);
+                        MapInstances outputMapInstance = await SpinUpInstance(conn, transaction, customerGUID, outputMap, outputPlayerGroup.PlayerGroupId, serverRegion);
 
                         if (outputMapInstance.MapInstanceId < 1)
                         {
@@ -569,7 +585,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                             return new JoinMapByCharName()
                             {
                                 Success = false,
-                                ErrorMessage = "No active World Servers or available instance ports were found.",
+                                ErrorMessage = $"No active World Servers or available instance ports were found in region {serverRegion}.",
                                 WorldServerID = -1,
                                 MapInstanceStatus = -1,
                                 NeedToStartupMap = false
@@ -659,7 +675,8 @@ namespace OWSData.Repositories.Implementations.Postgres
                         transaction: transaction,
                         commandType: CommandType.Text);
 
-                    MapInstances outputMapInstance = await SpinUpInstance(conn, transaction, customerGUID, outputMap, playerGroupId);
+                    //No player context on this path (no caller today), so it can only target the default region.
+                    MapInstances outputMapInstance = await SpinUpInstance(conn, transaction, customerGUID, outputMap, playerGroupId, ServerRegions.Default);
                     transaction.Commit();
                     return outputMapInstance;
                 }
@@ -671,13 +688,14 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        private async Task<MapInstances> SpinUpInstance(IDbConnection conn, IDbTransaction transaction, Guid customerGUID, Maps outputMap, int playerGroupId)
+        private async Task<MapInstances> SpinUpInstance(IDbConnection conn, IDbTransaction transaction, Guid customerGUID, Maps outputMap, int playerGroupId, string serverRegion)
         {
             var worldServerParameters = new
             {
                 CustomerGUID = customerGUID,
                 ZoneName = outputMap.ZoneName,
-                PlayerGroupId = playerGroupId
+                PlayerGroupId = playerGroupId,
+                ServerRegion = ServerRegions.Normalize(serverRegion)
             };
 
             List<WorldServers> outputWorldServers = (List<WorldServers>)await conn.QueryAsync<WorldServers>(GenericQueries.GetActiveWorldServersByLoad,

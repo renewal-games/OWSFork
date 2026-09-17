@@ -95,7 +95,7 @@
             Contains user related API calls that are all publicly accessible.
             </remarks>
         </member>
-        <member name="M:OWSPublicAPI.Controllers.UsersController.#ctor(Microsoft.Extensions.Logging.ILogger{OWSPublicAPI.Controllers.UsersController},SimpleInjector.Container,OWSData.Repositories.Interfaces.IUsersRepository,OWSExternalLoginProviders.Interfaces.IExternalLoginProviderFactory,OWSData.Repositories.Interfaces.ICharactersRepository,OWSShared.Interfaces.IPublicAPIInputValidation,OWSShared.Interfaces.IHeaderCustomerGUID,Microsoft.Extensions.Options.IOptions{OWSShared.Options.PublicAPIOptions},Microsoft.Extensions.Options.IOptions{OWSShared.Options.APIPathOptions},System.Net.Http.IHttpClientFactory,OWSPublicAPI.Services.ISteamAuthService)">
+        <member name="M:OWSPublicAPI.Controllers.UsersController.#ctor(Microsoft.Extensions.Logging.ILogger{OWSPublicAPI.Controllers.UsersController},SimpleInjector.Container,OWSData.Repositories.Interfaces.IUsersRepository,OWSExternalLoginProviders.Interfaces.IExternalLoginProviderFactory,OWSData.Repositories.Interfaces.ICharactersRepository,OWSShared.Interfaces.IPublicAPIInputValidation,OWSShared.Interfaces.IHeaderCustomerGUID,Microsoft.Extensions.Options.IOptions{OWSShared.Options.PublicAPIOptions},Microsoft.Extensions.Options.IOptions{OWSShared.Options.APIPathOptions},System.Net.Http.IHttpClientFactory,OWSPublicAPI.Services.ISteamAuthService,Microsoft.Extensions.Options.IOptions{OWSPublicAPI.Options.GameServersOptions})">
             <summary>
             Constructor for Public User related API calls.
             </summary>
@@ -185,6 +185,16 @@
             </summary>
             <remarks>
             This method MUST be called on a User Session before calling the GetServerToConnectTo API.
+            </remarks>
+        </member>
+        <member name="M:OWSPublicAPI.Controllers.UsersController.SetPreferredServerRegion(OWSPublicAPI.Requests.Users.SetPreferredServerRegionRequest)">
+            <summary>
+            Set the server region this account plays in.
+            </summary>
+            <remarks>
+            Pins the User behind the UserSessionGUID to one of the regions advertised by api/Servers/List.
+            Zone spin-up and instance reuse then only consider launcher hosts registered in that region,
+            and fail closed (no fallback to another region) when none of them is active.
             </remarks>
         </member>
         <member name="M:OWSPublicAPI.Controllers.UsersController.SetSelectedCharacterAndGetUserSession(OWSPublicAPI.Requests.Users.SetSelectedCharacterAndGetUserSessionRequest)">
@@ -630,6 +640,17 @@
             </summary>
             <remarks>
             Overrides IRequestHandler Handle().
+            </remarks>
+        </member>
+        <member name="T:OWSPublicAPI.Requests.Users.SetPreferredServerRegionRequest">
+            <summary>
+            Pins the signed-in account to a server region, which is what routes it to one launcher host.
+            </summary>
+            <remarks>
+            Called by the login screen when the player presses Enter on the server selector, before
+            characters are fetched. The region is stored on the User rather than the session because the
+            paths that reach GetServerToConnectTo do not all carry a UserSessionGUID (the InstanceManagement
+            twin of that request has no session field at all), while the character name is always present.
             </remarks>
         </member>
         <member name="T:OWSPublicAPI.Requests.Users.SteamLoginAndCreateSessionRequest">

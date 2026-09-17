@@ -11,5 +11,6 @@ namespace OWSShared.RequestPayloads
         public int MaxNumberOfInstances { get; set; }
         public string InternalServerIP { get; set; }
         public int StartingInstancePort { get; set; }
+        public string ServerRegion { get; set; }
     }
 }

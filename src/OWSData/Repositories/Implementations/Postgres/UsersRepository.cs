@@ -665,6 +665,48 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
+        //Region routing. The caller is responsible for validating the region against GameServersConfig;
+        //Users.PreferredServerRegion is VARCHAR(32) and the routing queries compare it with exact equality.
+        public async Task<SuccessAndErrorMessage> SetPreferredServerRegion(Guid customerGuid, Guid userGuid, string region)
+        {
+            SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();
+
+            try
+            {
+                using (Connection)
+                {
+                    var p = new DynamicParameters();
+                    p.Add("@CustomerGUID", customerGuid);
+                    p.Add("@UserGUID", userGuid);
+                    p.Add("@PreferredServerRegion", region);
+
+                    int rowsAffected = await Connection.ExecuteAsync(GenericQueries.UpdatePreferredServerRegion,
+                        p,
+                        commandType: CommandType.Text);
+
+                    if (rowsAffected < 1)
+                    {
+                        outputObject.Success = false;
+                        outputObject.ErrorMessage = "User not found.";
+
+                        return outputObject;
+                    }
+                }
+
+                outputObject.Success = true;
+                outputObject.ErrorMessage = "";
+
+                return outputObject;
+            }
+            catch (Exception ex)
+            {
+                outputObject.Success = false;
+                outputObject.ErrorMessage = ex.Message;
+
+                return outputObject;
+            }
+        }
+
         public async Task<SuccessAndErrorMessage> UpdateUserRole(Guid customerGuid, Guid userGuid, string role)
         {
             SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();

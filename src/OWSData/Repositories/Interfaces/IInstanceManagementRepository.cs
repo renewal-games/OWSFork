@@ -19,8 +19,14 @@ namespace OWSData.Repositories.Interfaces
         Task<SuccessAndErrorMessage> UpdateNumberOfPlayers(Guid customerGUID, int zoneInstanceId, int numberOfPlayers);
         Task<IEnumerable<GetZoneInstancesForZone>> GetZoneInstancesOfZone(Guid customerGUID, string ZoneName);
         Task<GetCurrentWorldTime> GetCurrentWorldTime(Guid customerGUID);
-        Task<SuccessAndErrorMessage> RegisterLauncher(Guid customerGUID, string launcherGuid, string serverIp, int maxNumberOfInstances, string internalServerIp, int startingInstancePort);
+        Task<SuccessAndErrorMessage> RegisterLauncher(Guid customerGUID, string launcherGuid, string serverIp, int maxNumberOfInstances, string internalServerIp, int startingInstancePort, string serverRegion);
+        Task<IEnumerable<ZoneSummary>> GetZones(Guid customerGUID);
+        // The Postgres implementations reject a ZoneName already in use by another row: the
+        // schema does not enforce it and the Instance Launcher resolves zones by name, so a
+        // duplicate makes spin-up a coin flip. (MSSQL routes these through a stored procedure
+        // and is not a deployment target, so it carries no equivalent guard.)
         Task<SuccessAndErrorMessage> AddZone(Guid customerGUID, string mapName,	string zoneName, string worldCompContainsFilter, string worldCompListFilter, int softPlayerCap, int hardPlayerCap, int mapMode, int minutesToShutdownAfterEmpty);
         Task<SuccessAndErrorMessage> UpdateZone(Guid customerGUID, int mapId, string mapName, string zoneName, string worldCompContainsFilter, string worldCompListFilter, int softPlayerCap, int hardPlayerCap, int mapMode, int minutesToShutdownAfterEmpty);
+        Task<SuccessAndErrorMessage> DeleteZone(Guid customerGUID, int mapId);
     }
 }

@@ -42,6 +42,7 @@ namespace OWSInstanceLauncher.Services
         private readonly int _MaxNumberOfInstances;
         private readonly string _InternalServerIP;
         private readonly int _StartingInstancePort;
+        private readonly string _ServerRegion;
 
         public ServerLauncherMQListener(IWritableOptions<OWSInstanceLauncherOptions> owsInstanceLauncherOptions, IOptions<APIPathOptions> owsAPIPathOptions, IOptions<RabbitMQOptions> rabbitMQOptions, IHttpClientFactory httpClientFactory, IZoneServerProcessesRepository zoneServerProcessesRepository,
             IOWSInstanceLauncherDataRepository owsInstanceLauncherDataRepository)
@@ -67,6 +68,7 @@ namespace OWSInstanceLauncher.Services
             _MaxNumberOfInstances = owsInstanceLauncherOptions.Value.MaxNumberOfInstances;
             _InternalServerIP = owsInstanceLauncherOptions.Value.InternalServerIP;
             _StartingInstancePort = owsInstanceLauncherOptions.Value.StartingInstancePort;
+            _ServerRegion = owsInstanceLauncherOptions.Value.ServerRegion;
 
             RegisterLauncher();
 
@@ -77,7 +79,9 @@ namespace OWSInstanceLauncher.Services
 
         public void RegisterLauncher()
         {
-            Log.Information($"Attempting to register Launcher GUID: {_launcherGUID}");
+            //The region is logged because it decides which players this host can ever receive: a blank or
+            //misspelled value registers the host in the default region and silently strands the other one.
+            Log.Information($"Attempting to register Launcher GUID: {_launcherGUID} in region: {(String.IsNullOrWhiteSpace(_ServerRegion) ? "(default)" : _ServerRegion)}");
             var isregistered = RegisterInstanceLauncherRequest();
 
             if (isregistered == 1)
@@ -423,7 +427,8 @@ namespace OWSInstanceLauncher.Services
                         ServerIP = _serverIP,
                         MaxNumberOfInstances = _MaxNumberOfInstances,
                         InternalServerIP = _InternalServerIP,
-                        StartingInstancePort = _StartingInstancePort
+                        StartingInstancePort = _StartingInstancePort,
+                        ServerRegion = _ServerRegion
                     }
                 };
 

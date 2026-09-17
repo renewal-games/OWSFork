@@ -66,6 +66,19 @@ namespace OWSData.SQL
                 WHERE CustomerGUID = @CustomerGUID
                   AND CharName = @CharName";
 
+        //Region is pinned on the account, not the character: the login-screen server selector runs
+        //before a character is chosen, and new characters inherit the choice. NULL means the player
+        //has never picked one and is resolved to ServerRegions.Default by the caller.
+        public static readonly string GetPreferredServerRegionByUserGUID = @"SELECT PreferredServerRegion
+                FROM Users
+                WHERE CustomerGUID = @CustomerGUID
+                  AND UserGUID = @UserGUID";
+
+        public static readonly string UpdatePreferredServerRegion = @"UPDATE Users
+                SET PreferredServerRegion = @PreferredServerRegion
+                WHERE CustomerGUID = @CustomerGUID
+                  AND UserGUID = @UserGUID";
+
         public static readonly string GetCharacterIDByName = @"SELECT CharacterID
                 FROM Characters
                 WHERE CustomerGUID = @CustomerGUID
@@ -412,6 +425,9 @@ namespace OWSData.SQL
                 WHERE WS.CustomerGUID = @CustomerGUID
                   AND WS.ServerStatus = 1
                   AND WS.ActiveStartTime IS NOT NULL
+                  --Region routing: only hosts tagged with the player's region are candidates. Fails
+                  --closed (no rows) rather than falling back to another region's hosts.
+                  AND WS.ServerRegion = @ServerRegion
                 GROUP BY WS.WorldServerID, WS.ServerIP, WS.InternalServerIP, WS.Port, WS.MaxNumberOfInstances, WS.StartingMapInstancePort
                 ORDER BY COALESCE (COUNT(MI.MapInstanceID),0)";
 
@@ -455,6 +471,36 @@ namespace OWSData.SQL
                 FROM Maps
                 WHERE CustomerGUID = @CustomerGUID
                   AND ZoneName = @ZoneName";
+
+        // Admin console zone management. Maps has no unique constraint on (CustomerGUID,
+        // ZoneName) - the primary key is (CustomerGUID, MapID) over a sequence - so nothing in
+        // the schema stops a second row with the same ZoneName, and the Instance Launcher
+        // resolves zones by name. The repository therefore guards inserts and renames itself.
+        public static readonly string GetZones = @"SELECT M.MapID, M.MapName, M.ZoneName, M.Width, M.Height,
+                    M.WorldCompContainsFilter, M.WorldCompListFilter, M.MapMode,
+                    M.SoftPlayerCap, M.HardPlayerCap, M.MinutesToShutdownAfterEmpty,
+                    (SELECT COUNT(*) FROM MapInstances MI
+                      WHERE MI.CustomerGUID = M.CustomerGUID AND MI.MapID = M.MapID) AS MapInstanceCount
+                FROM Maps M
+                WHERE M.CustomerGUID = @CustomerGUID
+                ORDER BY M.ZoneName";
+
+        // Pass @ExcludeMapID = 0 when inserting; no row can hold MapID 0, so nothing is excluded.
+        // When renaming, pass the MapID being edited so a row never collides with itself.
+        public static readonly string CountZonesWithZoneName = @"SELECT COUNT(*)
+                FROM Maps
+                WHERE CustomerGUID = @CustomerGUID
+                  AND LOWER(ZoneName) = LOWER(@ZoneName)
+                  AND MapID <> @ExcludeMapID";
+
+        public static readonly string CountMapInstancesForMap = @"SELECT COUNT(*)
+                FROM MapInstances
+                WHERE CustomerGUID = @CustomerGUID
+                  AND MapID = @MapID";
+
+        public static readonly string DeleteZone = @"DELETE FROM Maps
+                WHERE CustomerGUID = @CustomerGUID
+                  AND MapID = @MapID";
 
         public static readonly string GetZoneName = @"SELECT M.ZoneName
                 FROM Maps M

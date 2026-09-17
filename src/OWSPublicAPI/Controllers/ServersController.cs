@@ -33,7 +33,10 @@ namespace OWSPublicAPI.Controllers
         [Route("List")]
         public IActionResult List()
         {
+            //A blank Name is how an environment switches an entry off: config arrays merge by index, so an
+            //env-supplied row cannot be removed, only emptied.
             var servers = _gameServersOptions.Value.Servers
+                .Where(s => !string.IsNullOrWhiteSpace(s.Name))
                 .Select(s => new
                 {
                     s.Name,

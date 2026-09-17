@@ -131,6 +131,16 @@ services:
       SteamConfig__WebApiKey: "${STEAM_WEB_API_KEY:-}"
       SteamConfig__AppId: "${STEAM_APP_ID:-}"
       SteamConfig__Identity: "${STEAM_IDENTITY:-samsarasaga}"
+      # Second entry of the login screen's server list (index 0 is the baked-in NA-EAST entry in
+      # OWSPublicAPI/appsettings.json). Config arrays merge by index, so this ADDS a row without
+      # touching the first. Region is the routing key: it must match the SEA launcher's ServerRegion
+      # exactly. Defaults to maintenance so the row is inert - the client refuses to enter a server
+      # that is not "online" - until the VM exists and OWS_SERVER_SEA_STATUS is flipped.
+      GameServersConfig__Servers__1__Name: "${OWS_SERVER_SEA_NAME:-}"
+      GameServersConfig__Servers__1__Region: "${OWS_SERVER_SEA_REGION:-SEA}"
+      GameServersConfig__Servers__1__Status: "${OWS_SERVER_SEA_STATUS:-maintenance}"
+      GameServersConfig__Servers__1__Population: "${OWS_SERVER_SEA_POPULATION:-low}"
+      GameServersConfig__Servers__1__PingHost: "${OWS_SERVER_SEA_PINGHOST:-}"
     ports:
       - "${OWS_API_BIND:-127.0.0.1}:${OWS_PUBLIC_API_PORT:-44302}:80"
     mem_limit: "${OWS_PUBLIC_API_MEM_LIMIT:-384m}"

@@ -372,8 +372,8 @@ namespace OWSData.Repositories.Implementations.Postgres
                     new { CustomerGUID = customerGUID, CharacterID = input.BuyerCharacterID },
                     transaction: tx, commandType: CommandType.Text);
                 if (buyer == null) { await tx.RollbackAsync(); return PurchaseFail("bad_request"); }
-                if (buyer.EconomyRevision != input.BuyerExpectedRevision) { await tx.RollbackAsync(); return PurchaseFail("stale_revision"); }
-                if (buyer.Gold < totalWithTax) { await tx.RollbackAsync(); return PurchaseFail("insufficient_funds"); }
+                if (buyer.EconomyRevision != input.BuyerExpectedRevision) { await tx.RollbackAsync(); return PurchaseFail("stale_revision", buyer.EconomyRevision, buyer.Gold); }
+                if (buyer.Gold < totalWithTax) { await tx.RollbackAsync(); return PurchaseFail("insufficient_funds", buyer.EconomyRevision, buyer.Gold); }
 
                 long newBuyerRevision = await conn.ExecuteScalarAsync<long>(
                     PlayerShopQueries.SetGoldAndBumpRevision,
@@ -436,8 +436,17 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        private static PurchaseResult PurchaseFail(string reason) =>
-            new PurchaseResult { Success = false, ReasonCode = reason };
+        // buyerRevision/buyerGold let a refused buyer resync from the refusal itself. Without them the
+        // only way to learn the committed revision is to write the wallet, which is exactly how a lost
+        // Purchase response turns into a refund.
+        private static PurchaseResult PurchaseFail(string reason, long buyerRevision = 0, int buyerGold = 0) =>
+            new PurchaseResult
+            {
+                Success = false,
+                ReasonCode = reason,
+                NewBuyerRevision = buyerRevision,
+                BuyerGold = buyerGold
+            };
 
         private static PurchaseResult PurchaseResultFromRow(dynamic row)
         {

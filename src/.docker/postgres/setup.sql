@@ -100,7 +100,8 @@ CREATE TABLE Users
     CreateDate   TIMESTAMP DEFAULT NOW()             NOT NULL,
     LastAccess   TIMESTAMP DEFAULT NOW()             NOT NULL,
     Role         VARCHAR(10)                         NOT NULL,
-    SteamId      VARCHAR(20)                         NULL
+    SteamId      VARCHAR(20)                         NULL,
+    PreferredServerRegion VARCHAR(32)                NULL
 );
 
 CREATE UNIQUE INDEX AK_User_NormalizedEmail
@@ -635,6 +636,7 @@ CREATE TABLE WorldServers
     ServerStatus            SMALLINT    DEFAULT 0    NOT NULL,
     InternalServerIP        VARCHAR(50) DEFAULT ''   NOT NULL,
     StartingMapInstancePort INT         DEFAULT 7778 NOT NULL,
+    ServerRegion            VARCHAR(32) DEFAULT 'NA-EAST' NOT NULL,
     CONSTRAINT PK_WorldServers
         PRIMARY KEY (CustomerGUID, WorldServerID)
 );

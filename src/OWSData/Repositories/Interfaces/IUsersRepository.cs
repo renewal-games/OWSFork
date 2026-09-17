@@ -33,6 +33,9 @@ namespace OWSData.Repositories.Interfaces
         // Management-console only. role must already be normalised via UserRoles.TryNormalize;
         // Users.Role is VARCHAR(10) and nothing downstream re-validates it.
         Task<SuccessAndErrorMessage> UpdateUserRole(Guid customerGuid, Guid userGuid, string role);
+        // Region routing. region must already be validated against GameServersConfig by the caller:
+        // the routing queries compare WorldServers.ServerRegion to this value with exact equality.
+        Task<SuccessAndErrorMessage> SetPreferredServerRegion(Guid customerGuid, Guid userGuid, string region);
         Task<GetUserSession> GetUserFromEmail(Guid customerGUID, string email);
         Task<SuccessAndErrorMessage> RemoveCharacter(Guid customerGUID, Guid userSessionGUID, string characterName);
         Task<SuccessAndErrorMessage> UpdateUser(Guid customerGuid, Guid userGuid, string firstName, string lastName, string email);

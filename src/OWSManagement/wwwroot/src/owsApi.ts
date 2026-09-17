@@ -28,12 +28,21 @@ export default {
     setCharacterFlags(data: Record<string, unknown>) {
         return client.put('/Characters/Flags', data);
     },
-    // Upstream stubs. These routes do not exist on OWSManagement (they belong to
-    // OWSInstanceManagement), so the Zones / Zone Instances grids remain non-functional.
-    // Kept only so those components still compile.
-    addZone(data: Record<string, unknown>) {
-        return client.post('/Zones/AddZone', data);
+    getZones() {
+        return client.get('/Zones');
     },
+    addZone(data: Record<string, unknown>) {
+        return client.post('/Zones', data);
+    },
+    updateZone(data: Record<string, unknown>) {
+        return client.put('/Zones', data);
+    },
+    deleteZone(mapId: number) {
+        return client.delete('/Zones/' + mapId);
+    },
+    // Upstream stub. This route does not exist on OWSManagement (it belongs to
+    // OWSInstanceManagement), so the Zone Instances grid remains non-functional.
+    // Kept only so that component still compiles.
     getZoneInstancesForZone(data: Record<string, unknown>) {
         return client.post('/Instance/GetZoneInstancesForZone', data);
     },

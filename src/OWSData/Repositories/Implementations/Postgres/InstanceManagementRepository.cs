@@ -341,7 +341,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             return output;
         }
 
-        public async Task<SuccessAndErrorMessage> RegisterLauncher(Guid customerGUID, string launcherGuid, string serverIp, int maxNumberOfInstances, string internalServerIp, int startingInstancePort)
+        public async Task<SuccessAndErrorMessage> RegisterLauncher(Guid customerGUID, string launcherGuid, string serverIp, int maxNumberOfInstances, string internalServerIp, int startingInstancePort, string serverRegion)
         {
             try
             {
@@ -354,6 +354,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     p.Add("@MaxNumberOfInstances", maxNumberOfInstances);
                     p.Add("@InternalServerIP", internalServerIp);
                     p.Add("@StartingMapInstancePort", startingInstancePort);
+                    p.Add("@ServerRegion", ServerRegions.Normalize(serverRegion));
 
                     await Connection.ExecuteAsync(PostgresQueries.AddOrUpdateWorldServerSQL,
                         p,
@@ -399,6 +400,17 @@ namespace OWSData.Repositories.Implementations.Postgres
                     p.Add("@MapMode", mapMode);
                     p.Add("@MinutesToShutdownAfterEmpty", minutesToShutdownAfterEmpty);
 
+                    // Nothing in the schema prevents a second row with this ZoneName, and the
+                    // launcher resolves zones by name, so check before inserting.
+                    if (await ZoneNameIsTaken(customerGUID, zoneName, 0))
+                    {
+                        return new SuccessAndErrorMessage()
+                        {
+                            Success = false,
+                            ErrorMessage = $"A zone named '{zoneName}' already exists."
+                        };
+                    }
+
                     await Connection.ExecuteAsync(PostgresQueries.AddZone,
                         p,
                         commandType: CommandType.Text);
@@ -443,6 +455,17 @@ namespace OWSData.Repositories.Implementations.Postgres
                     p.Add("@MapMode", mapMode);
                     p.Add("@MinutesToShutdownAfterEmpty", minutesToShutdownAfterEmpty);
 
+                    // Excluding this MapID lets a row keep its own name while still blocking a
+                    // rename onto another row's name.
+                    if (await ZoneNameIsTaken(customerGUID, zoneName, mapId))
+                    {
+                        return new SuccessAndErrorMessage()
+                        {
+                            Success = false,
+                            ErrorMessage = $"Another zone named '{zoneName}' already exists."
+                        };
+                    }
+
                     await Connection.ExecuteAsync(PostgresQueries.UpdateZone,
                         p,
                         commandType: CommandType.Text);
@@ -466,6 +489,79 @@ namespace OWSData.Repositories.Implementations.Postgres
 
                 return output;
             }
+        }
+
+        public async Task<IEnumerable<ZoneSummary>> GetZones(Guid customerGUID)
+        {
+            using (Connection)
+            {
+                var p = new DynamicParameters();
+                p.Add("@CustomerGUID", customerGUID);
+
+                return await Connection.QueryAsync<ZoneSummary>(GenericQueries.GetZones,
+                    p,
+                    commandType: CommandType.Text);
+            }
+        }
+
+        public async Task<SuccessAndErrorMessage> DeleteZone(Guid customerGUID, int mapId)
+        {
+            try
+            {
+                using (Connection)
+                {
+                    var p = new DynamicParameters();
+                    p.Add("@CustomerGUID", customerGUID);
+                    p.Add("@MapID", mapId);
+
+                    // MapInstances has no cascade to Maps, so deleting a zone out from under a
+                    // live instance leaves rows the launcher can no longer resolve a name for.
+                    int liveInstances = await Connection.ExecuteScalarAsync<int>(GenericQueries.CountMapInstancesForMap,
+                        p,
+                        commandType: CommandType.Text);
+
+                    if (liveInstances > 0)
+                    {
+                        return new SuccessAndErrorMessage()
+                        {
+                            Success = false,
+                            ErrorMessage = $"This zone still has {liveInstances} map instance(s). Shut them down first."
+                        };
+                    }
+
+                    int rowsAffected = await Connection.ExecuteAsync(GenericQueries.DeleteZone,
+                        p,
+                        commandType: CommandType.Text);
+
+                    return new SuccessAndErrorMessage()
+                    {
+                        Success = rowsAffected > 0,
+                        ErrorMessage = rowsAffected > 0 ? "" : "No zone found with that MapID."
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                return new SuccessAndErrorMessage()
+                {
+                    Success = false,
+                    ErrorMessage = ex.Message
+                };
+            }
+        }
+
+        private async Task<bool> ZoneNameIsTaken(Guid customerGUID, string zoneName, int excludeMapId)
+        {
+            var p = new DynamicParameters();
+            p.Add("@CustomerGUID", customerGUID);
+            p.Add("@ZoneName", zoneName);
+            p.Add("@ExcludeMapID", excludeMapId);
+
+            int matches = await Connection.ExecuteScalarAsync<int>(GenericQueries.CountZonesWithZoneName,
+                p,
+                commandType: CommandType.Text);
+
+            return matches > 0;
         }
     }
 }

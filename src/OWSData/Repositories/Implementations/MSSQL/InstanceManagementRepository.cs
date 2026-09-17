@@ -268,7 +268,9 @@ namespace OWSData.Repositories.Implementations.MSSQL
             return output;
         }
 
-        public async Task<SuccessAndErrorMessage> RegisterLauncher(Guid customerGUID, string launcherGuid, string serverIp, int maxNumberOfInstances, string internalServerIp, int startingInstancePort)
+        //serverRegion is accepted and ignored: MSSQL is dead code (Postgres is the only live backend) and
+        //MSSQLQueries.AddOrUpdateWorldServerSQL has no ServerRegion column to write it to.
+        public async Task<SuccessAndErrorMessage> RegisterLauncher(Guid customerGUID, string launcherGuid, string serverIp, int maxNumberOfInstances, string internalServerIp, int startingInstancePort, string serverRegion)
         {
             try
             {
@@ -392,5 +394,63 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 return output;
             }
         }
+
+        public async Task<IEnumerable<ZoneSummary>> GetZones(Guid customerGUID)
+        {
+            using (IDbConnection conn = Connection)
+            {
+                var p = new DynamicParameters();
+                p.Add("@CustomerGUID", customerGUID);
+
+                return await conn.QueryAsync<ZoneSummary>(GenericQueries.GetZones,
+                    p,
+                    commandType: CommandType.Text);
+            }
+        }
+
+        public async Task<SuccessAndErrorMessage> DeleteZone(Guid customerGUID, int mapId)
+        {
+            try
+            {
+                using (IDbConnection conn = Connection)
+                {
+                    var p = new DynamicParameters();
+                    p.Add("@CustomerGUID", customerGUID);
+                    p.Add("@MapID", mapId);
+
+                    int liveInstances = await conn.ExecuteScalarAsync<int>(GenericQueries.CountMapInstancesForMap,
+                        p,
+                        commandType: CommandType.Text);
+
+                    if (liveInstances > 0)
+                    {
+                        return new SuccessAndErrorMessage()
+                        {
+                            Success = false,
+                            ErrorMessage = $"This zone still has {liveInstances} map instance(s). Shut them down first."
+                        };
+                    }
+
+                    int rowsAffected = await conn.ExecuteAsync(GenericQueries.DeleteZone,
+                        p,
+                        commandType: CommandType.Text);
+
+                    return new SuccessAndErrorMessage()
+                    {
+                        Success = rowsAffected > 0,
+                        ErrorMessage = rowsAffected > 0 ? "" : "No zone found with that MapID."
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                return new SuccessAndErrorMessage()
+                {
+                    Success = false,
+                    ErrorMessage = ex.Message
+                };
+            }
+        }
+
     }
 }

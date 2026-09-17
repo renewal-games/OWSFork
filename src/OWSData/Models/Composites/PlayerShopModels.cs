@@ -126,6 +126,10 @@ namespace OWSData.Models.Composites
         public int RemainingQuantity { get; set; }
         public bool ShopSoldOut { get; set; }
         public long NewBuyerRevision { get; set; }
+
+        // Committed buyer Characters.Gold. Populated on refusals too, so a buyer whose wallet diverged
+        // (a purchase that committed but whose response was lost) can reconcile without writing.
+        public int BuyerGold { get; set; }
         public int TaxPaid { get; set; }
         public int ProceedsCredited { get; set; }
         public int XpCredited { get; set; }

@@ -44,6 +44,7 @@ namespace OWSPublicAPI.Controllers
         private readonly IOptions<APIPathOptions> _owsApiPathConfig;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly Services.ISteamAuthService _steamAuthService;
+        private readonly IOptions<OWSPublicAPI.Options.GameServersOptions> _gameServersOptions;
 
         /// <summary>
         /// Constructor for Public User related API calls.
@@ -62,7 +63,8 @@ namespace OWSPublicAPI.Controllers
             IOptions<PublicAPIOptions> owsGeneralConfig,
             IOptions<APIPathOptions> owsApiPathConfig,
             IHttpClientFactory httpClientFactory,
-            Services.ISteamAuthService steamAuthService)
+            Services.ISteamAuthService steamAuthService,
+            IOptions<OWSPublicAPI.Options.GameServersOptions> gameServersOptions)
         {
             _logger = logger;
             _container = container;
@@ -75,6 +77,7 @@ namespace OWSPublicAPI.Controllers
             _owsApiPathConfig = owsApiPathConfig;
             _httpClientFactory = httpClientFactory;
             _steamAuthService = steamAuthService;
+            _gameServersOptions = gameServersOptions;
         }
 
         /// <summary>
@@ -230,6 +233,23 @@ namespace OWSPublicAPI.Controllers
         public async Task<IActionResult> UserSessionSetSelectedCharacter([FromBody] UserSessionSetSelectedCharacterRequest request)
         {
             request.SetData(_usersRepository, _customerGuid);
+            return await request.Handle();
+        }
+
+        /// <summary>
+        /// Set the server region this account plays in.
+        /// </summary>
+        /// <remarks>
+        /// Pins the User behind the UserSessionGUID to one of the regions advertised by api/Servers/List.
+        /// Zone spin-up and instance reuse then only consider launcher hosts registered in that region,
+        /// and fail closed (no fallback to another region) when none of them is active.
+        /// </remarks>
+        [HttpPost]
+        [Route("SetPreferredServerRegion")]
+        [Produces(typeof(SuccessAndErrorMessage))]
+        public async Task<IActionResult> SetPreferredServerRegion([FromBody] SetPreferredServerRegionRequest request)
+        {
+            request.SetData(_usersRepository, _gameServersOptions, _customerGuid);
             return await request.Handle();
         }
 

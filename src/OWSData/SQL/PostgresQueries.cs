@@ -10,7 +10,7 @@ namespace OWSData.SQL
 	    #region To Refactor
 
 	    public static readonly string AddOrUpdateWorldServerSQL = @"INSERT INTO WorldServers (CustomerGUID, ServerIP, MaxNumberOfInstances, Port, ServerStatus, InternalServerIP,
-                          StartingMapInstancePort, ZoneServerGUID)
+                          StartingMapInstancePort, ZoneServerGUID, ServerRegion)
     (SELECT @CustomerGUID::UUID           AS CustomerGUID,
             @ServerIP                     AS ServerIP,
             @MaxNumberOfInstances         AS MaxNumberOfInstances,
@@ -18,7 +18,8 @@ namespace OWSData.SQL
             0                             AS ServerStatus,
             @InternalServerIP             AS InternalServerIP,
             @StartingMapInstancePort      AS StartingMapInstancePort,
-            @ZoneServerGUID::UUID         AS ZoneServerGUID)
+            @ZoneServerGUID::UUID         AS ZoneServerGUID,
+            @ServerRegion                 AS ServerRegion)
 ON CONFLICT ON CONSTRAINT ak_zoneservers
     DO UPDATE SET ServerIP                = @ServerIP,
                   MaxNumberOfInstances    = @MaxNumberOfInstances,
@@ -26,7 +27,8 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
                   ServerStatus            = 0,
                   InternalServerIP        = @InternalServerIP,
                   StartingMapInstancePort = @StartingMapInstancePort,
-                  ZoneServerGUID          = @ZoneServerGUID::UUID;";
+                  ZoneServerGUID          = @ZoneServerGUID::UUID,
+                  ServerRegion            = @ServerRegion;";
 
 	    public static readonly string GetAbilities = @"SELECT AB.*, AT.AbilityTypeName
 				FROM Abilities AB
@@ -298,7 +300,14 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 				WHERE MI.MapID = @MapID
 				AND WS.ActiveStartTime IS NOT NULL
 				AND WS.CustomerGUID = @CustomerGUID
+				--Region routing: an instance already running on another region's host must not be reused,
+				--or this path would silently bypass the region filter that spin-up applies.
+				AND WS.ServerRegion = @ServerRegion
 				AND MI.Status IN (1, 2)
+				--Ready servers heartbeat every ~10s (UpdateNumberOfPlayers, which is also what sets Status=2), so a
+				--quiet ready row is a frozen server; without this filter players are routed to it until the 2-minute
+				--CleanUpInstances sweep deletes the row. Spawning rows (Status 1) have no heartbeat yet and pass through.
+				AND (MI.Status <> 2 OR MI.LastUpdateFromServer >= NOW() - INTERVAL '30 seconds')
 				AND (MI.PlayerGroupID = @PlayerGroupID OR @PlayerGroupID = 0)
 				GROUP BY MI.MapInstanceID, WS.ServerIP, MI.Port, WS.WorldServerID, WS.InternalServerIP, WS.Port, MI.Status, MI.NumberOfReportedPlayers
 				HAVING GREATEST(COALESCE(MI.NumberOfReportedPlayers, 0), COUNT(DISTINCT CMI.CharacterID)) < @HardPlayerCap

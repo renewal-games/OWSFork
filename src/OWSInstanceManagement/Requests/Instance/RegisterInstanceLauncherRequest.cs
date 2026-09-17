@@ -26,7 +26,7 @@ namespace OWSInstanceManagement.Requests.Instance
 
         public async Task<SuccessAndErrorMessage> Handle()
         {
-            _output = await _instanceManagementRepository.RegisterLauncher(_customerGUID, Request.launcherGUID, Request.ServerIP, Request.MaxNumberOfInstances, Request.InternalServerIP, Request.StartingInstancePort);
+            _output = await _instanceManagementRepository.RegisterLauncher(_customerGUID, Request.launcherGUID, Request.ServerIP, Request.MaxNumberOfInstances, Request.InternalServerIP, Request.StartingInstancePort, Request.ServerRegion);
 
             return _output;
         }

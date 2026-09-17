@@ -493,6 +493,9 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 parameters.Add("@CustomerGUID", customerGUID);
                 parameters.Add("@ZoneName", zoneName);
                 parameters.Add("@PlayerGroupId", playerGroupId);
+                //Dead code (Postgres is the only live backend), but GenericQueries.GetActiveWorldServersByLoad
+                //now filters on region and Dapper would throw on the missing parameter. No player context here.
+                parameters.Add("@ServerRegion", ServerRegions.Default);
                 List<WorldServers> outputWorldServers = (List<WorldServers>)await Connection.QueryAsync<WorldServers>(GenericQueries.GetActiveWorldServersByLoad,
                     parameters,
                     commandType: CommandType.Text);

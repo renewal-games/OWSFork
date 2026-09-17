@@ -9,6 +9,11 @@
         public int MaxNumberOfInstances { get; set; }
         public string InternalServerIP { get; set; }
         public int StartingInstancePort { get; set; }
+
+        //Routing region this host serves, e.g. "NA-EAST" or "SEA". Must match the Region of the matching
+        //GameServersConfig entry exactly. Blank or missing registers in OWSData.Models.ServerRegions.Default,
+        //which is what keeps launcher binaries that predate region routing working unchanged.
+        public string ServerRegion { get; set; }
         public bool IsServerEditor { get; set; }
         public string PathToDedicatedServer { get; set; }
         public int RunServerHealthMonitoringFrequencyInSeconds { get; set; }

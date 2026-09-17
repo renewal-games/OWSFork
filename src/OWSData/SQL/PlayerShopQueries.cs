@@ -25,7 +25,7 @@ namespace OWSData.SQL
         // Locks the row so a currency or inventory write serializes with shop economy
         // transactions, and returns the current revision so a caller on the optimistic protocol can
         // check its snapshot against it before writing.
-        public static readonly string LockCharacterByNameForUpdate = @"SELECT CharacterID, EconomyRevision
+        public static readonly string LockCharacterByNameForUpdate = @"SELECT CharacterID, EconomyRevision, Gold
                 FROM Characters
                 WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName
                 FOR UPDATE";

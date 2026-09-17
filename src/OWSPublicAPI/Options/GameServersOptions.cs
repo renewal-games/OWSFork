@@ -5,6 +5,9 @@ namespace OWSPublicAPI.Options
     public class GameServerEntry
     {
         public string Name { get; set; }
+        // Routing key, not just a label: it must match WorldServers.ServerRegion (set from the launcher's
+        // OWSInstanceLauncherOptions.ServerRegion) exactly, and is what SetPreferredServerRegion validates
+        // an account's choice against.
         public string Region { get; set; }
         // "online" or "maintenance"
         public string Status { get; set; } = "online";
