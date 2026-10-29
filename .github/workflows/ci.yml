@@ -31,15 +31,15 @@ jobs:
         working-directory: ./src
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Setup .NET
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@v6
       with:
         global-json-file: global.json
 
     - name: Cache NuGet packages
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ${{ env.NUGET_PACKAGES }}
         key: nuget-${{ runner.os }}-${{ hashFiles('global.json', 'src/**/*.csproj', 'src/**/Directory.*.props', 'src/**/Directory.*.targets') }}
@@ -63,15 +63,15 @@ jobs:
         working-directory: ./src
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Setup .NET
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@v6
       with:
         global-json-file: global.json
 
     - name: Cache NuGet packages
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ${{ env.NUGET_PACKAGES }}
         key: nuget-${{ runner.os }}-${{ hashFiles('global.json', 'src/**/*.csproj', 'src/**/Directory.*.props', 'src/**/Directory.*.targets') }}
