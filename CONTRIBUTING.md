@@ -21,7 +21,7 @@ Dependabot opens its own `dependabot/...` branches.
 
 - **No direct pushes to `main`.** Open a pull request, even for one-line fixes, and fill in the template: what changed, why, how you tested it, deploy and migration notes, and risk.
 - **CI must be green before merging.** The `Build and test` check builds `src/OWS.sln` in Release and runs the tests. The `Vulnerable packages` check fails on any NuGet package with a High or Critical advisory. Fix a failure in the PR rather than merging past it.
-- **Review:** at least one approval, from a code owner where `.github/CODEOWNERS` names one.
+- **Review:** no approval is required for now. Code owners in `.github/CODEOWNERS` are requested automatically, and a code owner merging the PR once checks are green is the sign-off.
 - **Squash and merge.** One commit per PR on `main`, titled with a clear summary. Delete the branch afterwards.
 - Keep PRs focused. A dependency upgrade, a refactor and a feature are three PRs.
 
