@@ -1,0 +1,22 @@
+# Code owners are requested for review automatically on pull requests that touch their paths.
+# The last matching pattern wins. Owners must be users or teams with write access to this repository.
+#
+# PLACEHOLDER: replace these with the real owners. See the pull request that added this file.
+
+# Default owner for everything
+*                                   @renewal-games/collapsar-developers
+
+# Database schema and migrations (Postgres is the only deployed database)
+/Databases/                         @renewal-games/collapsar-developers
+/src/OWSData/                       @renewal-games/collapsar-developers
+/src/OWSDatabaseMigrations/         @renewal-games/collapsar-developers
+
+# Deployment, hosting and CI
+/src/docker-compose*.yml            @renewal-games/collapsar-developers
+/src/.docker/                       @renewal-games/collapsar-developers
+/docs/hosting/                      @renewal-games/collapsar-developers
+/.github/                           @renewal-games/collapsar-developers
+/global.json                        @renewal-games/collapsar-developers
+
+# Admin console (Samsara Management)
+/src/OWSManagement/                 @renewal-games/collapsar-developers
