@@ -68,25 +68,7 @@ namespace OWSPublicAPI
             services.AddMemoryCache();
             //services.AddMvc();
 
-            // Per-client-IP throttling for the internet-facing API. Auth endpoints (login,
-            // register, Steam) get a tighter budget than general traffic to blunt brute force.
-            services.AddRateLimiter(options =>
-            {
-                options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-                options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
-                {
-                    string clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-                    bool isAuthPath = httpContext.Request.Path.StartsWithSegments("/api/Users");
-                    return RateLimitPartition.GetFixedWindowLimiter(
-                        (isAuthPath ? "auth:" : "general:") + clientIp,
-                        _ => new FixedWindowRateLimiterOptions
-                        {
-                            PermitLimit = isAuthPath ? 10 : 60,
-                            Window = TimeSpan.FromSeconds(10),
-                            QueueLimit = 0
-                        });
-                });
-            });
+            services.AddClientIpRateLimiter();
 
             services.AddHttpContextAccessor();
 
@@ -162,19 +144,11 @@ namespace OWSPublicAPI
         {
             app.UseSimpleInjector(container);
 
-            // Restore the real client IP forwarded by the TLS proxy so rate limiting keys on it.
-            // Trusting any proxy is safe here because this service is only reachable through the
-            // compose-internal network (Caddy) or a loopback-bound host port.
-            var forwardedHeadersOptions = new ForwardedHeadersOptions
-            {
-                ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
-            };
-            forwardedHeadersOptions.KnownNetworks.Clear();
-            forwardedHeadersOptions.KnownProxies.Clear();
-            app.UseForwardedHeaders(forwardedHeadersOptions);
-
             app.UseHealthChecks("/health");
-            app.UseRateLimiter();
+            // X-Forwarded-For is honoured only from the Caddy proxy named in OWSPublicAPIConfig:TrustedProxies.
+            var publicApiOptions = new OWSShared.Options.PublicAPIOptions();
+            Configuration.GetSection(OWSShared.Options.PublicAPIOptions.SectionName).Bind(publicApiOptions);
+            app.UseClientIpRateLimiter(publicApiOptions.TrustedProxies);
 
             // The server-selector list is served to the login screen before the client authenticates.
             StoreCustomerGUIDMiddleware.AnonymousPathPrefixes =

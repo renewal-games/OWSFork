@@ -163,8 +163,17 @@ services:
       GameServersConfig__Servers__1__Status: "${OWS_SERVER_SEA_STATUS:-maintenance}"
       GameServersConfig__Servers__1__Population: "${OWS_SERVER_SEA_POPULATION:-low}"
       GameServersConfig__Servers__1__PingHost: "${OWS_SERVER_SEA_PINGHOST:-}"
+      # X-Forwarded-For (used for the per-IP rate limit) is trusted only from the Caddy proxy's fixed address on the
+      # proxy network. Direct clients on the host port cannot set their own IP with the header.
+      OWSPublicAPIConfig__TrustedProxies: "${OWS_PROXY_IP:-10.253.253.2}"
     ports:
       - "${OWS_API_BIND:-127.0.0.1}:${OWS_PUBLIC_API_PORT:-44302}:80"
+    networks:
+      default:
+      proxy:
+        # Caddy reaches the Public API by this name so its connections come from its proxy-network address.
+        aliases:
+          - owspublicapi.proxy
     mem_limit: "${OWS_PUBLIC_API_MEM_LIMIT:-384m}"
     depends_on:
       database:
@@ -362,9 +371,23 @@ services:
       # The staff console over HTTPS, e.g. 87-99-150-89.sslip.io (docs/hosting/hetzner-dev.md, Admin Console).
       OWS_CONSOLE_DOMAIN: "${OWS_CONSOLE_DOMAIN:-console.localhost}"
     mem_limit: "${PROXY_MEM_LIMIT:-128m}"
+    networks:
+      default:
+      proxy:
+        # The one address the Public API trusts X-Forwarded-For from (OWSPublicAPIConfig__TrustedProxies).
+        ipv4_address: "${OWS_PROXY_IP:-10.253.253.2}"
     depends_on:
       - owspublicapi
       - owsglobaldata
+
+networks:
+  # Caddy <-> Public API. Caddy has a fixed address outside the dynamic range, so nothing else can take it.
+  proxy:
+    name: "${COMPOSE_PROJECT_NAME:-ows-hetzner-dev}-proxy"
+    ipam:
+      config:
+        - subnet: "${OWS_PROXY_SUBNET:-10.253.253.0/28}"
+          ip_range: "${OWS_PROXY_IP_RANGE:-10.253.253.8/29}"
 
 volumes:
   hetzner-postgres-data:
