@@ -106,28 +106,44 @@ rejected before any DB mutation.
 
 ---
 
-## 4. Persistence API service key is opt-in (P1 — blocked on UE client)
+## 4. Persistence API service key is required (P1 — fixed; ships after the UE client sends it)
 
-**Defect.** `CharactersController.RequireServiceKey` reads `OWS_REQUIRE_CHARACTER_WRITE_KEY`,
-default **off**, leaving `X-CustomerGUID` — a non-secret present in every launcher config — as the
-only gate on `UpdateCharacterCurrency`, `UpdateCharacterInventory`, and friends. The sibling
-`PlayerShopsController` fails *closed* in production. Same service, same process, opposite posture.
+**Defect.** `CharactersController` gated its routes on `OWS_REQUIRE_CHARACTER_WRITE_KEY`, default
+**off**, leaving `X-CustomerGUID` (a tenant routing value, present in every launcher config, not a
+secret) as the only gate on `UpdateCharacterCurrency`, `UpdateCharacterInventory`,
+`UpdateCharacterStats`, `UpdateCharacterClass`, `UpdateCharacterAbilities`, `AddOrUpdateCustomData`
+and the reads. The sibling `PlayerShopsController` failed *closed* in production. Same service, same
+process, opposite posture.
 
-**Blocked.** `src/docker-compose.hetzner-dev.yml:23` says "Keep false until the UE persistence calls
-send the key", and grep over the bundled `plugins/OWSPluginUE5` finds no `X-Samsara-Service-Key`
-sender. The shipping client lives in Perforce and cannot be verified from this repo. Flipping the
-default blind would 401 all persistence traffic.
+**Fix.**
+- `[RequireSamsaraServiceKey]` on the whole `CharactersController`, reads included: an authorization
+  filter that calls `SamsaraServiceKeyCheck` and returns 401 before model binding. Outside
+  Development an unset `OWS_SAMSARA_SERVICE_KEY` refuses everyone; in Development an unset key lets
+  calls through and a set one is enforced.
+- `OWS_REQUIRE_CHARACTER_WRITE_KEY` and its startup "UNAUTHENTICATED" warning are gone. Startup now
+  logs an error when the key is unset outside Development.
+- The base `docker-compose.yml` binds the persistence ports to `127.0.0.1` and passes
+  `OWS_SAMSARA_SERVICE_KEY` through from the environment.
+- The stale-owner guard still lets a write through for a character with no `CharacterOwners` row.
+  Only dedicated, non-PIE zone servers claim characters (`ASSGameMode::RequiresJoinTicket`), so PIE
+  and standalone sessions never have an owner row. Failing closed would drop all their saves. The
+  service key is the gate against outside callers. The owner token guards against a replaced copy of
+  the character, not against an attacker.
 
-**Fix (this change).** Do not change the default. Make the gap loud and the flip a one-liner:
-- Align `ServiceKeyOk()` with the PlayerShops implementation (a configured-but-unmatched key must
-  fail regardless of the toggle, so a *wrong* key is never treated as "not required").
-- Emit a startup warning when the API is serving unauthenticated writes outside Development.
+**Rollout order.** The UE zone server must send `X-Samsara-Service-Key` on every `api/Characters`
+call (`OWSPlayerControllerComponent::ProcessOWS2POSTRequest` and
+`AOWSGameMode::ProcessOWS2POSTRequest` in the Perforce `Plugins/OWSPlugin`) and every environment
+must set `OWS_SAMSARA_SERVICE_KEY` on both the API box and the zone server machines *before* this
+deploys. Otherwise every persistence call 401s.
 
 **Files.** `src/OWSCharacterPersistence/Controllers/CharactersController.cs`,
-`src/OWSCharacterPersistence/Startup.cs`
+`src/OWSCharacterPersistence/Controllers/SamsaraServiceKey.cs`,
+`src/OWSCharacterPersistence/Startup.cs`, `src/docker-compose.yml`,
+`src/docker-compose.hetzner-dev.yml`, `src/OWSTests/CharacterPersistence/`
 
-**Done when.** An unauthenticated non-Development boot logs a warning naming the env var; setting
-`OWS_REQUIRE_CHARACTER_WRITE_KEY=true` is the only step needed once the client sends the header.
+**Done when.** In Production, a request carrying only `X-CustomerGUID` gets 401 on every
+`api/Characters` route, as does a request with a wrong key, or with any key when none is configured.
+`OWSTests/CharacterPersistence` covers each case.
 
 ---
 
@@ -219,7 +235,8 @@ Applied after code review of the implementation:
   every tick without converging, since a malformed entry stays malformed. Exception text is no
   longer echoed to the caller.
 - **Item 4.** An empty `X-Samsara-Service-Key` header now counts as absence rather than a wrong key,
-  so a proxy that injects it blank does not get 401s under the permissive posture.
+  so a proxy that injects it blank does not get 401s under the permissive posture. (Superseded: the
+  permissive posture is gone, and an empty header is refused like a missing one.)
 - **VendorTrade** (pre-existing work in the same diff): `OperationId` is validated non-empty *before*
   the replay probe — an omitted key meant every later trade replayed the first one's cached success
   while moving nothing — and the configurable gold cap now only blocks trades that increase gold, so

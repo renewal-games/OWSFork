@@ -10,9 +10,14 @@ namespace OWSShared
     public static class SamsaraServiceKeyCheck
     {
         public const string Header = "X-Samsara-Service-Key";
-        private static readonly string Configured = Environment.GetEnvironmentVariable("OWS_SAMSARA_SERVICE_KEY");
-        private static readonly bool IsDevelopmentEnvironment = string.Equals(
-            Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Development", StringComparison.OrdinalIgnoreCase);
+        public const string EnvironmentVariable = "OWS_SAMSARA_SERVICE_KEY";
+        private static string Configured;
+        private static bool IsDevelopmentEnvironment;
+
+        static SamsaraServiceKeyCheck() => ReadEnvironment();
+
+        /// <summary>True when OWS_SAMSARA_SERVICE_KEY is set, so callers are checked against it.</summary>
+        public static bool IsConfigured => !string.IsNullOrEmpty(Configured);
 
         public static bool IsValid(string provided)
         {
@@ -21,6 +26,14 @@ namespace OWSShared
                    && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
                        System.Text.Encoding.UTF8.GetBytes(provided),
                        System.Text.Encoding.UTF8.GetBytes(Configured));
+        }
+
+        // Read once per process. Tests call it again after changing the environment, since a test host does not reset it.
+        internal static void ReadEnvironment()
+        {
+            Configured = Environment.GetEnvironmentVariable(EnvironmentVariable);
+            IsDevelopmentEnvironment = string.Equals(
+                Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Development", StringComparison.OrdinalIgnoreCase);
         }
     }
 }
