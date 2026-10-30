@@ -71,6 +71,12 @@ Additional env vars for production hardening (set in `.env.hetzner-dev`):
   **Required outside Development**: the API fails closed (401) when unset. Set the
   same value in the environment of the machine running the UE dedicated servers
   (the UE zone server reads the same variable and sends it as `X-Samsara-Service-Key`).
+  The instance launcher reads it from its own environment too and sends it to InstanceManagement.
+- `OWS_REQUIRE_SERVICE_KEY` — when not `false`, every InstanceManagement and
+  CharacterPersistence `/api` route needs `X-Samsara-Service-Key`; `X-CustomerGUID`
+  only names the tenant. The code default is required outside Development; this profile
+  ships `false` until the UE zone server sends the key on its InstanceManagement calls.
+  A wrong key is rejected in both modes.
 - `OWS_PUBLIC_API_DOMAIN` / `OWS_GLOBAL_DATA_DOMAIN` — hostnames for the built-in
   Caddy TLS proxy (e.g. `api.example.com`). Point A records at this host before
   first start; Caddy provisions Let's Encrypt certificates automatically. When

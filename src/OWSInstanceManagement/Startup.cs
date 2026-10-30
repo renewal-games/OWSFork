@@ -97,6 +97,13 @@ namespace OWSInstanceManagement
             app.UseHealthChecks("/health");
             app.UseMiddleware<StoreCustomerGUIDMiddleware>(container);
 
+            // X-CustomerGUID only names the tenant and every game client sends it, so these routes also need the
+            // service key. The zone server, the instance launcher, PublicAPI and the console all hold it.
+            var serviceKeyGate = ServiceKeyGateSettings.FromEnvironment();
+            string serviceKeyWarning = serviceKeyGate.PostureWarning("InstanceManagement");
+            if (serviceKeyWarning != null) Serilog.Log.Warning(serviceKeyWarning);
+            app.UseMiddleware<RequireServiceKeyMiddleware>(serviceKeyGate);
+
             if (env.IsDevelopment())
             {
                 app.UseDeveloperExceptionPage();

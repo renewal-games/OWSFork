@@ -387,6 +387,11 @@ static HttpClient CreateInstanceManagementClient(HarnessOptions options)
         BaseAddress = new Uri(options.InstanceManagementUrl)
     };
     httpClient.DefaultRequestHeaders.Add("X-CustomerGUID", options.CustomerGuid.ToString());
+    string serviceKey = Environment.GetEnvironmentVariable("OWS_SAMSARA_SERVICE_KEY");
+    if (!string.IsNullOrEmpty(serviceKey))
+    {
+        httpClient.DefaultRequestHeaders.Add("X-Samsara-Service-Key", serviceKey);
+    }
     return httpClient;
 }
 
