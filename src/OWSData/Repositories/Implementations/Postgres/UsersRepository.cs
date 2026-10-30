@@ -175,12 +175,33 @@ namespace OWSData.Repositories.Implementations.Postgres
                     transaction: transaction,
                     commandType: CommandType.Text);
 
+                // The INSERT ... SELECT inserts nothing when no DefaultCharacterValues row matches DefaultSetName.
+                if (outputCharacterId == 0)
+                {
+                    transaction.Rollback();
+                    return new SuccessAndErrorMessage()
+                    {
+                        Success = false,
+                        ErrorMessage = "Unknown default character set"
+                    };
+                }
+
                 parameters.Add("CharacterID", outputCharacterId);
                 await conn.ExecuteAsync(GenericQueries.AddDefaultCustomCharacterData,
                     parameters,
                     transaction: transaction,
                     commandType: CommandType.Text);
                 transaction.Commit();
+            }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+            {
+                // UX_Characters_CustomerGUID_LowerCharName: a concurrent create, or the same name in another case, won the race.
+                transaction.Rollback();
+                return new SuccessAndErrorMessage()
+                {
+                    Success = false,
+                    ErrorMessage = "Character name already exists!"
+                };
             }
             catch (Exception ex)
             {
