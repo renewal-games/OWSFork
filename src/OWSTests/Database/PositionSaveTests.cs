@@ -127,7 +127,7 @@ namespace OWSTests.Database
                 new { CustomerGUID = customerGUID, CharacterID = characterID }, claimTx);
 
             Task<SuccessAndErrorMessage> save = Save(customerGUID, $"Owned:1:2:3:0:0:0:{oldOwner}");
-            await WaitUntilBlockedOnLock(claim, save);
+            await WaitUntilBlockedOnLock(save);
 
             await claim.ExecuteAsync(@"UPDATE CharacterOwners SET OwnerToken = @NewOwner, PreviousOwnerToken = NULL, PreviousOwnerUntil = NULL
                     WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
@@ -149,8 +149,10 @@ namespace OWSTests.Database
             return await request.Handle();
         }
 
-        private static async Task WaitUntilBlockedOnLock(NpgsqlConnection connection, Task save)
+        // Polled from its own connection: pg_stat_activity is read once per transaction, so the claim's would never change.
+        private async Task WaitUntilBlockedOnLock(Task save)
         {
+            await using var connection = new NpgsqlConnection(ConnectionString);
             var watch = Stopwatch.StartNew();
             while (watch.Elapsed < TimeSpan.FromSeconds(10))
             {
