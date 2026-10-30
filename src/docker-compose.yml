@@ -122,9 +122,13 @@ services:
      - RabbitMQOptions__RabbitMQPort=${RabbitMQPort}
      - RabbitMQOptions__RabbitMQUserName=${RabbitMQUserName}
      - RabbitMQOptions__RabbitMQPassword=${RabbitMQPassword}
+     # Server-to-server key required on every api/Characters call; the UE zone server sends the same value.
+     # Unset fails closed outside Development. Set it in the shell or an untracked env file, never in .env.
+     - OWS_SAMSARA_SERVICE_KEY=${OWS_SAMSARA_SERVICE_KEY:-}
+    # Loopback only: these routes write gold and inventory, and only zone servers on this host should reach them.
     ports:
-      - "44323:80"
-      - "44324:443"
+      - "127.0.0.1:44323:80"
+      - "127.0.0.1:44324:443"
     depends_on:
       - database
       - messaging

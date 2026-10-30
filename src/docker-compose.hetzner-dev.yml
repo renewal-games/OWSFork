@@ -19,9 +19,6 @@ x-ows-common-env: &ows-common-env
   OWS_GRPC_MSGS_PER_WINDOW: "${OWS_GRPC_MSGS_PER_WINDOW:-20}"
   OWS_GRPC_RATE_WINDOW_SECONDS: "${OWS_GRPC_RATE_WINDOW_SECONDS:-5}"
   OWS_GRPC_REQUIRE_SESSION_AUTH: "${OWS_GRPC_REQUIRE_SESSION_AUTH:-false}"
-  # Require X-Samsara-Service-Key on the CharacterPersistence API (gold/inventory/stats writes).
-  # Keep false until the UE persistence calls send the key, or all persistence traffic is 401'd.
-  OWS_REQUIRE_CHARACTER_WRITE_KEY: "${OWS_REQUIRE_CHARACTER_WRITE_KEY:-false}"
   OWSAPIPathConfig__InternalPublicApiURL: "http://owspublicapi/"
   OWSAPIPathConfig__InternalInstanceManagementApiURL: "http://owsinstancemanagement/"
   OWSAPIPathConfig__InternalCharacterPersistenceApiURL: "http://owscharacterpersistence/"
@@ -202,8 +199,8 @@ services:
     healthcheck: *app-healthcheck
     environment:
       <<: *ows-common-env
-      # Server-to-server key for the PlayerShops endpoints. The API fails closed outside
-      # Development when this is unset; the UE zone server reads the same variable.
+      # Server-to-server key required on every api/Characters and PlayerShops call. The API fails
+      # closed outside Development when this is unset; the UE zone server reads the same variable.
       OWS_SAMSARA_SERVICE_KEY: "${OWS_SAMSARA_SERVICE_KEY:-}"
       # Staff alerts (reports, bans, gifts, zone crashes) go to this Discord webhook; empty turns them off.
       OWS_STAFF_DISCORD_WEBHOOK_URL: "${OWS_STAFF_DISCORD_WEBHOOK_URL:-}"

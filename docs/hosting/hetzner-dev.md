@@ -67,7 +67,8 @@ and are only used internally by OWS services in this profile.
 
 Additional env vars for production hardening (set in `.env.hetzner-dev`):
 
-- `OWS_SAMSARA_SERVICE_KEY` — server-to-server key for the PlayerShops endpoints.
+- `OWS_SAMSARA_SERVICE_KEY` — server-to-server key for every CharacterPersistence
+  `api/Characters` and PlayerShops call.
   **Required outside Development**: the API fails closed (401) when unset. Set the
   same value in the environment of the machine running the UE dedicated servers
   (the UE zone server reads the same variable and sends it as `X-Samsara-Service-Key`).
