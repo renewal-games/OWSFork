@@ -1091,8 +1091,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                 // reads yet, so bumping on every autosave would strand the zone server's cached
                 // revision and fail every following shop op with stale_revision.
                 // Consequence, spelled out: on the default path a stale bag snapshot can still
-                // overwrite a committed shop transaction. Closing that needs the zone server to
-                // send ExpectedRevision — see docs/mvp-hardening-spec.md item 2.
+                // overwrite a committed shop transaction. EconomyOptions.RequireExpectedRevision
+                // closes that by refusing revision-less saves at the request layer, once the zone
+                // server sends ExpectedRevision — see docs/mvp-hardening-spec.md item 2.
                 long newRevision = character.EconomyRevision;
                 if (expectedRevision.HasValue)
                 {

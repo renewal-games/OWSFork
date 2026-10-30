@@ -91,6 +91,7 @@ namespace OWSCharacterPersistence
             services.Configure<OWSShared.Options.StorageOptions>(Configuration.GetSection(OWSShared.Options.StorageOptions.SectionName));
             services.Configure<OWSShared.Options.APIPathOptions>(Configuration.GetSection(OWSShared.Options.APIPathOptions.SectionName));
             services.Configure<OWSShared.Options.RabbitMQOptions>(Configuration.GetSection(OWSShared.Options.RabbitMQOptions.SectionName));
+            services.Configure<OWSShared.Options.EconomyOptions>(Configuration.GetSection(OWSShared.Options.EconomyOptions.SectionName));
 
             InitializeContainer(services);
         }

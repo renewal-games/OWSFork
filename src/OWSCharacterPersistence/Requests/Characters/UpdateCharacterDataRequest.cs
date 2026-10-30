@@ -3,6 +3,7 @@ using OWSData.Models.Composites;
 using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Interfaces;
+using OWSShared.Options;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -22,18 +23,25 @@ namespace OWSCharacterPersistence.Requests.Characters
 
         public IEnumerable<UpdateCharacterStats> CharStats { get; set; }
 
+        // The Characters.EconomyRevision CharInventory was computed from; same contract as
+        // UpdateCharacterInventoryRequest.ExpectedRevision. This is the periodic autosave, so it is the
+        // write most likely to land a stale bag over a shop transaction that just committed.
+        public long? ExpectedRevision { get; set; }
+
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
+        private EconomyOptions economyOptions;
 
-        public void SetData(ICharactersRepository charactersRepository, IHeaderCustomerGUID customerGuid)
+        public void SetData(ICharactersRepository charactersRepository, IHeaderCustomerGUID customerGuid, EconomyOptions economyOptions)
         {
             this.charactersRepository = charactersRepository;
             customerGUID = customerGuid.CustomerGUID;
+            this.economyOptions = economyOptions;
         }
 
-        public async Task<SuccessAndErrorMessage> Handle()
+        public async Task<UpdateCharacterDataResponse> Handle()
         {
-            SuccessAndErrorMessage successAndErrorMessage = new SuccessAndErrorMessage();
+            UpdateCharacterDataResponse successAndErrorMessage = new UpdateCharacterDataResponse();
             successAndErrorMessage.Success = true;
 
             try
@@ -43,8 +51,15 @@ namespace OWSCharacterPersistence.Requests.Characters
                 // The inventory write can now fail its own guard (missing CharInventory row, and
                 // stale_revision once callers opt in). It used to return void, so a refused bag save
                 // reported success to the zone server; surface it instead.
+                // A missing revision under RequireExpectedRevision refuses only the bag, the same way
+                // a stale_revision would; quests and stats are not economy state and still save.
+                long? expectedRevision = ExpectedRevision >= 0 ? ExpectedRevision : null;
                 UpdateCharacterInventoryResponse inventoryResult =
-                    await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, CharInventory);
+                    expectedRevision == null && economyOptions.RequireExpectedRevision
+                        ? new UpdateCharacterInventoryResponse { Success = false, ReasonCode = "revision_required" }
+                        : await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, CharInventory, expectedRevision);
+                successAndErrorMessage.NewEconomyRevision = inventoryResult.NewEconomyRevision;
+                successAndErrorMessage.ReasonCode = inventoryResult.ReasonCode;
 
                 // Deliberately NOT an early return. These three are separate transactions, so
                 // bailing here would leave quests committed and silently drop the stats save
