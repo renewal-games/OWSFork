@@ -35,6 +35,9 @@ namespace OWSTests.Database
                 ? $"Set {ConnectionStringVariable} to run the Postgres tests."
                 : null;
 
+        /// <summary>Databases/Postgres, where migration-manifest.txt and the scripts it lists live.</summary>
+        public static string PostgresDirectory => Path.Combine(FindRepoRoot(), "Databases", "Postgres");
+
         private readonly Dictionary<SchemaSource, string> _connectionStrings = new();
 
         public string ConnectionString(SchemaSource source) => _connectionStrings[source];

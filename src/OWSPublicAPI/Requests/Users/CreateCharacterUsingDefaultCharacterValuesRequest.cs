@@ -68,7 +68,7 @@ namespace OWSPublicAPI.Requests.Users
             {
                 SuccessAndErrorMessage successAndErrorMessage = new SuccessAndErrorMessage();
                 successAndErrorMessage.Success = false;
-                successAndErrorMessage.ErrorMessage = "Character name already exists!";
+                successAndErrorMessage.ErrorMessage = CharacterCreationMessages.CharacterNameTaken;
                 return successAndErrorMessage;
             }
 
@@ -89,11 +89,14 @@ namespace OWSPublicAPI.Requests.Users
             if (result == null || !result.Success)
             {
                 // The repository puts raw exception text in ErrorMessage; only pass through messages meant for players.
+                // The name check above is only a pre-check: a create that loses the race for the name fails here with
+                // CharacterNameTaken.
+                string message = result?.ErrorMessage;
                 return new SuccessAndErrorMessage()
                 {
                     Success = false,
-                    ErrorMessage = result?.ErrorMessage == CharacterCreationMessages.UnknownDefaultCharacterSet
-                        ? CharacterCreationMessages.UnknownDefaultCharacterSet
+                    ErrorMessage = message == CharacterCreationMessages.UnknownDefaultCharacterSet || message == CharacterCreationMessages.CharacterNameTaken
+                        ? message
                         : CharacterCreationMessages.CharacterCreationFailed
                 };
             }

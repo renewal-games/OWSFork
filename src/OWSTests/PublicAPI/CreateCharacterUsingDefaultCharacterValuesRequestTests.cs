@@ -37,6 +37,20 @@ namespace OWSTests.PublicAPI
         }
 
         [Fact]
+        public async Task NameTakenByConcurrentCreate_ReturnsNameTaken()
+        {
+            // The pre-check passed, then another create committed the name first and the unique index rejected this one.
+            SuccessAndErrorMessage result = await Handle(new SuccessAndErrorMessage
+            {
+                Success = false,
+                ErrorMessage = CharacterCreationMessages.CharacterNameTaken
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal(CharacterCreationMessages.CharacterNameTaken, result.ErrorMessage);
+        }
+
+        [Fact]
         public async Task RepositoryException_ReturnsGenericFailure()
         {
             SuccessAndErrorMessage result = await Handle(new SuccessAndErrorMessage

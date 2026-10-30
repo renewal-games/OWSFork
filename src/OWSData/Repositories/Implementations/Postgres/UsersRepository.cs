@@ -28,6 +28,13 @@ namespace OWSData.Repositories.Implementations.Postgres
             this._storageOptions = storageOptions;
         }
 
+        /// <summary>
+        /// True when an insert hit UX_Characters_CustomerGUID_CharName: another create took the name (in any case)
+        /// after the name pre-check passed.
+        /// </summary>
+        private static bool IsCharacterNameTaken(Exception ex) =>
+            ex is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: "ux_characters_customerguid_charname" };
+
         private readonly AsyncLocal<ScopedDbConnection> _scopedConnection = new AsyncLocal<ScopedDbConnection>();
 
         private DbConnection CreateConnection()
@@ -99,7 +106,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             catch (Exception ex)
             {
                 outputObject.Success = false;
-                outputObject.ErrorMessage = ex.Message;
+                outputObject.ErrorMessage = IsCharacterNameTaken(ex) ? "Invalid Character Name" : ex.Message;
 
                 return outputObject;
             }
@@ -149,7 +156,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             catch (Exception ex)
             {
                 outputObject.Success = false;
-                outputObject.ErrorMessage = ex.Message;
+                outputObject.ErrorMessage = IsCharacterNameTaken(ex) ? "Invalid Character Name" : ex.Message;
 
                 return outputObject;
             }
@@ -199,7 +206,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 outputObject = new SuccessAndErrorMessage()
                 {
                     Success = false,
-                    ErrorMessage = ex.Message
+                    ErrorMessage = IsCharacterNameTaken(ex) ? CharacterCreationMessages.CharacterNameTaken : ex.Message
                 };
 
                 return outputObject;
