@@ -174,8 +174,8 @@ namespace OWSTests.Database
                       INSERT INTO Users (UserGUID, CustomerGUID, FirstName, LastName, Email, PasswordHash, CreateDate, LastAccess, Role)
                       VALUES (gen_random_uuid(), @CustomerGUID, 'Test', 'User', @Email, 'x', NOW(), '2000-01-01', 'Player')
                       RETURNING UserGUID)
-                  INSERT INTO Characters (CustomerGUID, UserGUID, Email, CharName, MapName, X, Y, Z, Perception, Acrobatics, Climb, Stealth, ClassID)
-                  SELECT @CustomerGUID, U.UserGUID, @Email, @Name, 'Map', 0, 0, 0, 0, 0, 0, 0, 1 FROM U
+                  INSERT INTO Characters (CustomerGUID, UserGUID, CharName, MapName, X, Y, Z, ClassID)
+                  SELECT @CustomerGUID, U.UserGUID, @Name, 'Map', 0, 0, 0, 1 FROM U
                   RETURNING CharacterID",
                 new { CustomerGUID = customerGUID, Email = name + "@example.com", Name = name });
         }
