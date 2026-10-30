@@ -41,7 +41,9 @@ namespace OWSData.Repositories.Interfaces
         Task UpdateCharacterClass(Guid customerGUID, string characterName, string className);
         /// <summary>Upserts the abilities in <paramref name="characterAbilities"/> (a camelCase JSON array) and returns the rows written: 0 when no such character exists.</summary>
         Task<int> UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities);
-        Task UpdatePosition(Guid customerGUID, string characterName, string mapName, float X, float Y, float Z, float RX, float RY, float RZ);
+        // False when nothing was written: the character is unknown, or (Postgres) it has an owner and ownerToken is
+        // neither that owner nor the one a running handover replaced. The ownership check is part of the write.
+        Task<bool> UpdatePosition(Guid customerGUID, string characterName, string mapName, float X, float Y, float Z, float RX, float RY, float RZ, Guid? ownerToken = null);
         Task PlayerLogout(Guid customerGUID, string characterName);
         Task<MapInstances> SpinUpInstance(Guid customerGUID, string zoneName, int playerGroupId = 0);
         Task AddQuestListToDatabase(Guid customerGUID, IEnumerable<AddQuestListToDabase> addQuestListToDabase);

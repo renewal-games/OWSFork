@@ -210,7 +210,7 @@ namespace OWSCharacterPersistence.Controllers
         [Produces(typeof(SuccessAndErrorMessage))]
         public async Task<SuccessAndErrorMessage> UpdateAllPlayerPositions([FromBody] UpdateAllPlayerPositionsRequest request)
         {
-            request.SetData(_charactersRepository, _ownersRepository, _customerGuid);
+            request.SetData(_charactersRepository, _customerGuid);
             return await request.Handle();
         }
 
