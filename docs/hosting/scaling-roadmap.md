@@ -79,6 +79,8 @@ Phase 4 makes running at that scale safe, observable, and multi-replica. Do Phas
   customer key comes from project ini (client) / the game-mode override; the session GUID from
   `ASSPlayerState::GetUserSessionGUID()`. Once these are verified in a build, set
   `OWS_GRPC_REQUIRE_SESSION_AUTH=true` on the backend to enforce.
+- **Backend status:** enforcement is now the default (`OWS_GRPC_REQUIRE_SESSION_AUTH` unset means on);
+  only an explicit `false` turns it off, and Chat/Party warn at startup when it is off outside Development.
 - **Effort:** ~0.5 day (verify/build the drafted client change) + ~0.5 day (Chat full validation).
 
 ### 4.2 Externalize per-instance state so app services can run 2+ replicas

@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using Grpc.Core;
+using Microsoft.Extensions.Logging;
 using Serilog;
+using MsLogger = Microsoft.Extensions.Logging.ILogger;
 
 namespace OWSShared.Grpc
 {
@@ -100,18 +102,34 @@ namespace OWSShared.Grpc
     }
 
     /// <summary>
-    /// Reads the session credentials a client sends as gRPC call metadata. Enforcement is gated by
-    /// OWS_GRPC_REQUIRE_SESSION_AUTH (default false). When enabled, callers must supply "customerguid"
-    /// and "usersessionguid" metadata, and each service checks that they resolve to a live session
-    /// bound to the stream's character; a client that sends no session loses the stream.
+    /// Reads the session credentials a client sends as gRPC call metadata. Enforcement is on unless
+    /// OWS_GRPC_REQUIRE_SESSION_AUTH is explicitly "false". Callers must supply "customerguid" and
+    /// "usersessionguid" metadata, and each service checks that they resolve to a live session bound to
+    /// the stream's character; a client that sends no session loses the stream. With it off, a stream
+    /// speaks as whatever character name the client sends, so it is only for local development.
     /// </summary>
     public static class GrpcSessionAuth
     {
         public const string CustomerGuidHeader = "customerguid";
         public const string UserSessionGuidHeader = "usersessionguid";
 
+        public const string RequireSessionAuthVariable = "OWS_GRPC_REQUIRE_SESSION_AUTH";
+
         public static bool IsRequired =>
-            string.Equals(Environment.GetEnvironmentVariable("OWS_GRPC_REQUIRE_SESSION_AUTH"), "true", StringComparison.OrdinalIgnoreCase);
+            !string.Equals(Environment.GetEnvironmentVariable(RequireSessionAuthVariable)?.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Warns at startup when session auth is off outside Development: any caller can then claim any
+        /// character name on the stream.
+        /// </summary>
+        public static void WarnIfDisabled(MsLogger logger, string service, bool isDevelopment)
+        {
+            if (!IsRequired && !isDevelopment)
+            {
+                logger.LogWarning("grpc_session_auth_disabled {Service}: {Variable}=false, so streams accept any character name",
+                    service, RequireSessionAuthVariable);
+            }
+        }
 
         public static bool TryReadCredentials(ServerCallContext context, out Guid customerGuid, out Guid userSessionGuid)
         {

@@ -126,6 +126,8 @@ container.Register<IHeaderCustomerGUID, HeaderCustomerGUID>(Lifestyle.Scoped);
 
 var app = builder.Build();
 
+OWSShared.Grpc.GrpcSessionAuth.WarnIfDisabled(app.Logger, "party", app.Environment.IsDevelopment());
+
 container.RegisterInstance<IServiceProvider>(app.Services);
 
 app.Services.UseSimpleInjector(container);
