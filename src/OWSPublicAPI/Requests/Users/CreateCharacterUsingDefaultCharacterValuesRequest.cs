@@ -83,10 +83,9 @@ namespace OWSPublicAPI.Requests.Users
                 return successAndErrorMessage;
             }
 
-            await _usersRepository.CreateCharacterUsingDefaultCharacterValues(_customerGUID, userSession.UserGuid.Value, _createCharacterUsingDefaultCharacterValuesDTO.CharacterName,
+            // The check above is only a pre-check: a create that loses the race for the name fails here.
+            return await _usersRepository.CreateCharacterUsingDefaultCharacterValues(_customerGUID, userSession.UserGuid.Value, _createCharacterUsingDefaultCharacterValuesDTO.CharacterName,
                 _createCharacterUsingDefaultCharacterValuesDTO.DefaultSetName);
-
-            return new SuccessAndErrorMessage() { Success = true, ErrorMessage = "" };
         }
     }
 }
