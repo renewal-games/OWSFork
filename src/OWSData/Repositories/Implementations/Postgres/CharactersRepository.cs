@@ -932,7 +932,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     parameters,
                     commandType: CommandType.Text);
 
-                outputCharacter.CharCurrency = await Connection.QueryAsync<CharacterCurrency>(PostgresQueries.GetCharInventoryByCharName,
+                outputCharacter.CharCurrency = await Connection.QueryAsync<CharacterCurrency>(GenericQueries.GetCharCurrencyByCharName,
                     parameters,
                     commandType: CommandType.Text);
             }

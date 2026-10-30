@@ -97,6 +97,12 @@ namespace OWSData.SQL
                 WHERE C.CharName = @CharName
                 AND C.CustomerGUID = @CustomerGUID";
 
+        // Currency lives on the character row, not in inventory.
+        public static readonly string GetCharCurrencyByCharName = @"SELECT C.Gold
+                FROM Characters C
+                WHERE C.CharName = @CharName
+                AND C.CustomerGUID = @CustomerGUID";
+
         public static readonly string GetCharStatsByCharName = @"SELECT CS.*
                 FROM Characters C INNER JOIN CharStats CS
                 ON C.CharName = @CharName

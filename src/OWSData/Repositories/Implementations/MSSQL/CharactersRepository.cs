@@ -245,7 +245,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     parameters,
                     commandType: CommandType.Text);
 
-                outputCharacter.CharCurrency = await Connection.QueryAsync<CharacterCurrency>(GenericQueries.GetCharInventoryByCharName,
+                outputCharacter.CharCurrency = await Connection.QueryAsync<CharacterCurrency>(GenericQueries.GetCharCurrencyByCharName,
                     parameters,
                     commandType: CommandType.Text);
             }
