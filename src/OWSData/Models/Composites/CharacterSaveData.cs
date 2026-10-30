@@ -51,7 +51,7 @@ namespace OWSData.Models.Composites
 
     public class CharacterCurrency
     {
-
+        public int Gold { get; set; }
     }
 
     public partial class CharacterProfession
