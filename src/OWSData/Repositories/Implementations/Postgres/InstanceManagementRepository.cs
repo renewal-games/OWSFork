@@ -107,6 +107,8 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task<SuccessAndErrorMessage> SetZoneInstanceStatus(Guid customerGUID, int zoneInstanceID, int instanceStatus)
         {
+            int updatedRows;
+
             using (Connection)
             {
                 var parameter = new DynamicParameters();
@@ -114,9 +116,18 @@ namespace OWSData.Repositories.Implementations.Postgres
                 parameter.Add("@MapInstanceID", zoneInstanceID);
                 parameter.Add("@MapInstanceStatus", instanceStatus);
 
-                await Connection.QueryFirstOrDefaultAsync(GenericQueries.UpdateMapInstanceStatus,
+                updatedRows = await Connection.ExecuteAsync(GenericQueries.UpdateMapInstanceStatus,
                     parameter,
                     commandType: CommandType.Text);
+            }
+
+            if (updatedRows != 1)
+            {
+                return new SuccessAndErrorMessage()
+                {
+                    Success = false,
+                    ErrorMessage = $"Zone Instance {zoneInstanceID} was not found."
+                };
             }
 
             SuccessAndErrorMessage output = new SuccessAndErrorMessage()

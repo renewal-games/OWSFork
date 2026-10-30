@@ -11,6 +11,7 @@ namespace OWSData.Models.StoredProcs
 		public string WorldCompContainsFilter { get; set; }
 		public string WorldCompListFilter { get; set; }
 		public int MapInstanceID { get; set; }
+		public int WorldServerID { get; set; }
 		public int Status { get; set; }
 		public int MaxNumberOfInstances { get; set; }
 		public DateTime? ActiveStartTime { get; set; }
