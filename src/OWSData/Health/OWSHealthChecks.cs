@@ -12,6 +12,7 @@ namespace OWSData.Health
     /// <summary>
     /// Dependency checks behind each service's /health. Every probe logs in fresh, so a stale password fails
     /// even while pooled connections still work; results are cached so the endpoint cannot flood the database.
+    /// The Postgres check also fails when the schema is behind this build (<see cref="SchemaVersionCheck"/>).
     /// </summary>
     public static class OWSHealthChecks
     {
@@ -28,8 +29,7 @@ namespace OWSData.Health
             {
                 await using var connection = new NpgsqlConnection(csb.ConnectionString);
                 await connection.OpenAsync(ct);
-                await using var command = new NpgsqlCommand("SELECT 1", connection);
-                await command.ExecuteScalarAsync(ct);
+                return await SchemaVersionCheck.FindProblemAsync(connection, ct);
             }));
         }
 
@@ -46,17 +46,19 @@ namespace OWSData.Health
             return builder.AddCheck("rabbitmq", new CachedCheck(ct => Task.Run(() =>
             {
                 using IConnection connection = factory.CreateConnection();
+                return (string)null;
             }, ct)));
         }
 
         private sealed class CachedCheck : IHealthCheck
         {
-            private readonly Func<CancellationToken, Task> _probe;
+            // Resolves to a description of what is wrong, or null when healthy; a throw counts as unhealthy too.
+            private readonly Func<CancellationToken, Task<string>> _probe;
             private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
             private HealthCheckResult _last;
             private DateTime _lastUtc = DateTime.MinValue;
 
-            public CachedCheck(Func<CancellationToken, Task> probe) => _probe = probe;
+            public CachedCheck(Func<CancellationToken, Task<string>> probe) => _probe = probe;
 
             public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
             {
@@ -68,8 +70,10 @@ namespace OWSData.Health
 
                     try
                     {
-                        await _probe(cancellationToken);
-                        _last = HealthCheckResult.Healthy();
+                        string problem = await _probe(cancellationToken);
+                        _last = problem == null
+                            ? HealthCheckResult.Healthy()
+                            : new HealthCheckResult(context.Registration.FailureStatus, problem);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
