@@ -1,0 +1,269 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Dapper;
+using Npgsql;
+using OWSCharacterPersistence.Requests.Characters;
+using OWSData.Models.Composites;
+using OWSData.Models.StoredProcs;
+using OWSData.Repositories.Implementations.Postgres;
+using OWSShared.Implementations;
+using OWSShared.Options;
+using Xunit;
+
+namespace OWSTests.Database
+{
+    /// <summary>
+    /// api/Characters/UpdateCharacterData saves quests, inventory and stats in one transaction: a failure in any
+    /// section, a missing section, or a save from a zone that no longer owns the character writes nothing. Runs on the
+    /// migrated schema only, because setup.sql alone has no CharQuests or CharStats tables.
+    /// </summary>
+    public class UpdateCharacterDataTests : IClassFixture<PostgresTestDatabases>
+    {
+        private const string CharName = "SaveTester";
+        private const int OwningZone = 101;
+        private const int PreviousZone = 100;
+
+        private readonly PostgresTestDatabases _databases;
+
+        public UpdateCharacterDataTests(PostgresTestDatabases databases)
+        {
+            _databases = databases;
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task SavesAllThreeSections(SchemaSource source)
+        {
+            Guid customerGUID = await SeedCharacter(source);
+
+            SuccessAndErrorMessage result = await Request(source, customerGUID, NewQuests("Quest.Second"), NewInventory(), NewStats(), OwningZone).Handle();
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Equal("", result.ErrorMessage ?? "");
+            Assert.Equal(new[] { "Quest.First", "Quest.Second" }, await Quests(source, customerGUID));
+            Assert.Equal(new[] { "NewSword" }, await Items(source, customerGUID));
+            Assert.Equal(7, await Stat(source, customerGUID));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task FailingQuestWritesNothing(SchemaSource source)
+        {
+            Guid customerGUID = await SeedCharacter(source);
+
+            // CharQuests.QuestIDTag is VARCHAR(50), so the second quest fails after the first was written.
+            SuccessAndErrorMessage result = await Request(source, customerGUID, NewQuests(new string('Q', 60)), NewInventory(), NewStats(), OwningZone).Handle();
+
+            Assert.False(result.Success);
+            await AssertUnchanged(source, customerGUID);
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task MissingInventoryKeepsBag(SchemaSource source)
+        {
+            Guid customerGUID = await SeedCharacter(source);
+
+            SuccessAndErrorMessage result = await Request(source, customerGUID, NewQuests("Quest.Second"), null, NewStats(), OwningZone).Handle();
+
+            Assert.False(result.Success);
+            await AssertUnchanged(source, customerGUID);
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task MissingQuestsOrStatsWritesNothing(SchemaSource source)
+        {
+            Guid customerGUID = await SeedCharacter(source);
+
+            Assert.False((await Request(source, customerGUID, null, NewInventory(), NewStats(), OwningZone).Handle()).Success);
+            Assert.False((await Request(source, customerGUID, NewQuests("Quest.Second"), NewInventory(), null, OwningZone).Handle()).Success);
+            await AssertUnchanged(source, customerGUID);
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task PreviousZoneAfterHandoffWritesNothing(SchemaSource source)
+        {
+            // The controller's owner guard still lets the previous owner's token through during the handover window;
+            // the zone check is what stops the old zone's save.
+            Guid customerGUID = await SeedCharacter(source);
+
+            SuccessAndErrorMessage result = await Request(source, customerGUID, NewQuests("Quest.Second"), NewInventory(), NewStats(), PreviousZone).Handle();
+
+            Assert.True(result.Success);
+            Assert.Equal("stale_zone", result.ErrorMessage);
+            await AssertUnchanged(source, customerGUID);
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task StaleRevisionSkipsBagButSavesQuestsAndStats(SchemaSource source)
+        {
+            // A shop transaction committed after the zone computed its bag: the bag must not be written back,
+            // but quests and stats are not economy state and still save, together.
+            Guid customerGUID = await SeedCharacter(source);
+            long revision = await Revision(source, customerGUID);
+
+            UpdateCharacterDataResponse result = await Request(source, customerGUID, NewQuests("Quest.Second"), NewInventory(), NewStats(), OwningZone,
+                expectedRevision: revision + 1).Handle();
+
+            Assert.False(result.Success);
+            Assert.Equal("stale_revision", result.ReasonCode);
+            Assert.Equal(revision, result.NewEconomyRevision);
+            Assert.Equal(new[] { "OldShield" }, await Items(source, customerGUID));
+            Assert.Equal(new[] { "Quest.First", "Quest.Second" }, await Quests(source, customerGUID));
+            Assert.Equal(7, await Stat(source, customerGUID));
+            Assert.Equal(revision, await Revision(source, customerGUID));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task MissingRevisionWhenRequiredSkipsBag(SchemaSource source)
+        {
+            Guid customerGUID = await SeedCharacter(source);
+
+            UpdateCharacterDataResponse result = await Request(source, customerGUID, NewQuests("Quest.Second"), NewInventory(), NewStats(), OwningZone,
+                economyOptions: new EconomyOptions { RequireExpectedRevision = true }).Handle();
+
+            Assert.False(result.Success);
+            Assert.Equal("revision_required", result.ReasonCode);
+            Assert.Equal(new[] { "OldShield" }, await Items(source, customerGUID));
+            Assert.Equal(7, await Stat(source, customerGUID));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task MatchingRevisionWritesBagAndBumpsRevision(SchemaSource source)
+        {
+            Guid customerGUID = await SeedCharacter(source);
+            long revision = await Revision(source, customerGUID);
+
+            UpdateCharacterDataResponse result = await Request(source, customerGUID, NewQuests("Quest.Second"), NewInventory(), NewStats(), OwningZone,
+                expectedRevision: revision, economyOptions: new EconomyOptions { RequireExpectedRevision = true }).Handle();
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Equal(revision + 1, result.NewEconomyRevision);
+            Assert.Equal(revision + 1, await Revision(source, customerGUID));
+            Assert.Equal(new[] { "NewSword" }, await Items(source, customerGUID));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task FailingQuestWithMatchingRevisionLeavesRevision(SchemaSource source)
+        {
+            Guid customerGUID = await SeedCharacter(source);
+            long revision = await Revision(source, customerGUID);
+
+            UpdateCharacterDataResponse result = await Request(source, customerGUID, NewQuests(new string('Q', 60)), NewInventory(), NewStats(), OwningZone,
+                expectedRevision: revision).Handle();
+
+            Assert.False(result.Success);
+            await AssertUnchanged(source, customerGUID);
+            Assert.Equal(revision, await Revision(source, customerGUID));
+        }
+
+        private async Task<long> Revision(SchemaSource source, Guid customerGUID)
+        {
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            return await connection.QuerySingleAsync<long>(
+                "SELECT EconomyRevision FROM Characters WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName",
+                new { CustomerGUID = customerGUID, CharName });
+        }
+
+        private UpdateCharacterDataRequest Request(SchemaSource source, Guid customerGUID, IEnumerable<UpdateCharacterQuest> quests,
+            IEnumerable<UpdateCharacterInventory> inventory, IEnumerable<UpdateCharacterStats> stats, int? zoneInstanceID,
+            long? expectedRevision = null, EconomyOptions economyOptions = null)
+        {
+            var request = new UpdateCharacterDataRequest
+            {
+                CharacterName = CharName,
+                CharQuests = quests,
+                CharInventory = inventory,
+                CharStats = stats,
+                ZoneInstanceID = zoneInstanceID,
+                ExpectedRevision = expectedRevision
+            };
+            request.SetData(
+                new CharactersRepository(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) })),
+                new HeaderCustomerGUID { CustomerGUID = customerGUID },
+                economyOptions ?? new EconomyOptions());
+            return request;
+        }
+
+        private static List<UpdateCharacterQuest> NewQuests(string secondQuestIDTag) => new()
+        {
+            new UpdateCharacterQuest { QuestIDTag = "Quest.First", QuestJournalTagContainer = "(Journal=\"new\")", CustomData = "" },
+            new UpdateCharacterQuest { QuestIDTag = secondQuestIDTag, QuestJournalTagContainer = "(Journal=\"new\")", CustomData = "" }
+        };
+
+        private static List<UpdateCharacterInventory> NewInventory() => new()
+        {
+            new UpdateCharacterInventory { ItemIDTag = "NewSword", Quantity = 1, InSlotNumber = 0, CustomData = "" }
+        };
+
+        private static List<UpdateCharacterStats> NewStats() => new()
+        {
+            new UpdateCharacterStats { StatIdentifier = "BaseLevel", Value = 7 }
+        };
+
+        private async Task AssertUnchanged(SchemaSource source, Guid customerGUID)
+        {
+            Assert.Empty(await Quests(source, customerGUID));
+            Assert.Equal(new[] { "OldShield" }, await Items(source, customerGUID));
+            Assert.Equal(1, await Stat(source, customerGUID));
+        }
+
+        // A character in OwningZone with one bag item, BaseLevel 1 and no quests.
+        private async Task<Guid> SeedCharacter(SchemaSource source)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            await connection.ExecuteAsync(
+                @"WITH C AS (
+                      INSERT INTO Characters (CustomerGUID, CharName, X, Y, Z, ClassID)
+                      VALUES (@CustomerGUID, @CharName, 0, 0, 0, 0)
+                      RETURNING CharacterID),
+                  I AS (
+                      INSERT INTO CharInventory (CustomerGUID, CharacterID, InventoryName, InventorySize)
+                      SELECT @CustomerGUID, CharacterID, 'Bag', 16 FROM C
+                      RETURNING CharInventoryID),
+                  S AS (
+                      INSERT INTO CharStats (CustomerGUID, CharacterID, StatIdentifier, Value)
+                      SELECT @CustomerGUID, CharacterID, 'BaseLevel', 1 FROM C),
+                  M AS (
+                      INSERT INTO CharOnMapInstance (CustomerGUID, CharacterID, MapInstanceID)
+                      SELECT @CustomerGUID, CharacterID, @OwningZone FROM C)
+                  INSERT INTO CharInventoryItems (CustomerGUID, CharInventoryID, ItemIDTag, Quantity, InSlotNumber, CustomData)
+                  SELECT @CustomerGUID, CharInventoryID, 'OldShield', 1, 0, '' FROM I",
+                new { CustomerGUID = customerGUID, CharName, OwningZone });
+            return customerGUID;
+        }
+
+        private async Task<string[]> Quests(SchemaSource source, Guid customerGUID)
+        {
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            return (await connection.QueryAsync<string>(
+                "SELECT QuestIDTag FROM CharQuests WHERE CustomerGUID = @CustomerGUID ORDER BY QuestIDTag",
+                new { CustomerGUID = customerGUID })).ToArray();
+        }
+
+        private async Task<string[]> Items(SchemaSource source, Guid customerGUID)
+        {
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            return (await connection.QueryAsync<string>(
+                "SELECT ItemIDTag FROM CharInventoryItems WHERE CustomerGUID = @CustomerGUID ORDER BY InSlotNumber",
+                new { CustomerGUID = customerGUID })).ToArray();
+        }
+
+        private async Task<int> Stat(SchemaSource source, Guid customerGUID)
+        {
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            return await connection.QuerySingleAsync<int>(
+                "SELECT Value FROM CharStats WHERE CustomerGUID = @CustomerGUID AND StatIdentifier = 'BaseLevel'",
+                new { CustomerGUID = customerGUID });
+        }
+    }
+}

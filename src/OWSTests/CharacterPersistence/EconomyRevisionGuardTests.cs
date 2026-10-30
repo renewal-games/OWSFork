@@ -24,6 +24,8 @@ namespace OWSTests.CharacterPersistence
 
         private static readonly EconomyOptions Required = new EconomyOptions { RequireExpectedRevision = true };
         private static readonly EconomyOptions Legacy = new EconomyOptions();
+        private static readonly List<UpdateCharacterQuest> NoQuests = new List<UpdateCharacterQuest>();
+        private static readonly List<UpdateCharacterStats> NoStats = new List<UpdateCharacterStats>();
 
         [Fact]
         public async Task Inventory_StaleSnapshotWithoutRevision_IsRefused_WhenRequired()
@@ -98,7 +100,7 @@ namespace OWSTests.CharacterPersistence
             List<UpdateCharacterInventory> prePurchaseBag = economy.Bag;
             economy.CommitPurchase(item: "sword", price: 60);
 
-            var request = new UpdateCharacterDataRequest { CharacterName = CharName, CharInventory = prePurchaseBag };
+            var request = new UpdateCharacterDataRequest { CharacterName = CharName, CharQuests = NoQuests, CharInventory = prePurchaseBag, CharStats = NoStats };
             request.SetData(economy.Repository, new HeaderCustomerGUID(), Required);
             UpdateCharacterDataResponse response = await request.Handle();
 
@@ -114,7 +116,7 @@ namespace OWSTests.CharacterPersistence
         {
             FakeEconomy economy = FakeEconomy.Create(revision: 4, bag: "potion", gold: 100);
 
-            var request = new UpdateCharacterDataRequest { CharacterName = CharName, CharInventory = economy.Bag, ExpectedRevision = 4 };
+            var request = new UpdateCharacterDataRequest { CharacterName = CharName, CharQuests = NoQuests, CharInventory = economy.Bag, CharStats = NoStats, ExpectedRevision = 4 };
             request.SetData(economy.Repository, new HeaderCustomerGUID(), Required);
             UpdateCharacterDataResponse response = await request.Handle();
 
@@ -210,6 +212,8 @@ namespace OWSTests.CharacterPersistence
                         return Task.FromResult(WriteInventory((IEnumerable<UpdateCharacterInventory>)args[2], (long?)args[3]));
                     case nameof(ICharactersRepository.UpdateCharacterCurrency):
                         return Task.FromResult(WriteCurrency((int)args[2], (long?)args[3]));
+                    case nameof(ICharactersRepository.UpdateCharacterData):
+                        return Task.FromResult(WriteCharacterData((IEnumerable<UpdateCharacterInventory>)args[3], (long?)args[6], (bool)args[7]));
                     case nameof(ICharactersRepository.UpdateCharacterQuests):
                         QuestSaves++;
                         return Task.FromResult(true);
@@ -233,6 +237,19 @@ namespace OWSTests.CharacterPersistence
                     Revision++;
                 }
                 return new UpdateCharacterInventoryResponse { Success = true, NewEconomyRevision = Revision };
+            }
+
+            // Mirrors the Postgres combined save: a revision refusal skips only the bag, quests and stats still save.
+            private UpdateCharacterDataResponse WriteCharacterData(IEnumerable<UpdateCharacterInventory> bag, long? expectedRevision, bool requireExpectedRevision)
+            {
+                QuestSaves++;
+                StatSaves++;
+                if (expectedRevision == null && requireExpectedRevision)
+                {
+                    return new UpdateCharacterDataResponse { Success = false, ReasonCode = "revision_required", NewEconomyRevision = Revision };
+                }
+                UpdateCharacterInventoryResponse inventory = WriteInventory(bag, expectedRevision);
+                return new UpdateCharacterDataResponse { Success = inventory.Success, ReasonCode = inventory.ReasonCode ?? "", NewEconomyRevision = inventory.NewEconomyRevision };
             }
 
             private UpdateCharacterCurrencyResponse WriteCurrency(int gold, long? expectedRevision)
