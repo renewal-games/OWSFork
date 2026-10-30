@@ -193,6 +193,16 @@ namespace OWSData.Repositories.Implementations.Postgres
                     commandType: CommandType.Text);
                 transaction.Commit();
             }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+            {
+                // UX_Characters_CustomerGUID_LowerCharName: a concurrent create, or the same name in another case, won the race.
+                transaction.Rollback();
+                return new SuccessAndErrorMessage()
+                {
+                    Success = false,
+                    ErrorMessage = CharacterCreationMessages.CharacterNameAlreadyExists
+                };
+            }
             catch (Exception ex)
             {
                 transaction.Rollback();

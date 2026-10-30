@@ -64,11 +64,11 @@ namespace OWSPublicAPI.Requests.Users
             //Make sure Character Name is Unique
             var characterToLookup = await _charactersRepository.GetCharByCharName(_customerGUID, _createCharacterUsingDefaultCharacterValuesDTO.CharacterName);
 
-            if (characterToLookup != null && characterToLookup.UserGuid != Guid.Empty)
+            if (characterToLookup != null)
             {
                 SuccessAndErrorMessage successAndErrorMessage = new SuccessAndErrorMessage();
                 successAndErrorMessage.Success = false;
-                successAndErrorMessage.ErrorMessage = "Character name already exists!";
+                successAndErrorMessage.ErrorMessage = CharacterCreationMessages.CharacterNameAlreadyExists;
                 return successAndErrorMessage;
             }
 
@@ -83,7 +83,7 @@ namespace OWSPublicAPI.Requests.Users
                 return successAndErrorMessage;
             }
 
-            SuccessAndErrorMessage result = await _usersRepository.CreateCharacterUsingDefaultCharacterValues(_customerGUID, userSession.UserGuid.Value,
+SuccessAndErrorMessage result = await _usersRepository.CreateCharacterUsingDefaultCharacterValues(_customerGUID, userSession.UserGuid.Value,
                 _createCharacterUsingDefaultCharacterValuesDTO.CharacterName, _createCharacterUsingDefaultCharacterValuesDTO.DefaultSetName);
 
             if (result == null || !result.Success)
@@ -92,13 +92,17 @@ namespace OWSPublicAPI.Requests.Users
                 return new SuccessAndErrorMessage()
                 {
                     Success = false,
-                    ErrorMessage = result?.ErrorMessage == CharacterCreationMessages.UnknownDefaultCharacterSet
-                        ? CharacterCreationMessages.UnknownDefaultCharacterSet
+                    ErrorMessage = IsPlayerFacingMessage(result?.ErrorMessage)
+                        ? result.ErrorMessage
                         : CharacterCreationMessages.CharacterCreationFailed
                 };
             }
 
             return new SuccessAndErrorMessage() { Success = true, ErrorMessage = "" };
         }
+
+        private static bool IsPlayerFacingMessage(string errorMessage) =>
+            errorMessage == CharacterCreationMessages.UnknownDefaultCharacterSet
+            || errorMessage == CharacterCreationMessages.CharacterNameAlreadyExists;
     }
 }
