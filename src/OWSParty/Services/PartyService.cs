@@ -58,10 +58,9 @@ namespace OWSParty.Service
                 return;
             }
 
-            // Session auth is gated off by default (the current client sends no session token).
-            // When enabled, require valid customerguid/usersessionguid metadata, the session must
-            // exist, and it must belong to the character being registered — so a client cannot
-            // register the stream as someone else.
+            // Session auth is on unless OWS_GRPC_REQUIRE_SESSION_AUTH=false. Require valid
+            // customerguid/usersessionguid metadata, the session must exist, and it must belong to
+            // the character being registered — so a client cannot register the stream as someone else.
             if (GrpcSessionAuth.IsRequired && !await IsRegistrationAuthorized(context, parsedCustomerGuid, userName))
             {
                 GrpcSessionAuth.LogRejected(context, "party");

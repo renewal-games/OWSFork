@@ -85,9 +85,11 @@ Additional env vars for production hardening (set in `.env.hetzner-dev`):
   auth never depends on the cache. Set `OWS_SESSION_CACHE_ENABLED=false` to bypass it.
 - `OWS_GRPC_MAX_CONNECTIONS` / `OWS_GRPC_MSGS_PER_WINDOW` / `OWS_GRPC_RATE_WINDOW_SECONDS` —
   Chat/Party connection cap and per-connection message rate limit (always enforced).
-- `OWS_GRPC_REQUIRE_SESSION_AUTH` — gRPC session validation. Keep `false` until the UE client
-  sends `customerguid`/`usersessionguid` gRPC metadata; enabling it before then rejects all
-  streams. See `docs/hosting/scaling-roadmap.md` (4.1).
+- `OWS_GRPC_REQUIRE_SESSION_AUTH` — gRPC session validation, on unless set to `false`. With it off,
+  a caller can chat or act in parties as any character, and Chat and Party log
+  `grpc_session_auth_disabled` at startup outside Development. Set `false` only to roll back a
+  client build that sends no `customerguid`/`usersessionguid` gRPC metadata. See
+  `docs/hosting/scaling-roadmap.md` (4.1).
 
 Start the lean stack:
 
@@ -355,10 +357,11 @@ ss -tlnH | awk '$4 !~ /^(127\.|\[::1\])/ {sub(/.*:/, "", $4); print $4}' | sort 
 ```
 
 Chat and Party gRPC read the caller's session from call metadata (`customerguid`, `usersessionguid`).
-With `OWS_GRPC_REQUIRE_SESSION_AUTH=true` in `.env.hetzner-dev`, a stream must name a live session and
-speaks as that session's selected character; a game client that sends no session loses chat. Turn it on
-only when the live Steam build sends the session (the client keeps it on the game instance from login),
-then rebuild and recreate both services:
+Session auth is on by default: a stream must name a live session and speaks as that session's selected
+character; a game client that sends no session loses chat. When rolling it out on a box whose
+`.env.hetzner-dev` still says `OWS_GRPC_REQUIRE_SESSION_AUTH=false`, set it to `true` (or delete the line)
+once the live Steam build sends the session (the client keeps it on the game instance from login), watch
+the `grpc_session_rejected` alert, then rebuild and recreate both services:
 
 ```bash
 cd /opt/owsfork/src
@@ -508,7 +511,7 @@ stop arriving (the box or Alloy is down), and posts to Discord `#dev-observation
 ### Refused logins and API box host alerts
 
 Health checks stay green while chat or party refuses every stream, as in the 2026-10-18 chat outage. With
-`OWS_GRPC_REQUIRE_SESSION_AUTH=true`, each refused stream logs `grpc_session_rejected {Service} {Reason}` at Warning:
+session auth on (the default), each refused stream logs `grpc_session_rejected {Service} {Reason}` at Warning:
 `no_credentials` means the client sent no session (a client bug); `invalid_session` means the session is unknown,
 expired, or bound to another character. The log line has no session GUID and no IP.
 

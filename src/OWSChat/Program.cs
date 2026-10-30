@@ -71,6 +71,8 @@ builder.Services.AddScoped<StoreCustomerGUIDMiddleware>();
 
 var app = builder.Build();
 
+OWSShared.Grpc.GrpcSessionAuth.WarnIfDisabled(app.Logger, "chat", app.Environment.IsDevelopment());
+
 ((IApplicationBuilder)app).UseSimpleInjector(container);
 
 app.UseHealthChecks("/health");

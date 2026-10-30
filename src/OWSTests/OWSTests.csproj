@@ -15,9 +15,11 @@
     </PackageReference>
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\OWSChat\OWSChat.csproj" />
     <ProjectReference Include="..\OWSData\OWSData.csproj" />
     <ProjectReference Include="..\OWSInstanceLauncher\OWSInstanceLauncher.csproj" />
     <ProjectReference Include="..\OWSManagement\OWSManagement.csproj" />
+    <ProjectReference Include="..\OWSParty\OWSParty.csproj" />
     <ProjectReference Include="..\OWSShared\OWSShared.csproj" />
   </ItemGroup>
   <ItemGroup>
