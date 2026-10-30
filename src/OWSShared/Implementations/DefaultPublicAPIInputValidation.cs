@@ -27,24 +27,63 @@ namespace OWSShared.Implementations
             return "";
         }
 
+        // Matches the Users table columns (setup.sql) so a bad value gets a clear message instead of a database error.
+        private const int MaxEmailLength = 255;
+        private const int MaxNameLength = 50;
+        // bcrypt reads only the first 72 bytes of a password; Postgres AddUser refuses anything longer.
+        private const int MaxPasswordBytes = 72;
+
         public string ValidateEmail(string email)
         {
-            throw new NotImplementedException();
+            string normalizedEmail = email?.Trim();
+            if (String.IsNullOrEmpty(normalizedEmail) || normalizedEmail.Length > MaxEmailLength)
+            {
+                return "Please enter a valid Email address.";
+            }
+
+            // One @, something before it, and a dotted domain after it, with no spaces.
+            Regex regex = new Regex(@"^[^@\s]+@[^@\s]+\.[^@\s]+$");
+            if (!regex.IsMatch(normalizedEmail))
+            {
+                return "Please enter a valid Email address.";
+            }
+
+            return "";
         }
 
         public string ValidateFirstName(string firstName)
         {
-            throw new NotImplementedException();
+            if (firstName != null && firstName.Length > MaxNameLength)
+            {
+                return $"Please enter a First Name that is {MaxNameLength} characters or fewer.";
+            }
+
+            return "";
         }
 
         public string ValidateLastName(string lastName)
         {
-            throw new NotImplementedException();
+            if (lastName != null && lastName.Length > MaxNameLength)
+            {
+                return $"Please enter a Last Name that is {MaxNameLength} characters or fewer.";
+            }
+
+            return "";
         }
 
         public string ValidatePassword(string password)
         {
-            throw new NotImplementedException();
+            if (String.IsNullOrEmpty(password))
+            {
+                return "Please enter a Password.";
+            }
+
+            if (Encoding.UTF8.GetByteCount(password) > MaxPasswordBytes)
+            {
+                return $"Password must be {MaxPasswordBytes} bytes or fewer.";
+            }
+
+            return "";
         }
     }
 }

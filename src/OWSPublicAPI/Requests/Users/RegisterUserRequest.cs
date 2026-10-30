@@ -9,6 +9,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using OWSData.Models.StoredProcs;
 using OWSPublicAPI.DTOs;
+using Microsoft.Extensions.Logging;
 
 namespace OWSPublicAPI.Requests.Users
 {
@@ -20,11 +21,18 @@ namespace OWSPublicAPI.Requests.Users
     /// </remarks>
     public class RegisterUserRequest
     {
+        /// <summary>
+        /// Returned for any failure to create the account.  The real cause is logged, not sent to the client.
+        /// </summary>
+        public const string RegistrationFailedMessage = "Registration failed. Please try again later.";
+
         private readonly RegisterUserDTO _registerUserDTO;
         private readonly Guid _customerGUID;
         private readonly IUsersRepository _usersRepository;
         private readonly IExternalLoginProviderFactory _externalLoginProviderFactory;
         private readonly Services.LoginGate _loginGate;
+        private readonly IPublicAPIInputValidation _publicAPIInputValidation;
+        private readonly ILogger _logger;
 
         /// <summary>
         /// RegisterUserRequest Constructor
@@ -32,13 +40,16 @@ namespace OWSPublicAPI.Requests.Users
         /// <remarks>
         /// Initialize the RegisterUserRequest object with dependencies
         /// </remarks>
-        public RegisterUserRequest(RegisterUserDTO registerUserDTO, IUsersRepository usersRepository, IExternalLoginProviderFactory externalLoginProviderFactory, IHeaderCustomerGUID customerGuid, Services.LoginGate loginGate)
+        public RegisterUserRequest(RegisterUserDTO registerUserDTO, IUsersRepository usersRepository, IExternalLoginProviderFactory externalLoginProviderFactory, IHeaderCustomerGUID customerGuid, Services.LoginGate loginGate,
+            IPublicAPIInputValidation publicAPIInputValidation, ILogger logger)
         {
             _registerUserDTO = registerUserDTO;
             _customerGUID = customerGuid.CustomerGUID;
             _usersRepository = usersRepository;
             _externalLoginProviderFactory = externalLoginProviderFactory;
             _loginGate = loginGate;
+            _publicAPIInputValidation = publicAPIInputValidation;
+            _logger = logger;
         }
 
         /// <summary>
@@ -53,6 +64,12 @@ namespace OWSPublicAPI.Requests.Users
             if (await _loginGate.ClosedForMaintenance(OWSData.Models.UserRoles.Player))
             {
                 return new PlayerLoginAndCreateSession { ErrorMessage = Services.LoginGate.MaintenanceMessage };
+            }
+
+            string validationError = Validate();
+            if (!String.IsNullOrEmpty(validationError))
+            {
+                return new PlayerLoginAndCreateSession { ErrorMessage = validationError };
             }
 
             //Check for duplicate account before creating a new one:
@@ -70,14 +87,17 @@ namespace OWSPublicAPI.Requests.Users
             }
 
             //Register the new account
-            SuccessAndErrorMessage registerOutput = await _usersRepository.RegisterUser(_customerGUID, _registerUserDTO.Email, _registerUserDTO.Password, _registerUserDTO.FirstName, _registerUserDTO.LastName);
+            SuccessAndErrorMessage registerOutput = await _usersRepository.RegisterUser(_customerGUID, _registerUserDTO.Email, _registerUserDTO.Password, _registerUserDTO.FirstName ?? "", _registerUserDTO.LastName ?? "");
 
             //There was an error registering the new account
             if (!registerOutput.Success)
             {
+                //The repository's message can be a raw database error, so it is logged and the client gets a generic one
+                _logger.LogWarning("RegisterUser failed for customer {CustomerGUID}: {Error}", _customerGUID, registerOutput.ErrorMessage);
+
                 PlayerLoginAndCreateSession errorOutput = new PlayerLoginAndCreateSession()
                 {
-                    ErrorMessage = registerOutput.ErrorMessage
+                    ErrorMessage = RegistrationFailedMessage
                 };
 
                 return errorOutput;
@@ -95,6 +115,30 @@ namespace OWSPublicAPI.Requests.Users
             */
 
             return playerLoginAndCreateSession;
+        }
+
+        private string Validate()
+        {
+            if (_registerUserDTO == null)
+            {
+                return "Please enter a valid Email address.";
+            }
+
+            foreach (string error in new[]
+            {
+                _publicAPIInputValidation.ValidateEmail(_registerUserDTO.Email),
+                _publicAPIInputValidation.ValidatePassword(_registerUserDTO.Password),
+                _publicAPIInputValidation.ValidateFirstName(_registerUserDTO.FirstName),
+                _publicAPIInputValidation.ValidateLastName(_registerUserDTO.LastName)
+            })
+            {
+                if (!String.IsNullOrEmpty(error))
+                {
+                    return error;
+                }
+            }
+
+            return "";
         }
     }
 }
