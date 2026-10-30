@@ -134,7 +134,7 @@ namespace OWSTests.Database
             }
         }
 
-        private static string FindRepoRoot()
+        internal static string FindRepoRoot()
         {
             for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
             {
