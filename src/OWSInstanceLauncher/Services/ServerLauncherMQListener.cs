@@ -193,19 +193,17 @@ namespace OWSInstanceLauncher.Services
             //Server Spin Up
             var serverSpinUpConsumer = new AsyncEventingBasicConsumer(serverSpinUpChannel);
 
-            serverSpinUpConsumer.Received += (model, ea) =>
+            serverSpinUpConsumer.Received += async (model, ea) =>
             {
                 var body = ea.Body;
                 MQSpinUpServerMessage serverSpinUpMessage = MQSpinUpServerMessage.Deserialize(body.ToArray());
                 Log.Information($"Server Spin Up Message Received: {serverSpinUpMessage.CustomerGUID} WorldServerID: {serverSpinUpMessage.WorldServerID} ZoneInstanceID: {serverSpinUpMessage.ZoneInstanceID} MapName: {serverSpinUpMessage.MapName} Port: {serverSpinUpMessage.Port}");
-                HandleServerSpinUpMessage(
+                await HandleServerSpinUpMessage(
                     serverSpinUpMessage.CustomerGUID,
                     serverSpinUpMessage.WorldServerID,
                     serverSpinUpMessage.ZoneInstanceID,
                     serverSpinUpMessage.MapName,
                     serverSpinUpMessage.Port);
-
-                return Task.CompletedTask;
             };
 
             serverSpinUpConsumer.Shutdown += OnServerSpinUpConsumerShutdown;
@@ -220,17 +218,15 @@ namespace OWSInstanceLauncher.Services
             //Server Shut Down
             var serverShutDownConsumer = new AsyncEventingBasicConsumer(serverShutDownChannel);
 
-            serverShutDownConsumer.Received += (model, ea) =>
+            serverShutDownConsumer.Received += async (model, ea) =>
             {
                 Log.Information("Message Received");
                 var body = ea.Body;
                 MQShutDownServerMessage serverShutDownMessage = MQShutDownServerMessage.Deserialize(body.ToArray());
-                HandleServerShutDownMessage(
+                await HandleServerShutDownMessage(
                     serverShutDownMessage.CustomerGUID,
                     serverShutDownMessage.ZoneInstanceID
                 );
-
-                return Task.CompletedTask;
             };
 
             serverShutDownConsumer.Shutdown += OnServerShutDownConsumerShutdown;
@@ -253,7 +249,7 @@ namespace OWSInstanceLauncher.Services
                 .Replace("{port}", port.ToString());
         }
 
-        private void HandleServerSpinUpMessage(Guid customerGUID, int worldServerID, int zoneInstanceID, string mapName, int port)
+        private async Task HandleServerSpinUpMessage(Guid customerGUID, int worldServerID, int zoneInstanceID, string mapName, int port)
         {
             Log.Information($"Starting up {customerGUID} : {worldServerID} : {mapName} : {port}");
 
@@ -272,15 +268,7 @@ namespace OWSInstanceLauncher.Services
             if (!IsUdpPortAvailable(port))
             {
                 Log.Error($"HandleServerSpinUpMessage - Port {port} for Zone Instance {zoneInstanceID} is already in use. Aborting spin up and marking the instance broken so it can be cleaned up.");
-                try
-                {
-                    SetZoneInstanceStatus(zoneInstanceID, 3).Wait();
-                    CompleteZoneInstanceShutdownRequest(zoneInstanceID).Wait();
-                }
-                catch (Exception ex)
-                {
-                    Log.Error($"HandleServerSpinUpMessage - Failed to clean up broken Zone Instance {zoneInstanceID} after port conflict: {ex.Message}");
-                }
+                await CleanUpFailedSpinUp(zoneInstanceID, "port conflict");
                 return;
             }
 
@@ -311,7 +299,18 @@ namespace OWSInstanceLauncher.Services
             };
             proc.Exited += (_, _) => _ = ReportZoneProcessExited(proc, zoneInstanceID, mapName, port);
 
-            proc.Start();
+            try
+            {
+                proc.Start();
+            }
+            catch (Exception ex)
+            {
+                //For example a wrong PathToDedicatedServer. No process will ever heartbeat for this row, so remove it now.
+                Log.Error(ex, $"HandleServerSpinUpMessage - Could not start {_owsInstanceLauncherOptions.Value.PathToDedicatedServer} for Zone Instance {zoneInstanceID}. Aborting spin up.");
+                proc.Dispose();
+                await CleanUpFailedSpinUp(zoneInstanceID, "start failure");
+                return;
+            }
             //proc.WaitForInputIdle();
 
             DateTime? processStartTimeUtc = null;
@@ -339,7 +338,21 @@ namespace OWSInstanceLauncher.Services
             //Readiness (Status = 2) is now reported by the dedicated server itself via UpdateNumberOfPlayers (see AOWSGameMode::StartPlay).
         }
 
-        private void HandleServerShutDownMessage(Guid customerGUID, int zoneInstanceID)
+        //Marks a zone instance that never got a running server as shutting down and removes its row.
+        private async Task CleanUpFailedSpinUp(int zoneInstanceID, string reason)
+        {
+            try
+            {
+                await SetZoneInstanceStatus(zoneInstanceID, 3);
+                await CompleteZoneInstanceShutdownRequest(zoneInstanceID);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"HandleServerSpinUpMessage - Failed to clean up broken Zone Instance {zoneInstanceID} after {reason}: {ex.Message}");
+            }
+        }
+
+        private async Task HandleServerShutDownMessage(Guid customerGUID, int zoneInstanceID)
         {
             Log.Information($"Shutting down {customerGUID} : {zoneInstanceID}");
 
@@ -375,7 +388,9 @@ namespace OWSInstanceLauncher.Services
                 }
                 catch (Exception ex)
                 {
+                    //Kill can throw while the process is already exiting. Only a process that is really gone may lose its row.
                     Log.Warning($"HandleServerShutDownMessage - Error killing Zone Instance {zoneInstanceID} process {foundProcessId}: {ex.Message}");
+                    completeShutdown = HasProcessExited(foundProcessId);
                 }
             }
             else
@@ -387,10 +402,7 @@ namespace OWSInstanceLauncher.Services
             {
                 try
                 {
-                    var completeShutdownTask = CompleteZoneInstanceShutdownRequest(zoneInstanceID);
-                    completeShutdownTask.Wait();
-
-                    if (completeShutdownTask.Result)
+                    if (await CompleteZoneInstanceShutdownRequest(zoneInstanceID))
                     {
                         _zoneServerProcessesRepository.RemoveZoneServerProcess(zoneInstanceID);
                     }
@@ -402,7 +414,26 @@ namespace OWSInstanceLauncher.Services
             }
             else
             {
+                //The row stays at status 3, which stops its heartbeat, so health monitoring sees it go stale and
+                //requests the shutdown again.
                 Log.Error($"HandleServerShutDownMessage - Zone Instance {zoneInstanceID} process did not exit. Shutdown cleanup was skipped.");
+            }
+        }
+
+        private static bool HasProcessExited(int processId)
+        {
+            try
+            {
+                using System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById(processId);
+                return process.HasExited;
+            }
+            catch (ArgumentException)
+            {
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
             }
         }
 

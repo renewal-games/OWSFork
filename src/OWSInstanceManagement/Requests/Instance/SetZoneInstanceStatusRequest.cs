@@ -26,13 +26,7 @@ namespace OWSInstanceManagement.Requests.Instance
 
         public async Task<IActionResult> Handle()
         {
-            await _instanceManagementRepository.SetZoneInstanceStatus(_customerGUID, request.ZoneInstanceID, request.InstanceStatus);
-
-            _output = new SuccessAndErrorMessage()
-            {
-                Success = true,
-                ErrorMessage = ""
-            };
+            _output = await _instanceManagementRepository.SetZoneInstanceStatus(_customerGUID, request.ZoneInstanceID, request.InstanceStatus);
 
             return new OkObjectResult(_output);
         }
