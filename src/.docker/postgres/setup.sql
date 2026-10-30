@@ -218,6 +218,10 @@ CREATE TABLE Characters
         FOREIGN KEY (UserGUID) REFERENCES Users (UserGUID)
 );
 
+-- One name per customer, ignoring case and surrounding spaces. Same index as UniqueCharacterNames_2026-10-30.sql.
+CREATE UNIQUE INDEX UX_Characters_CustomerGUID_CharName
+    ON Characters (CustomerGUID, LOWER(TRIM(CharName)));
+
 CREATE TABLE CharHasAbilities
 (
     CustomerGUID               UUID          NOT NULL,
