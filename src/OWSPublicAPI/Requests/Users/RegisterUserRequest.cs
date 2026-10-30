@@ -92,8 +92,10 @@ namespace OWSPublicAPI.Requests.Users
             //There was an error registering the new account
             if (!registerOutput.Success)
             {
-                //The repository's message can be a raw database error, so it is logged and the client gets a generic one
-                _logger.LogWarning("RegisterUser failed for customer {CustomerGUID}: {Error}", _customerGUID, registerOutput.ErrorMessage);
+                //The repository's message can be a raw database error, so it is logged and the client gets a generic one.
+                //It can echo the submitted values, so line breaks are stripped to keep it to one log entry.
+                string logSafeError = (registerOutput.ErrorMessage ?? "").Replace("\r", " ").Replace("\n", " ");
+                _logger.LogWarning("RegisterUser failed for customer {CustomerGUID}: {Error}", _customerGUID, logSafeError);
 
                 PlayerLoginAndCreateSession errorOutput = new PlayerLoginAndCreateSession()
                 {
