@@ -102,6 +102,7 @@ namespace OWSManagement
                 c.BaseAddress = new Uri(apiPathOptions.InternalInstanceManagementApiURL ?? "http://owsinstancemanagement/");
                 c.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 c.DefaultRequestHeaders.Add("User-Agent", "OWSManagement");
+                OWSShared.SamsaraServiceKeyCheck.AddHeader(c.DefaultRequestHeaders);
             });
 
             services.Configure<OWSShared.Options.StorageOptions>(Configuration.GetSection(OWSShared.Options.StorageOptions.SectionName));

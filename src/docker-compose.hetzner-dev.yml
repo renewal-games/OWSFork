@@ -22,6 +22,11 @@ x-ows-common-env: &ows-common-env
   # Require X-Samsara-Service-Key on the CharacterPersistence API (gold/inventory/stats writes).
   # Keep false until the UE persistence calls send the key, or all persistence traffic is 401'd.
   OWS_REQUIRE_CHARACTER_WRITE_KEY: "${OWS_REQUIRE_CHARACTER_WRITE_KEY:-false}"
+  # Require X-Samsara-Service-Key on every InstanceManagement and CharacterPersistence /api route
+  # (OWSShared RequireServiceKeyMiddleware). The code defaults to required outside Development; this
+  # profile keeps it off until the UE zone server's InstanceManagementAPI calls send the key
+  # (OWSAPISubsystem/OWSGameMode set it only for CharacterPersistenceAPI). A wrong key is 401'd either way.
+  OWS_REQUIRE_SERVICE_KEY: "${OWS_REQUIRE_SERVICE_KEY:-false}"
   OWSAPIPathConfig__InternalPublicApiURL: "http://owspublicapi/"
   OWSAPIPathConfig__InternalInstanceManagementApiURL: "http://owsinstancemanagement/"
   OWSAPIPathConfig__InternalCharacterPersistenceApiURL: "http://owscharacterpersistence/"
@@ -181,6 +186,8 @@ services:
     healthcheck: *app-healthcheck
     environment:
       <<: *ows-common-env
+      # Internal routes check X-Samsara-Service-Key against this (see OWS_REQUIRE_SERVICE_KEY).
+      OWS_SAMSARA_SERVICE_KEY: "${OWS_SAMSARA_SERVICE_KEY:-}"
     ports:
       - "127.0.0.1:${OWS_INSTANCE_MANAGEMENT_HOST_PORT:-44328}:80"
     mem_limit: "${OWS_INSTANCE_MANAGEMENT_MEM_LIMIT:-384m}"
@@ -260,6 +267,8 @@ services:
     environment:
       <<: *ows-common-env
       OWSManagementOptions__CustomerGUID: "${OWS_CUSTOMER_GUID:-}"
+      # Sent on the console's InstanceManagement calls (Stop instance).
+      OWS_SAMSARA_SERVICE_KEY: "${OWS_SAMSARA_SERVICE_KEY:-}"
       OWSManagementOptions__GrafanaUrl: "${OWS_GRAFANA_URL:-}"
       OWSManagementOptions__SentryUrl: "${OWS_SENTRY_URL:-}"
       # Character restore: the staging database scripts/install-staging.sh sets up.

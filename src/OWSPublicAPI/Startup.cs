@@ -134,6 +134,7 @@ namespace OWSPublicAPI
                 c.BaseAddress = new Uri(apiPathOptions.InternalInstanceManagementApiURL);
                 c.DefaultRequestHeaders.Add("Accept", "application/json");
                 c.DefaultRequestHeaders.Add("User-Agent", "OWSPublicAPI");
+                OWSShared.SamsaraServiceKeyCheck.AddHeader(c.DefaultRequestHeaders);
             });
 
             services.AddHttpClient("SteamWebAPI", c =>

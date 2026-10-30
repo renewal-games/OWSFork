@@ -130,6 +130,9 @@ namespace OWSInstanceLauncher
                 c.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 c.DefaultRequestHeaders.Add("User-Agent", "OWSInstanceLauncher");
                 c.DefaultRequestHeaders.Add("X-CustomerGUID", owsInstanceLauncherOptions.OWSAPIKey);
+                // OWSAPIKey is the tenant GUID, not a secret. The service key comes from the same server-only
+                // OWS_SAMSARA_SERVICE_KEY env var the zone servers this launcher starts read.
+                OWSShared.SamsaraServiceKeyCheck.AddHeader(c.DefaultRequestHeaders);
             });
 
             services.AddSimpleInjector(container, options => {
