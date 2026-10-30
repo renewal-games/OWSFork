@@ -26,6 +26,13 @@ namespace OWSInstanceLauncher.Services
         private const int DefaultStaleServerShutdownMinutes = 2;
         private const int DefaultOrphanProcessGraceMinutes = 5;
 
+        //An orphan is only killed after it is missing from this many consecutive successful zone instance lists, so a single
+        //odd response can't take down a healthy zone server.
+        public const int OrphanProcessMissesBeforeKill = 3;
+
+        //Consecutive successful lists each tracked zone instance has been missing from. Only touched by DoWork, which the timer runs one at a time.
+        private readonly Dictionary<int, int> _orphanMissCounts = new Dictionary<int, int>();
+
         public ServerLauncherHealthMonitoring(IOptions<OWSInstanceLauncherOptions> OWSInstanceLauncherOptions, IHttpClientFactory httpClientFactory, IZoneServerProcessesRepository zoneServerProcessesRepository,
             IOWSInstanceLauncherDataRepository owsInstanceLauncherDataRepository)
         {
@@ -51,6 +58,15 @@ namespace OWSInstanceLauncher.Services
 
             //Get a list of ZoneInstances from api/Instance/GetZoneInstancesForWorldServer
             List<GetZoneInstancesForWorldServer> zoneInstances = GetZoneInstancesForWorldServer(worldServerID);
+
+            //A failed request is not the same as "no instances". Treating it as an empty list would make every tracked process
+            //look orphaned and kill every running zone server, so skip the shutdown and reconcile steps until the API answers.
+            if (zoneInstances == null)
+            {
+                Log.Error("Server Health Monitoring could not get the Zone Server Instance list. Skipping shutdown and orphan reconciliation this cycle.");
+                RunCleanUpInstances();
+                return;
+            }
 
             int staleServerShutdownMinutes = _OWSInstanceLauncherOptions.Value.StaleServerShutdownMinutes;
             if (staleServerShutdownMinutes <= 0)
@@ -110,12 +126,21 @@ namespace OWSInstanceLauncher.Services
             }
 
             var liveInstanceIds = new HashSet<int>(zoneInstances.Select(instance => instance.MapInstanceID));
+            var trackedProcesses = _zoneServerProcessesRepository.GetZoneServerProcesses();
 
-            foreach (var trackedProcess in _zoneServerProcessesRepository.GetZoneServerProcesses())
+            //Forget miss counts for processes that are no longer tracked.
+            var trackedInstanceIds = new HashSet<int>(trackedProcesses.Select(process => process.ZoneInstanceId));
+            foreach (int zoneInstanceId in _orphanMissCounts.Keys.Where(id => !trackedInstanceIds.Contains(id)).ToList())
+            {
+                _orphanMissCounts.Remove(zoneInstanceId);
+            }
+
+            foreach (var trackedProcess in trackedProcesses)
             {
                 //Still has a DB instance -> handled by the normal shutdown flow above, leave it alone.
                 if (liveInstanceIds.Contains(trackedProcess.ZoneInstanceId))
                 {
+                    _orphanMissCounts.Remove(trackedProcess.ZoneInstanceId);
                     continue;
                 }
 
@@ -126,6 +151,16 @@ namespace OWSInstanceLauncher.Services
                     continue;
                 }
 
+                _orphanMissCounts.TryGetValue(trackedProcess.ZoneInstanceId, out int misses);
+                misses++;
+                if (misses < OrphanProcessMissesBeforeKill)
+                {
+                    _orphanMissCounts[trackedProcess.ZoneInstanceId] = misses;
+                    Log.Warning($"Reconciliation: Zone Instance {trackedProcess.ZoneInstanceId} (PID {trackedProcess.ProcessId}) is missing from the zone instance list ({misses} of {OrphanProcessMissesBeforeKill} checks).");
+                    continue;
+                }
+
+                _orphanMissCounts.Remove(trackedProcess.ZoneInstanceId);
                 KillOrphanedProcess(trackedProcess);
             }
         }
@@ -167,10 +202,22 @@ namespace OWSInstanceLauncher.Services
             _zoneServerProcessesRepository.RemoveZoneServerProcess(trackedProcess.ZoneInstanceId);
         }
 
+        //Returns null when the list could not be fetched (non-success status, unreadable body or request failure).
         private List<GetZoneInstancesForWorldServer> GetZoneInstancesForWorldServer(int worldServerId)
         {
-            List<GetZoneInstancesForWorldServer> output;
+            try
+            {
+                return RequestZoneInstancesForWorldServer(worldServerId);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Server Health Monitoring failed to get Zone Server Instances: {ex.Message}");
+                return null;
+            }
+        }
 
+        private List<GetZoneInstancesForWorldServer> RequestZoneInstancesForWorldServer(int worldServerId)
+        {
             var instanceManagementHttpClient = _httpClientFactory.CreateClient("OWSInstanceManagement");
 
             var worldServerIDRequestPayload = new
@@ -186,21 +233,20 @@ namespace OWSInstanceLauncher.Services
             var responseMessageTask = instanceManagementHttpClient.PostAsync("api/Instance/GetZoneInstancesForWorldServer", getZoneInstancesForWorldServerRequest);
             var responseMessage = responseMessageTask.Result;
 
-            if (responseMessage.IsSuccessStatusCode)
+            if (!responseMessage.IsSuccessStatusCode)
             {
-                var responseContentAsync = responseMessage.Content.ReadAsStringAsync();
-                string responseContentString = responseContentAsync.Result;
-                output = JsonSerializer.Deserialize<List<GetZoneInstancesForWorldServer>>(responseContentString, new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                });
-            }
-            else
-            {
-                output = new List<GetZoneInstancesForWorldServer>();
+                Log.Error($"Server Health Monitoring failed to get Zone Server Instances. HTTP Status: {responseMessage.StatusCode}");
+                return null;
             }
 
-            return output;
+            var responseContentAsync = responseMessage.Content.ReadAsStringAsync();
+            string responseContentString = responseContentAsync.Result;
+
+            //A null result (body "null") is unreadable, not empty; the caller treats it as a failed request.
+            return JsonSerializer.Deserialize<List<GetZoneInstancesForWorldServer>>(responseContentString, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
         }
 
         private void RunCleanUpInstances()
