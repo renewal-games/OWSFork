@@ -147,7 +147,7 @@ namespace OWSPublicAPI
             services.Configure<OWSShared.Options.PublicAPIOptions>(Configuration.GetSection(OWSShared.Options.PublicAPIOptions.SectionName));
             services.Configure<OWSShared.Options.APIPathOptions>(Configuration.GetSection(OWSShared.Options.APIPathOptions.SectionName));
             services.Configure<OWSShared.Options.StorageOptions>(Configuration.GetSection(OWSShared.Options.StorageOptions.SectionName));
-            services.Configure<OWSShared.Options.UserSessionCacheOptions>(Configuration.GetSection(OWSShared.Options.UserSessionCacheOptions.SectionName));
+            OWSShared.Extensions.ServiceCollectionExtensions.AddUserSessionCacheOptions(services, Configuration);
             services.Configure<Options.SteamOptions>(Configuration.GetSection(Options.SteamOptions.SectionName));
             services.Configure<Options.GameServersOptions>(Configuration.GetSection(Options.GameServersOptions.SectionName));
 
