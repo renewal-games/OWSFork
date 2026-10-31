@@ -87,6 +87,7 @@ namespace OWSInstanceManagement.Requests.Instance
             return new OkObjectResult(Output);
         }
 
+        //Returns only once RabbitMQ confirmed the command reached the launcher queue for worldServerID; throws otherwise.
         protected virtual void PublishShutDownMessage(int worldServerID)
         {
             //Send the servershutdown message to RabbitMQ
@@ -102,23 +103,13 @@ namespace OWSInstanceManagement.Requests.Instance
             {
                 using (var channel = connection.CreateModel())
                 {
-                    channel.ExchangeDeclare(exchange: "ows.servershutdown",
-                        type: "direct",
-                        durable: false,
-                        autoDelete: false);
-
-                    MQShutDownServerMessage serverSpinUpMessage = new()
+                    MQShutDownServerMessage serverShutDownMessage = new()
                     {
                         CustomerGUID = CustomerGUID,
                         ZoneInstanceID = ZoneInstanceID
                     };
 
-                    var body = serverSpinUpMessage.Serialize();
-
-                    channel.BasicPublish(exchange: "ows.servershutdown",
-                                         routingKey: String.Format("ows.servershutdown.{0}", worldServerID),
-                                         basicProperties: null,
-                                         body: body);
+                    LauncherCommandChannel.Publish(channel, LauncherCommandChannel.ShutDownExchange, worldServerID, serverShutDownMessage.Serialize());
                 }
             }
         }
