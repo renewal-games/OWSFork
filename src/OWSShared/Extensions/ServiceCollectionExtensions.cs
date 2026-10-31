@@ -39,6 +39,19 @@ namespace OWSShared.Extensions
                 }
             });
 
+        /// <summary>
+        /// Binds <see cref="Options.UserSessionCacheOptions"/> and refuses to start the host when they are
+        /// unusable (see <see cref="Options.UserSessionCacheOptions.ValidationError"/>).
+        /// </summary>
+        public static IServiceCollection AddUserSessionCacheOptions(this IServiceCollection @this, IConfiguration config)
+        {
+            @this.AddOptions<Options.UserSessionCacheOptions>()
+                .Bind(config.GetSection(Options.UserSessionCacheOptions.SectionName))
+                .Validate(options => options.ValidationError() == null, "UserSessionCacheOptions:SessionTtlSeconds must be greater than 0 while session caching is enabled.")
+                .ValidateOnStart();
+            return @this;
+        }
+
         public static void ConfigureWritable<T>(this IServiceCollection services, IConfigurationSection section, string file = "appsettings.json") where T : class, new()
         {
             services.Configure<T>(section);

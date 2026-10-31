@@ -8,7 +8,8 @@ x-ows-common-env: &ows-common-env
   # once Postgres has more connections or PgBouncer sits in front (see Phase 3).
   OWS_DB_MAX_POOL_SIZE: "${OWS_DB_MAX_POOL_SIZE:-5}"
   OWS_DB_MIN_POOL_SIZE: "${OWS_DB_MIN_POOL_SIZE:-1}"
-  # Session cache (Valkey). Only OWSPublicAPI consumes it; inert for the other services.
+  # Session cache (Valkey). OWSPublicAPI reads and fills it; OWSManagement evicts a user's sessions
+  # from it on a role change. Inert for the other services. SessionTtlSeconds must stay > 0.
   UserSessionCacheOptions__Enabled: "${OWS_SESSION_CACHE_ENABLED:-true}"
   UserSessionCacheOptions__ConnectionString: "usersessioncache:6379"
   UserSessionCacheOptions__Password: "${UserSessionCacheValkeyPassword}"

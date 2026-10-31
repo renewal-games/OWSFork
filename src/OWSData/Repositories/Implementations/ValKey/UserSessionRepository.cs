@@ -26,7 +26,7 @@ namespace OWSData.Repositories.Implementations.ValKey
         private static readonly TimeSpan CircuitCooldown = TimeSpan.FromSeconds(10);
         private static long _skipCacheUntilTicks;
 
-        // When a session is invalidated (logout / selected-character change) a short-lived
+        // When a session is invalidated (logout / selected-character change / role change) a short-lived
         // tombstone is written next to the deleted key. A concurrent reader that fetched the
         // DB row just BEFORE the invalidation committed is blocked from re-populating the cache
         // with the now-stale session while the tombstone is live — closing the read-repopulate
@@ -97,16 +97,31 @@ namespace OWSData.Repositories.Implementations.ValKey
             try
             {
                 // Do not re-populate if an invalidation tombstone is live: this caller may have
-                // read the session from the DB just before a concurrent logout/char-change, so
-                // caching it now would serve a stale-but-"valid" session until the TTL.
-                if (await Database.KeyExistsAsync(TombstoneKey(key)))
+                // read the session from the DB just before a concurrent logout/char-change/role
+                // change, so caching it now would serve a stale-but-"valid" session until the TTL.
+                string userIndexKey = userSession.UserGuid.HasValue ? ConstructUserIndexKey(customerGuid, userSession.UserGuid.Value) : null;
+                if (await Database.KeyExistsAsync(TombstoneKey(key))
+                    || (userIndexKey != null && await Database.KeyExistsAsync(TombstoneKey(userIndexKey))))
                 {
                     CircuitReset();
                     return;
                 }
 
+                TimeSpan? expiry = timeToLive > TimeSpan.Zero ? timeToLive : null;
                 string userSessionJson = JsonSerializer.Serialize(userSession);
-                await Database.StringSetAsync(key, userSessionJson, timeToLive > TimeSpan.Zero ? timeToLive : null);
+                await Database.StringSetAsync(key, userSessionJson, expiry);
+
+                // Index the session under its user so a user-level change (role) can find and
+                // evict it (RemoveUserSessionsForUser). Every session shares one TTL, so the index
+                // expiring with its newest member outlives all of them.
+                if (userIndexKey != null)
+                {
+                    await Database.SetAddAsync(userIndexKey, userSessionGuid.ToString());
+                    if (expiry.HasValue)
+                    {
+                        await Database.KeyExpireAsync(userIndexKey, expiry);
+                    }
+                }
                 CircuitReset();
             }
             catch (Exception)
@@ -139,6 +154,38 @@ namespace OWSData.Repositories.Implementations.ValKey
             }
         }
 
+        public async Task RemoveUserSessionsForUser(Guid customerGuid, Guid userGuid)
+        {
+            string userIndexKey = ConstructUserIndexKey(customerGuid, userGuid);
+            if (userIndexKey == null || CircuitOpen)
+            {
+                return;
+            }
+
+            try
+            {
+                // Tombstone first, so a reader that loaded one of this user's sessions from the DB
+                // before the change committed cannot re-cache it while the members are deleted.
+                await Database.StringSetAsync(TombstoneKey(userIndexKey), "1", InvalidationTombstoneTtl);
+
+                RedisValue[] sessionGuids = await Database.SetMembersAsync(userIndexKey);
+                foreach (RedisValue sessionGuid in sessionGuids)
+                {
+                    if (Guid.TryParse(sessionGuid.ToString(), out Guid userSessionGuid))
+                    {
+                        await Database.KeyDeleteAsync(ConstructUserSessionKey(customerGuid, userSessionGuid));
+                    }
+                }
+                await Database.KeyDeleteAsync(userIndexKey);
+                CircuitReset();
+            }
+            catch (Exception)
+            {
+                // Best-effort invalidation; the session TTL bounds staleness if this fails.
+                CircuitTrip();
+            }
+        }
+
         private string TombstoneKey(string sessionKey) => sessionKey + ":invalidated";
 
         private static bool CircuitOpen => DateTime.UtcNow.Ticks < Interlocked.Read(ref _skipCacheUntilTicks);
@@ -155,6 +202,18 @@ namespace OWSData.Repositories.Implementations.ValKey
             }
 
             return $"{_keyPrefix}{customerGuid}:{userSessionGuid}";
+        }
+
+        // The set of a user's cached session GUIDs. The "user:" segment keeps it apart from session
+        // keys, whose segment after the prefix is always a GUID.
+        private string ConstructUserIndexKey(Guid customerGuid, Guid userGuid)
+        {
+            if (customerGuid == Guid.Empty || userGuid == Guid.Empty)
+            {
+                return null;
+            }
+
+            return $"{_keyPrefix}user:{customerGuid}:{userGuid}";
         }
 
         private static ConfigurationOptions BuildConfigurationOptions(UserSessionCacheOptions options)
