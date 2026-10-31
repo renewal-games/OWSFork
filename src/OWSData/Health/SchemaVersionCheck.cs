@@ -16,13 +16,14 @@ namespace OWSData.Health
     public static class SchemaVersionCheck
     {
         /// <summary>The last line of migration-manifest.txt. OWSTests fails until this follows a new script.</summary>
-        public const string ExpectedLastScript = "SamsaraUpdates/UserSessionExpiry_2026-10-30.sql";
+        public const string ExpectedLastScript = "SamsaraUpdates/LoginBackoff_2026-10-30.sql";
 
         /// <summary>Tables and columns the code reads directly, as (table, column); a null column checks the table only.</summary>
         public static readonly IReadOnlyList<(string Table, string Column)> RequiredObjects = new[]
         {
             ("users", "isinternalnetworktestuser"), // AddUserNetworkTestFlag_2026-10-29.sql, read by every join
-            ("loginqueue", (string)null)            // AddSamsaraManagement2_2026-10-22.sql, read by every login
+            ("loginqueue", (string)null),           // AddSamsaraManagement2_2026-10-22.sql, read by every login
+            ("loginfailures", (string)null)         // LoginBackoff_2026-10-30.sql, read by every password login
         };
 
         public static bool IsCurrent(IEnumerable<string> appliedScripts, string expectedLastScript) =>

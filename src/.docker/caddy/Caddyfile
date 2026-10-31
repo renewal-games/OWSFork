@@ -3,8 +3,9 @@
 # Certificates are provisioned automatically via Let's Encrypt; both domains must have
 # A records pointing at this host before first start.
 
+# Over the proxy network, so the Public API sees Caddy's fixed address and trusts its X-Forwarded-For.
 {$OWS_PUBLIC_API_DOMAIN} {
-	reverse_proxy owspublicapi:80
+	reverse_proxy owspublicapi.proxy:80
 }
 
 {$OWS_GLOBAL_DATA_DOMAIN} {

@@ -349,6 +349,12 @@ There are two exposure modes, controlled by `OWS_API_BIND` and the `tls` compose
 `tls` profile (Caddy does not start). The client-facing APIs are served directly:
 
 - Public API: `http://SERVER_IP:44302` (still rate-limited per client IP; `/api/Users` tighter)
+
+The Public API keys its rate limit on the socket peer. It honours `X-Forwarded-For` only from the Caddy proxy's
+fixed address on the `proxy` compose network (`OWS_PROXY_IP`, default `10.253.253.2`), so a direct client cannot
+pick a fresh rate-limit bucket by sending the header. Password logins also back off per account: after 5 wrong
+passwords for one email within an hour, that email is refused for 30 seconds, doubling with each further failure
+up to 15 minutes (`LoginFailures` table; a successful login clears it).
 - Global Data API: `http://SERVER_IP:44325`
 - Party REST/gRPC: `http://SERVER_IP:44306` / `SERVER_IP:44364`
 - Chat gRPC: `SERVER_IP:50051`
