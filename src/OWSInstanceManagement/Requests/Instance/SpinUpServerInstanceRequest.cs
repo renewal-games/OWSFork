@@ -7,6 +7,7 @@ using OWSShared.Interfaces;
 using OWSShared.Messages;
 using OWSShared.Options;
 using RabbitMQ.Client;
+using Serilog;
 using SimpleInjector;
 using System;
 using System.Collections.Generic;
@@ -37,39 +38,32 @@ namespace OWSInstanceManagement.Requests.Instance
 
         public async Task<IActionResult> Handle()
         {
-            ConnectionFactory factory = new() 
-            { 
-                HostName = _rabbitMQOptions.Value.RabbitMQHostName,
-                Port = _rabbitMQOptions.Value.RabbitMQPort,
-                UserName = _rabbitMQOptions.Value.RabbitMQUserName, 
-                Password = _rabbitMQOptions.Value.RabbitMQPassword
+            MQSpinUpServerMessage serverSpinUpMessage = new()
+            {
+                CustomerGUID = CustomerGUID,
+                WorldServerID = WorldServerID,
+                ZoneInstanceID = ZoneInstanceID,
+                MapName = ZoneName,
+                Port = Port
             };
 
-            using (var connection = factory.CreateConnection())
+            try
             {
-                using (var channel = connection.CreateModel())
+                PublishSpinUpMessage(serverSpinUpMessage);
+            }
+            catch (Exception ex)
+            {
+                //No launcher took the command, so no server will start for this instance. Say so instead of
+                //reporting a success the caller would wait on.
+                Log.Error(ex, $"SpinUpServerInstance - Could not send the spin-up of Zone Instance {ZoneInstanceID} to World Server {WorldServerID}.");
+
+                Output = new SuccessAndErrorMessage()
                 {
-                    channel.ExchangeDeclare(exchange: "ows.serverspinup",
-                        type: "direct",
-                        durable: false,
-                        autoDelete: false);
+                    Success = false,
+                    ErrorMessage = $"Could not send the spin-up of Zone Instance {ZoneInstanceID}: {ex.Message}"
+                };
 
-                    MQSpinUpServerMessage serverSpinUpMessage = new()
-                    {
-                        CustomerGUID = CustomerGUID,
-                        WorldServerID = WorldServerID,
-                        ZoneInstanceID = ZoneInstanceID,
-                        MapName = ZoneName,
-                        Port = Port
-                    };
-
-                    var body = serverSpinUpMessage.Serialize();
-
-                    channel.BasicPublish(exchange: "ows.serverspinup",
-                                         routingKey: String.Format("ows.serverspinup.{0}", WorldServerID),
-                                         basicProperties: null,
-                                         body: body);
-                }
+                return new OkObjectResult(Output);
             }
 
             Output = new SuccessAndErrorMessage() {
@@ -78,6 +72,26 @@ namespace OWSInstanceManagement.Requests.Instance
             };
 
             return new OkObjectResult(Output);
+        }
+
+        //Returns only once RabbitMQ confirmed the command reached the launcher queue for WorldServerID; throws otherwise.
+        protected virtual void PublishSpinUpMessage(MQSpinUpServerMessage serverSpinUpMessage)
+        {
+            ConnectionFactory factory = new()
+            {
+                HostName = _rabbitMQOptions.Value.RabbitMQHostName,
+                Port = _rabbitMQOptions.Value.RabbitMQPort,
+                UserName = _rabbitMQOptions.Value.RabbitMQUserName,
+                Password = _rabbitMQOptions.Value.RabbitMQPassword
+            };
+
+            using (var connection = factory.CreateConnection())
+            {
+                using (var channel = connection.CreateModel())
+                {
+                    LauncherCommandChannel.Publish(channel, LauncherCommandChannel.SpinUpExchange, serverSpinUpMessage.WorldServerID, serverSpinUpMessage.Serialize());
+                }
+            }
         }
     }
 }
