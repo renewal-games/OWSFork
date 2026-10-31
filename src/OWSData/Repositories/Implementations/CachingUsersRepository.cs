@@ -127,9 +127,6 @@ namespace OWSData.Repositories.Implementations
         public Task<GetUserSession> GetUserSessionORM(Guid customerGUID, Guid userSessionGUID)
             => _inner.GetUserSessionORM(customerGUID, userSessionGUID);
 
-        public Task<GetUserSessionComposite> GetUserSessionParallel(Guid customerGUID, Guid userSessionGUID)
-            => _inner.GetUserSessionParallel(customerGUID, userSessionGUID);
-
         public Task<PlayerLoginAndCreateSession> LoginAndCreateSession(Guid customerGUID, string email, string password, bool dontCheckPassword = false)
             => _inner.LoginAndCreateSession(customerGUID, email, password, dontCheckPassword);
 

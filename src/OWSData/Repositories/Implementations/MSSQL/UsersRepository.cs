@@ -275,30 +275,6 @@ namespace OWSData.Repositories.Implementations.MSSQL
             return outputObject;
         }
 
-        public async Task<GetUserSessionComposite> GetUserSessionParallel(Guid customerGUID, Guid userSessionGUID) //id = UserSessionGUID
-        {
-            GetUserSessionComposite outputObject = new GetUserSessionComposite();
-            UserSessions userSession = new UserSessions();
-            User user = new User();
-            Characters character = new Characters();
-
-            using (Connection)
-            {
-                userSession = await Connection.QueryFirstOrDefaultAsync<UserSessions>(MSSQLQueries.GetUserSessionOnlySQL, new { CustomerGUID = customerGUID, UserSessionGUID = userSessionGUID });
-                var userTask = Connection.QueryFirstOrDefaultAsync<User>(MSSQLQueries.GetUserSQL, new { CustomerGUID = customerGUID, UserGUID = userSession.UserGuid });
-                var characterTask = Connection.QueryFirstOrDefaultAsync<Characters>(MSSQLQueries.GetCharacterByNameSQL, new { CustomerGUID = customerGUID, CharacterName = userSession.SelectedCharacterName });
-
-                user = await userTask;
-                character = await characterTask;
-            }
-
-            outputObject.userSession = userSession;
-            outputObject.user = user;
-            outputObject.character = character;
-
-            return outputObject;
-        }
-
         public async Task<PlayerLoginAndCreateSession> LoginAndCreateSession(Guid customerGUID, string email, string password, bool dontCheckPassword = false)
         {
             PlayerLoginAndCreateSession outputObject;

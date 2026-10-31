@@ -24,7 +24,6 @@ namespace OWSData.Repositories.Interfaces
         Task<SuccessAndErrorMessage> SetNetworkTestFlagForUser(Guid customerGuid, Guid userGuid, bool isInternalNetworkTestUser);
         Task<GetUserSession> GetUserSession(Guid customerGUID, Guid userSessionGUID);
         Task<GetUserSession> GetUserSessionORM(Guid customerGUID, Guid userSessionGUID);
-        Task<GetUserSessionComposite> GetUserSessionParallel(Guid customerGUID, Guid userSessionGUID);
         Task<PlayerLoginAndCreateSession> LoginAndCreateSession(Guid customerGUID, string email, string password, bool dontCheckPassword = false);
         Task<PlayerLoginAndCreateSession> SteamLoginAndCreateSession(Guid customerGUID, string steamId, string personaName);
         Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid);
