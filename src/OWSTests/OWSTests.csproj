@@ -22,6 +22,7 @@
     <ProjectReference Include="..\OWSInstanceManagement\OWSInstanceManagement.csproj" />
     <ProjectReference Include="..\OWSManagement\OWSManagement.csproj" />
     <ProjectReference Include="..\OWSParty\OWSParty.csproj" />
+    <ProjectReference Include="..\OWSPublicAPI\OWSPublicAPI.csproj" />
     <ProjectReference Include="..\OWSShared\OWSShared.csproj" />
   </ItemGroup>
   <ItemGroup>

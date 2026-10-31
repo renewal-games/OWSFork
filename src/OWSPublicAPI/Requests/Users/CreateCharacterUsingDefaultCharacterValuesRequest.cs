@@ -64,7 +64,7 @@ namespace OWSPublicAPI.Requests.Users
             //Make sure Character Name is Unique
             var characterToLookup = await _charactersRepository.GetCharByCharName(_customerGUID, _createCharacterUsingDefaultCharacterValuesDTO.CharacterName);
 
-            if (characterToLookup != null && characterToLookup.UserGuid != Guid.Empty)
+            if (characterToLookup != null)
             {
                 SuccessAndErrorMessage successAndErrorMessage = new SuccessAndErrorMessage();
                 successAndErrorMessage.Success = false;
@@ -83,8 +83,13 @@ namespace OWSPublicAPI.Requests.Users
                 return successAndErrorMessage;
             }
 
-            await _usersRepository.CreateCharacterUsingDefaultCharacterValues(_customerGUID, userSession.UserGuid.Value, _createCharacterUsingDefaultCharacterValuesDTO.CharacterName,
+            SuccessAndErrorMessage createResult = await _usersRepository.CreateCharacterUsingDefaultCharacterValues(_customerGUID, userSession.UserGuid.Value, _createCharacterUsingDefaultCharacterValuesDTO.CharacterName,
                 _createCharacterUsingDefaultCharacterValuesDTO.DefaultSetName);
+
+            if (createResult == null || !createResult.Success)
+            {
+                return new SuccessAndErrorMessage() { Success = false, ErrorMessage = createResult?.ErrorMessage ?? "Error creating character" };
+            }
 
             return new SuccessAndErrorMessage() { Success = true, ErrorMessage = "" };
         }
