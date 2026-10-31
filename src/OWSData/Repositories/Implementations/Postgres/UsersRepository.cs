@@ -287,37 +287,6 @@ namespace OWSData.Repositories.Implementations.Postgres
             return outputObject;
         }
 
-        public async Task<GetUserSessionComposite> GetUserSessionParallel(Guid customerGUID, Guid userSessionGUID) //id = UserSessionGUID
-        {
-            GetUserSessionComposite outputObject = new GetUserSessionComposite();
-            UserSessions userSession;
-            User user;
-            Characters character;
-
-            using (IDbConnection userSessionConnection = CreateConnection())
-            {
-                userSession = await userSessionConnection.QueryFirstOrDefaultAsync<UserSessions>(PostgresQueries.GetUserSessionOnlySQL, new { @CustomerGUID = customerGUID, @UserSessionGUID = userSessionGUID });
-            }
-
-            using (IDbConnection userConnection = CreateConnection())
-            using (IDbConnection characterConnection = CreateConnection())
-            {
-                var userTask = userConnection.QueryFirstOrDefaultAsync<User>(PostgresQueries.GetUserSQL, new { @CustomerGUID = customerGUID, @UserGUID = userSession.UserGuid });
-                var characterTask = characterConnection.QueryFirstOrDefaultAsync<Characters>(PostgresQueries.GetCharacterByNameSQL, new { @CustomerGUID = customerGUID, @CharacterName = userSession.SelectedCharacterName });
-
-                await Task.WhenAll(userTask, characterTask);
-
-                user = await userTask;
-                character = await characterTask;
-            }
-
-            outputObject.userSession = userSession;
-            outputObject.user = user;
-            outputObject.character = character;
-
-            return outputObject;
-        }
-
         public async Task<PlayerLoginAndCreateSession> LoginAndCreateSession(Guid customerGUID, string email, string password, bool dontCheckPassword = false)
         {
             PlayerLoginAndCreateSession outputObject;
