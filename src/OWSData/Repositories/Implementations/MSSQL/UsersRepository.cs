@@ -164,6 +164,17 @@ namespace OWSData.Repositories.Implementations.MSSQL
                         parameters,
                     commandType: CommandType.Text);
 
+                    // The INSERT ... SELECT inserts nothing when DefaultSetName matches no DefaultCharacterValues row.
+                    if (outputCharacterId == 0)
+                    {
+                        transaction.Rollback();
+                        return new SuccessAndErrorMessage()
+                        {
+                            Success = false,
+                            ErrorMessage = CharacterCreationMessages.UnknownDefaultCharacterSet
+                        };
+                    }
+
                     parameters.Add("CharacterID", outputCharacterId);
                     await Connection.ExecuteAsync(GenericQueries.AddDefaultCustomCharacterData,
                         parameters,
