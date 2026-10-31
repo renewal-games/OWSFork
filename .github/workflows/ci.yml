@@ -8,7 +8,7 @@ on:
   # The merge queue tests each queued pull request on top of the ones ahead of it; the required checks run here too.
   merge_group:
 
-# Least privilege: the jobs only read the repository.
+# Least privilege: the jobs only read the repository; the image jobs also push to GHCR.
 permissions:
   contents: read
 
@@ -102,3 +102,52 @@ jobs:
     # Fails on High or Critical advisories (direct or transitive); Moderate and Low are warnings.
     - name: Check for vulnerable packages
       run: bash ../.github/scripts/check-vulnerable-packages.sh OWS.sln "$RUNNER_TEMP/vulnerable-packages.json"
+
+  # The app images Deploy (deploy.yml) ships, built only for main once the checks pass. The compose file names
+  # them <registry>/<service>:<platform>-<tag>, so they are pushed as ghcr.io/<repo>/<service>:linux-<full SHA>.
+  images:
+    name: Image (${{ matrix.service }})
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [ build, vulnerable-packages ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+        - { service: owspublicapi, dockerfile: OWSPublicAPI/Dockerfile }
+        - { service: owscharacterpersistence, dockerfile: OWSCharacterPersistence/Dockerfile }
+        - { service: owsinstancemanagement, dockerfile: OWSInstanceManagement/Dockerfile }
+        - { service: owsglobaldata, dockerfile: OWSGlobalData/Dockerfile }
+        - { service: owschat, dockerfile: OWSChat/Dockerfile }
+        - { service: owsparty, dockerfile: OWSParty/Dockerfile }
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Image name
+      id: image
+      run: echo "ref=ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.service }}:linux-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+    - uses: docker/setup-buildx-action@v4
+
+    - uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and push
+      uses: docker/build-push-action@v7
+      with:
+        context: ./src
+        file: ./src/${{ matrix.dockerfile }}
+        push: true
+        tags: ${{ steps.image.outputs.ref }}
+        labels: |
+          org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          org.opencontainers.image.revision=${{ github.sha }}
+        cache-from: type=gha,scope=${{ matrix.service }}
+        cache-to: type=gha,mode=max,scope=${{ matrix.service }}
