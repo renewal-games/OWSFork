@@ -26,8 +26,8 @@ namespace OWSInstanceLauncher.Services
         private IConnection connection;
         private IModel serverSpinUpChannel;
         private IModel serverShutDownChannel;
-        private Guid serverSpinUpQueueNameGUID;
-        private Guid serverShutDownQueueNameGUID;
+        private string serverSpinUpQueueName;
+        private string serverShutDownQueueName;
 
         private readonly Guid _customerGUID;
         private readonly Guid _launcherGUID;
@@ -141,38 +141,16 @@ namespace OWSInstanceLauncher.Services
             // create channel for server spin up  
             serverSpinUpChannel = connection.CreateModel();
 
-            serverSpinUpQueueNameGUID = Guid.NewGuid();
-
-            serverSpinUpChannel.ExchangeDeclare(exchange: "ows.serverspinup",
-                            type: "direct",
-                            durable: false,
-                            autoDelete: false);
-
-            serverSpinUpChannel.QueueDeclare(queue: serverSpinUpQueueNameGUID.ToString(),
-                                         durable: false,
-                                         exclusive: true,
-                                         autoDelete: true,
-                                         arguments: null);
-            serverSpinUpChannel.QueueBind(serverSpinUpQueueNameGUID.ToString(), "ows.serverspinup", String.Format("ows.serverspinup.{0}", _worldServerId));
+            //A named, durable queue per World Server instead of an exclusive auto-delete one: commands this launcher
+            //received but had not finished handling are still there after a crash or reconnect, and are delivered again.
+            serverSpinUpQueueName = LauncherCommandChannel.DeclareLauncherQueue(serverSpinUpChannel, LauncherCommandChannel.SpinUpExchange, _worldServerId);
             serverSpinUpChannel.BasicQos(0, 1, false);
 
 
             // create channel for server shut down
             serverShutDownChannel = connection.CreateModel();
 
-            serverShutDownQueueNameGUID = Guid.NewGuid();
-
-            serverShutDownChannel.ExchangeDeclare(exchange: "ows.servershutdown",
-                            type: "direct",
-                            durable: false,
-                            autoDelete: false);
-
-            serverShutDownChannel.QueueDeclare(queue: serverShutDownQueueNameGUID.ToString(),
-                                         durable: false,
-                                         exclusive: true,
-                                         autoDelete: true,
-                                         arguments: null);
-            serverShutDownChannel.QueueBind(serverShutDownQueueNameGUID.ToString(), "ows.servershutdown", String.Format("ows.servershutdown.{0}", _worldServerId));
+            serverShutDownQueueName = LauncherCommandChannel.DeclareLauncherQueue(serverShutDownChannel, LauncherCommandChannel.ShutDownExchange, _worldServerId);
             serverShutDownChannel.BasicQos(0, 1, false);
 
 
@@ -193,52 +171,81 @@ namespace OWSInstanceLauncher.Services
             //Server Spin Up
             var serverSpinUpConsumer = new AsyncEventingBasicConsumer(serverSpinUpChannel);
 
-            serverSpinUpConsumer.Received += async (model, ea) =>
+            serverSpinUpConsumer.Received += (model, ea) => ProcessDelivery(serverSpinUpChannel, ea, "spin-up", async () =>
             {
-                var body = ea.Body;
-                MQSpinUpServerMessage serverSpinUpMessage = MQSpinUpServerMessage.Deserialize(body.ToArray());
-                Log.Information($"Server Spin Up Message Received: {serverSpinUpMessage.CustomerGUID} WorldServerID: {serverSpinUpMessage.WorldServerID} ZoneInstanceID: {serverSpinUpMessage.ZoneInstanceID} MapName: {serverSpinUpMessage.MapName} Port: {serverSpinUpMessage.Port}");
+                MQSpinUpServerMessage serverSpinUpMessage = MQSpinUpServerMessage.Deserialize(ea.Body.ToArray());
+                Log.Information($"Server Spin Up Message Received: {serverSpinUpMessage.CustomerGUID} WorldServerID: {serverSpinUpMessage.WorldServerID} ZoneInstanceID: {serverSpinUpMessage.ZoneInstanceID} MapName: {serverSpinUpMessage.MapName} Port: {serverSpinUpMessage.Port} Redelivered: {ea.Redelivered}");
                 await HandleServerSpinUpMessage(
                     serverSpinUpMessage.CustomerGUID,
                     serverSpinUpMessage.WorldServerID,
                     serverSpinUpMessage.ZoneInstanceID,
                     serverSpinUpMessage.MapName,
                     serverSpinUpMessage.Port);
-            };
+            });
 
             serverSpinUpConsumer.Shutdown += OnServerSpinUpConsumerShutdown;
             serverSpinUpConsumer.Registered += OnServerSpinUpConsumerRegistered;
             serverSpinUpConsumer.Unregistered += OnServerSpinUpConsumerUnregistered;
             serverSpinUpConsumer.ConsumerCancelled += OnServerSpinUpConsumerConsumerCancelled;
 
-            serverSpinUpChannel.BasicConsume(queue: serverSpinUpQueueNameGUID.ToString(),
-                                         autoAck: true,
+            //Manual ack: a command is only removed from the queue once it has been handled (see ProcessDelivery).
+            serverSpinUpChannel.BasicConsume(queue: serverSpinUpQueueName,
+                                         autoAck: false,
                                          consumer: serverSpinUpConsumer);
 
             //Server Shut Down
             var serverShutDownConsumer = new AsyncEventingBasicConsumer(serverShutDownChannel);
 
-            serverShutDownConsumer.Received += async (model, ea) =>
+            serverShutDownConsumer.Received += (model, ea) => ProcessDelivery(serverShutDownChannel, ea, "shut-down", async () =>
             {
-                Log.Information("Message Received");
-                var body = ea.Body;
-                MQShutDownServerMessage serverShutDownMessage = MQShutDownServerMessage.Deserialize(body.ToArray());
+                MQShutDownServerMessage serverShutDownMessage = MQShutDownServerMessage.Deserialize(ea.Body.ToArray());
+                Log.Information($"Server Shut Down Message Received: {serverShutDownMessage.CustomerGUID} ZoneInstanceID: {serverShutDownMessage.ZoneInstanceID} Redelivered: {ea.Redelivered}");
                 await HandleServerShutDownMessage(
                     serverShutDownMessage.CustomerGUID,
                     serverShutDownMessage.ZoneInstanceID
                 );
-            };
+            });
 
             serverShutDownConsumer.Shutdown += OnServerShutDownConsumerShutdown;
             serverShutDownConsumer.Registered += OnServerShutDownConsumerRegistered;
             serverShutDownConsumer.Unregistered += OnServerShutDownConsumerUnregistered;
             serverShutDownConsumer.ConsumerCancelled += OnServerShutDownConsumerConsumerCancelled;
 
-            serverShutDownChannel.BasicConsume(queue: serverShutDownQueueNameGUID.ToString(),
-                                         autoAck: true,
+            serverShutDownChannel.BasicConsume(queue: serverShutDownQueueName,
+                                         autoAck: false,
                                          consumer: serverShutDownConsumer);
 
             //return Task.CompletedTask;
+        }
+
+        //Acks a command only after its handler finished, so a launcher that dies mid-handling leaves it in the queue to be
+        //delivered again. A handler that throws is requeued once; if the redelivery throws too it is dropped, so one bad
+        //command cannot loop forever. Handlers deal with their own expected failures (port conflict, bad path) and
+        //return normally, which acks: retrying those would not help.
+        public static async Task ProcessDelivery(IModel channel, BasicDeliverEventArgs ea, string commandName, Func<Task> handle)
+        {
+            try
+            {
+                await handle();
+            }
+            catch (Exception ex)
+            {
+                bool requeue = !ea.Redelivered;
+                Log.Error(ex, $"Server {commandName} command (delivery {ea.DeliveryTag}) failed. {(requeue ? "Requeuing it for one more attempt." : "It already failed once, dropping it.")}");
+                channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: requeue);
+                return;
+            }
+
+            channel.BasicAck(ea.DeliveryTag, multiple: false);
+        }
+
+        //Spin-up commands can be delivered more than once (a launcher that started the server but died before acking).
+        //A zone instance whose tracked process is still running already has its server, so the duplicate is ignored.
+        public static bool IsZoneInstanceAlreadyRunning(IZoneServerProcessesRepository zoneServerProcessesRepository, int zoneInstanceID, Func<int, bool> hasProcessExited)
+        {
+            int processId = zoneServerProcessesRepository.FindZoneServerProcessId(zoneInstanceID);
+
+            return processId > 0 && !hasProcessExited(processId);
         }
 
         // OtherCustomFlags never goes through String.Format, so a literal brace in a path cannot break the spin-up.
@@ -257,6 +264,13 @@ namespace OWSInstanceLauncher.Services
             if (_customerGUID != customerGUID)
             {
                 Log.Error("HandleServerSpinUpMessage - Incoming CustomerGUID does not match OWSAPIKey in appsettings.json");
+                return;
+            }
+
+            //Before the port guard: a duplicate's port is held by the instance's own server, which is not a conflict.
+            if (IsZoneInstanceAlreadyRunning(_zoneServerProcessesRepository, zoneInstanceID, HasProcessExited))
+            {
+                Log.Warning($"HandleServerSpinUpMessage - Zone Instance {zoneInstanceID} already has a running server process. Ignoring the duplicate spin-up.");
                 return;
             }
 

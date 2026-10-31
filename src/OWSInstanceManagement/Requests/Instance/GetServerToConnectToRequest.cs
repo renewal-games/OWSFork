@@ -92,11 +92,6 @@ namespace OWSInstanceManagement.Requests.Instance
                     {
                         using (var channel = connection.CreateModel())
                         {
-                            channel.ExchangeDeclare(exchange: "ows.serverspinup",
-                                type: "direct",
-                                durable: false,
-                                autoDelete: false);
-
                             MQSpinUpServerMessage serverSpinUpMessage = new()
                             {
                                 CustomerGUID = CustomerGUID,
@@ -106,12 +101,7 @@ namespace OWSInstanceManagement.Requests.Instance
                                 Port = joinMapByCharacterName.Port
                             };
 
-                            var body = serverSpinUpMessage.Serialize();
-
-                            channel.BasicPublish(exchange: "ows.serverspinup",
-                                                 routingKey: String.Format("ows.serverspinup.{0}", joinMapByCharacterName.WorldServerID),
-                                                 basicProperties: null,
-                                                 body: body);
+                            LauncherCommandChannel.Publish(channel, LauncherCommandChannel.SpinUpExchange, joinMapByCharacterName.WorldServerID, serverSpinUpMessage.Serialize());
                         }
                     }
                 }
