@@ -56,8 +56,9 @@ To hide the SEA row again without tearing anything down, set `OWS_SERVER_SEA_STA
   the printed pubkey on the API box, fill `/etc/ows/launcher.env`, start `ows-tunnels` then
   `ows-launcher`.
 - `/etc/ows/launcher.env` holds `OWS_SAMSARA_SERVICE_KEY`, copied from the API box's
-  `.env.hetzner-dev`. The launcher does not use it; the **zone servers it spawns** do, for
-  player-shop calls. Without it shops fail only on SEA-hosted zones.
+  `.env.hetzner-dev`. The launcher sends it to InstanceManagement (register, zone status,
+  shutdown, cleanup), and the **zone servers it spawns** use it for player-shop calls. Without
+  it the SEA launcher cannot register or report zones, and shops fail on SEA-hosted zones.
 
 ## API box config
 

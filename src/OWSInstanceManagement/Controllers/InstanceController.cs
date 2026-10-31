@@ -15,9 +15,13 @@ using OWSData.Repositories.Interfaces;
 using OWSShared.Options;
 using System.Net.Http;
 using Serilog;
+using OWSInstanceManagement.Filters;
 
 namespace OWSInstanceManagement.Controllers
 {
+    // Launcher, PublicAPI and Management calls carry [RequireSamsaraServiceKey]. The UE zone server's calls
+    // (GetZoneInstance, GetZoneInstancesForZone, UpdateNumberOfPlayers, GetCurrentWorldTime) send only
+    // X-CustomerGUID today, so they stay ungated until the plugin sends the key on InstanceManagementAPI requests.
     [Route("api/[controller]")]
     [ApiController]
     public class InstanceController : Controller
@@ -53,6 +57,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("SetZoneInstanceStatus")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(SuccessAndErrorMessage))]
         /*[SwaggerOperation("ByName")]
         [SwaggerResponse(200)]
@@ -66,6 +71,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("ShutDownServerInstance")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(SuccessAndErrorMessage))]
         /*[SwaggerOperation("ByName")]
         [SwaggerResponse(200)]
@@ -79,6 +85,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("CompleteZoneInstanceShutdown")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(SuccessAndErrorMessage))]
         public async Task<IActionResult> CompleteZoneInstanceShutdown([FromBody] CompleteZoneInstanceShutdownRequest request)
         {
@@ -89,6 +96,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("CleanUpInstances")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(SuccessAndErrorMessage))]
         //Deterministic sweep of stale CharOnMapInstance rows and dead MapInstances. Called on a
         //timer by the Instance Launcher health monitor; previously this cleanup only ran
@@ -102,6 +110,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("RegisterLauncher")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(SuccessAndErrorMessage))]
         /*[SwaggerOperation("ByName")]
         [SwaggerResponse(200)]
@@ -115,6 +124,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("SpinUpServerInstance")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(SuccessAndErrorMessage))]
         /*[SwaggerOperation("ByName")]
         [SwaggerResponse(200)]
@@ -128,6 +138,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpGet]
         [Route("StartInstanceLauncher")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(int))]
         /*[SwaggerOperation("ByName")]
         [SwaggerResponse(200)]
@@ -149,6 +160,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("ShutDownInstanceLauncher")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(SuccessAndErrorMessage))]
         /*[SwaggerOperation("ByName")]
         [SwaggerResponse(200)]
@@ -168,6 +180,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("GetServerToConnectTo")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(JoinMapByCharName))]
         /*[SwaggerOperation("ByName")]
         [SwaggerResponse(200)]
@@ -209,6 +222,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("GetZoneInstancesForWorldServer")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(IEnumerable<GetZoneInstancesForWorldServer>))]
         /*[SwaggerOperation("ByName")]
         [SwaggerResponse(200)]
@@ -235,6 +249,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("ZoneProcessExited")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(SuccessAndErrorMessage))]
         public async Task<IActionResult> ZoneProcessExited([FromBody] ZoneProcessExitedRequest request)
         {
