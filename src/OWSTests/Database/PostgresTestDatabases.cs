@@ -148,6 +148,15 @@ namespace OWSTests.Database
         }
     }
 
+    /// <summary>A fact that needs <see cref="PostgresTestDatabases"/>; skipped when no test server is configured.</summary>
+    public sealed class PostgresFactAttribute : FactAttribute
+    {
+        public PostgresFactAttribute()
+        {
+            Skip = PostgresTestDatabases.SkipReason;
+        }
+    }
+
     /// <summary>A theory that needs <see cref="PostgresTestDatabases"/>; skipped when no test server is configured.</summary>
     public sealed class PostgresTheoryAttribute : TheoryAttribute
     {
