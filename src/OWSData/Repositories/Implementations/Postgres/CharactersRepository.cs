@@ -1069,21 +1069,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     parameters,
                     transaction: tx, commandType: CommandType.Text);
 
-                foreach (UpdateCharacterInventory inventoryItem in updateCharacterInventory ?? Enumerable.Empty<UpdateCharacterInventory>())
-                {
-                    await conn.ExecuteAsync(PostgresQueries.InsertCharacterInventoryItem,
-                        new
-                        {
-                            CustomerGUID = customerGUID,
-                            CharInventoryID = charInventoryID,
-                            inventoryItem.ItemIDTag,
-                            inventoryItem.Quantity,
-                            inventoryItem.InSlotNumber,
-                            inventoryItem.CustomData,
-                            InstanceId = inventoryItem.ParsedInstanceId
-                        },
-                        transaction: tx, commandType: CommandType.Text);
-                }
+                await InsertInventoryItems(conn, tx, customerGUID, charInventoryID, updateCharacterInventory);
 
                 // Bump only for callers on the protocol. UpdateCharacterCurrency bumps
                 // unconditionally and gets away with it because the zone server already reads the
@@ -1117,6 +1103,164 @@ namespace OWSData.Repositories.Implementations.Postgres
                 throw;
             }
         }
+
+        private static async Task InsertInventoryItems(DbConnection conn, DbTransaction tx, Guid customerGUID, int charInventoryID,
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory)
+        {
+            foreach (UpdateCharacterInventory inventoryItem in updateCharacterInventory ?? Enumerable.Empty<UpdateCharacterInventory>())
+            {
+                await conn.ExecuteAsync(PostgresQueries.InsertCharacterInventoryItem,
+                    new
+                    {
+                        CustomerGUID = customerGUID,
+                        CharInventoryID = charInventoryID,
+                        inventoryItem.ItemIDTag,
+                        inventoryItem.Quantity,
+                        inventoryItem.InSlotNumber,
+                        inventoryItem.CustomData,
+                        InstanceId = inventoryItem.ParsedInstanceId
+                    },
+                    transaction: tx, commandType: CommandType.Text);
+            }
+        }
+
+        public async Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, int? callerZoneInstanceId = null,
+            long? expectedRevision = null, bool requireExpectedRevision = false)
+        {
+            // A missing section is refused, not skipped: the inventory write deletes the bag before
+            // inserting, so a null CharInventory would read as "empty bag" and wipe it.
+            if (updateCharacterQuests == null || updateCharacterInventory == null || updateCharacterStats == null)
+            {
+                return CharacterDataFail("bad_request");
+            }
+
+            // One transaction for all three sections. These used to be three separate saves (quests
+            // auto-committing one row at a time), so a failure part-way left a mix of old and new state.
+            // The one deliberate exception is the economy revision guard: a stale or revision-less bag
+            // is skipped while quests and stats still commit, as when the bag was its own save, so a
+            // shop transaction racing the autosave does not also cost the player their progress.
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+            using DbTransaction tx = await conn.BeginTransactionAsync();
+            try
+            {
+                var parameters = new DynamicParameters();
+                parameters.Add("@CustomerGUID", customerGUID);
+                parameters.Add("@CharName", characterName);
+
+                // Same row lock as UpdateCharacterInventory, so this serializes with the shop economy writes.
+                CharNameLockRow character = await conn.QuerySingleOrDefaultAsync<CharNameLockRow>(
+                    PlayerShopQueries.LockCharacterByNameForUpdate,
+                    parameters,
+                    transaction: tx, commandType: CommandType.Text);
+
+                if (character == null)
+                {
+                    await tx.RollbackAsync();
+                    return CharacterDataFail("bad_request");
+                }
+
+                // Checked inside the transaction so the decision and the writes see the same ownership.
+                if (callerZoneInstanceId.HasValue && callerZoneInstanceId.Value > 0)
+                {
+                    var ownerParameters = new DynamicParameters();
+                    ownerParameters.Add("@CustomerGUID", customerGUID);
+                    ownerParameters.Add("@CharName", characterName);
+                    ownerParameters.Add("@CallerZoneInstanceID", callerZoneInstanceId.Value);
+
+                    if (await conn.ExecuteScalarAsync<bool>(PostgresQueries.IsCharacterOwnedByOtherZoneInstance,
+                        ownerParameters, transaction: tx, commandType: CommandType.Text))
+                    {
+                        await tx.RollbackAsync();
+                        return CharacterDataFail("stale_zone");
+                    }
+                }
+
+                string bagRefusal = null;
+                if (expectedRevision == null && requireExpectedRevision)
+                {
+                    bagRefusal = "revision_required";
+                }
+                else if (expectedRevision.HasValue && expectedRevision.Value != character.EconomyRevision)
+                {
+                    bagRefusal = "stale_revision";
+                }
+
+                foreach (UpdateCharacterQuest quest in updateCharacterQuests)
+                {
+                    var p = new DynamicParameters();
+                    p.Add("@CustomerGUID", customerGUID);
+                    p.Add("@CharName", characterName);
+                    p.Add("@QuestIDTag", quest.QuestIDTag);
+                    p.Add("@QuestJournalTagContainer", quest.QuestJournalTagContainer);
+                    p.Add("@CustomData", quest.CustomData);
+
+                    await conn.ExecuteAsync(PostgresQueries.UpdateCharacterQuest, p, transaction: tx, commandType: CommandType.Text);
+                }
+
+                long newRevision = character.EconomyRevision;
+                if (bagRefusal == null)
+                {
+                    IEnumerable<int> inventoryIDs = await conn.QueryAsync<int>(GenericQueries.GetCharInventoryIDByCharName,
+                        parameters,
+                        transaction: tx, commandType: CommandType.Text);
+
+                    if (!inventoryIDs.Any())
+                    {
+                        await tx.RollbackAsync();
+                        return CharacterDataFail("no_inventory");
+                    }
+
+                    int charInventoryID = inventoryIDs.First();
+                    parameters.Add("@CharInventoryID", charInventoryID);
+
+                    await conn.ExecuteAsync(GenericQueries.DeleteCharacterInventoryItems,
+                        parameters,
+                        transaction: tx, commandType: CommandType.Text);
+
+                    await InsertInventoryItems(conn, tx, customerGUID, charInventoryID, updateCharacterInventory);
+
+                    // Bump only for callers on the protocol, as in UpdateCharacterInventory.
+                    if (expectedRevision.HasValue)
+                    {
+                        newRevision = await conn.ExecuteScalarAsync<long>(PlayerShopQueries.BumpRevisionByName,
+                            parameters,
+                            transaction: tx, commandType: CommandType.Text);
+                    }
+                }
+
+                var statParameters = new DynamicParameters();
+                statParameters.Add("@CustomerGUID", customerGUID);
+                statParameters.Add("@CharName", characterName);
+                statParameters.Add("@StatIdentifiers", updateCharacterStats.Select(s => s.StatIdentifier).ToArray(), dbType: DbType.Object, direction: ParameterDirection.Input);
+                statParameters.Add("@StatValues", updateCharacterStats.Select(s => s.Value).ToArray(), dbType: DbType.Object, direction: ParameterDirection.Input);
+
+                await conn.ExecuteAsync(GenericQueries.UpsertManyCharacterStats, statParameters, transaction: tx, commandType: CommandType.Text);
+
+                await tx.CommitAsync();
+                return new UpdateCharacterDataResponse
+                {
+                    Success = bagRefusal == null,
+                    ErrorMessage = bagRefusal ?? "",
+                    ReasonCode = bagRefusal ?? "",
+                    NewEconomyRevision = newRevision
+                };
+            }
+            catch
+            {
+                try { await tx.RollbackAsync(); } catch { /* connection already gone */ }
+                throw;
+            }
+        }
+
+        private static UpdateCharacterDataResponse CharacterDataFail(string reasonCode) =>
+            new UpdateCharacterDataResponse
+            {
+                Success = false,
+                ErrorMessage = reasonCode,
+                ReasonCode = reasonCode
+            };
 
         private static UpdateCharacterInventoryResponse InventoryFail(string reasonCode, long revision = 0) =>
             new UpdateCharacterInventoryResponse

@@ -597,6 +597,13 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 return true;
             }
         }
+        public Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, int? callerZoneInstanceId = null,
+            long? expectedRevision = null, bool requireExpectedRevision = false)
+        {
+            throw new NotSupportedException("UpdateCharacterData's single-transaction save is only implemented for Postgres.");
+        }
+
         // Durability half of the Postgres fix: the DELETE-then-INSERT rewrite runs in one
         // transaction so a failure mid-loop cannot leave a truncated bag. The economy-revision
         // protocol is Postgres-only (Characters.EconomyRevision ships in the PlayerShops migration),
