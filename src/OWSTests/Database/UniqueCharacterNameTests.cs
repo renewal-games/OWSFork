@@ -12,16 +12,16 @@ using Xunit;
 namespace OWSTests.Database
 {
     /// <summary>
-    /// Once UniqueCharacterNames_2026-10-30.sql is applied, CreateCharacterUsingDefaultCharacterValues reports a name taken
-    /// by a concurrent create or in another case. (DefaultCharacterValuesTests covers the unknown default set.) Runs on the
-    /// setup.sql schema plus that script: the query inserts Characters.Email and the stat columns, which the Samsara
-    /// migrations drop.
+    /// Once UniqueCharacterNames_2026-10-30.sql is applied, the create paths report a name taken by a concurrent create or
+    /// in another case, instead of creating a second character or returning the raw unique violation.
+    /// (DefaultCharacterValuesTests covers the unknown default set.) Runs on the setup.sql schema plus that script: the
+    /// inserts write Characters.Email and the stat columns, which the Samsara migrations drop.
     /// </summary>
-    public class CreateCharacterUsingDefaultCharacterValuesTests : IClassFixture<PostgresTestDatabases>
+    public class UniqueCharacterNameTests : IClassFixture<PostgresTestDatabases>
     {
         private readonly PostgresTestDatabases _databases;
 
-        public CreateCharacterUsingDefaultCharacterValuesTests(PostgresTestDatabases databases)
+        public UniqueCharacterNameTests(PostgresTestDatabases databases)
         {
             _databases = databases;
         }
@@ -70,6 +70,39 @@ namespace OWSTests.Database
 
             Assert.True((await users.CreateCharacterUsingDefaultCharacterValues(customerA, userA, "Shared", "Default")).Success);
             Assert.True((await users.CreateCharacterUsingDefaultCharacterValues(customerB, userB, "Shared", "Default")).Success);
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.SetupSql)]
+        public async Task CreateCharacter_SameNameInAnotherCase_ReturnsInvalidCharacterName(SchemaSource source)
+        {
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            await connection.ExecuteAsync(await File.ReadAllTextAsync(UniqueCharacterNamesMigrationTests.ScriptPath()));
+
+            // AddNewCustomer seeds a customer, a user and the MaleWarrior class that AddCharacter needs.
+            string customerName = $"Unique{Guid.NewGuid():N}";
+            await connection.ExecuteAsync("CALL AddNewCustomer(@CustomerName, 'Test', 'User', @Email, 'pw')",
+                new { CustomerName = customerName, Email = $"{customerName}@example.com" });
+            (Guid customerGUID, Guid userGUID) = await connection.QuerySingleAsync<(Guid, Guid)>(
+                @"SELECT C.CustomerGUID, U.UserGUID FROM Customers C
+                  INNER JOIN Users U ON U.CustomerGUID = C.CustomerGUID
+                  WHERE C.CustomerName = @CustomerName",
+                new { CustomerName = customerName });
+            Guid userSessionGUID = await connection.QuerySingleAsync<Guid>(
+                @"INSERT INTO UserSessions (CustomerGUID, UserGUID, LoginDate) VALUES (@CustomerGUID, @UserGUID, LOCALTIMESTAMP)
+                  RETURNING UserSessionGUID",
+                new { CustomerGUID = customerGUID, UserGUID = userGUID });
+            UsersRepository users = Repository(source);
+
+            CreateCharacter first = await users.CreateCharacter(customerGUID, userSessionGUID, "Dana", "MaleWarrior");
+            CreateCharacter second = await users.CreateCharacter(customerGUID, userSessionGUID, "dana", "MaleWarrior");
+
+            Assert.True(first.Success, first.ErrorMessage);
+            Assert.False(second.Success);
+            Assert.Equal("Invalid Character Name", second.ErrorMessage);
+            Assert.Equal(1, await connection.QuerySingleAsync<int>(
+                "SELECT COUNT(*)::INT FROM Characters WHERE CustomerGUID = @CustomerGUID AND LOWER(CharName) = 'dana'",
+                new { CustomerGUID = customerGUID }));
         }
 
         private UsersRepository Repository(SchemaSource source) =>

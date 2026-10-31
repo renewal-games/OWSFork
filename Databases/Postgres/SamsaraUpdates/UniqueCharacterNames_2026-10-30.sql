@@ -1,6 +1,7 @@
 -- Character names are unique per customer, ignoring case. CreateCharacterUsingDefaultCharacterValues and AddCharacter
 -- check the name before inserting, but the check is case-sensitive and races a concurrent create of the same name.
--- The index is the real guard; the repositories map its unique violation (23505) to "Character name already exists!".
+-- The index is the real guard; the Postgres UsersRepository maps its unique violation (23505) to each create path's
+-- duplicate-name message.
 --
 -- The migrator runs without a transaction and every API service waits on it, so a duplicate already in the table must
 -- not make CREATE UNIQUE INDEX fail. The oldest character keeps each name; later duplicates (exact or differing only in
