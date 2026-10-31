@@ -1011,7 +1011,7 @@ namespace OWSData.Repositories.Implementations.Postgres
         }
 
         public async Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName,
-            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, long? expectedRevision = null)
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, Guid? ownerToken, long? expectedRevision = null)
         {
             // A whole-bag rewrite is DELETE-then-INSERT, so it has to be one transaction. This ran
             // on an auto-committing connection before: a failure part-way through the insert loop
@@ -1037,6 +1037,24 @@ namespace OWSData.Repositories.Implementations.Postgres
                 {
                     await tx.RollbackAsync();
                     return InventoryFail("bad_request");
+                }
+
+                // The controller already checked the owner token, but on its own connection before this
+                // transaction began: a claim that committed in between (zone handoff, second login) would
+                // otherwise let the replaced zone server overwrite the new owner's bag. Claims lock this
+                // Characters row before changing the owner, so checking again under the lock is final.
+                // Same policy as the controller: a replaced owner's saves still land during the handover.
+                bool staleOwner = await conn.ExecuteScalarAsync<bool>(CharacterOwnersRepository.StaleByIdSql, new
+                {
+                    CustomerGUID = customerGUID,
+                    CharacterID = character.CharacterID,
+                    OwnerToken = ownerToken,
+                    AllowPrevious = true
+                }, transaction: tx, commandType: CommandType.Text);
+                if (staleOwner)
+                {
+                    await tx.RollbackAsync();
+                    return InventoryFail("stale_owner", character.EconomyRevision);
                 }
 
                 // Opt-in optimistic guard. Serializing on the lock alone does not save a stale

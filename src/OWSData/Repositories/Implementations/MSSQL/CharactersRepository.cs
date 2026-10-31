@@ -603,7 +603,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
         // so expectedRevision is rejected here rather than silently ignored — a caller that thinks
         // it has optimistic protection must not be told the write succeeded without it.
         public async Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName,
-            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, long? expectedRevision = null)
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, Guid? ownerToken, long? expectedRevision = null)
         {
             if (expectedRevision.HasValue)
             {

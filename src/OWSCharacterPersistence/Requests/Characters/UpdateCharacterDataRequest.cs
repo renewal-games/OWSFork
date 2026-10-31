@@ -44,7 +44,7 @@ namespace OWSCharacterPersistence.Requests.Characters
                 // stale_revision once callers opt in). It used to return void, so a refused bag save
                 // reported success to the zone server; surface it instead.
                 UpdateCharacterInventoryResponse inventoryResult =
-                    await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, CharInventory);
+                    await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, CharInventory, OwnerToken);
 
                 // Deliberately NOT an early return. These three are separate transactions, so
                 // bailing here would leave quests committed and silently drop the stats save

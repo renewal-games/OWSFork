@@ -37,7 +37,7 @@ namespace OWSCharacterPersistence.Requests.Characters
         {
             try
             {
-                return await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, Inventory,
+                return await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, Inventory, OwnerToken,
                     ExpectedRevision > 0 ? ExpectedRevision : (long?)null);
             }
             catch (Exception ex)
