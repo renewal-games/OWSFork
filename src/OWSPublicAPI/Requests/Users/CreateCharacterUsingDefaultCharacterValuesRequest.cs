@@ -83,8 +83,20 @@ namespace OWSPublicAPI.Requests.Users
                 return successAndErrorMessage;
             }
 
-            await _usersRepository.CreateCharacterUsingDefaultCharacterValues(_customerGUID, userSession.UserGuid.Value, _createCharacterUsingDefaultCharacterValuesDTO.CharacterName,
-                _createCharacterUsingDefaultCharacterValuesDTO.DefaultSetName);
+            SuccessAndErrorMessage result = await _usersRepository.CreateCharacterUsingDefaultCharacterValues(_customerGUID, userSession.UserGuid.Value,
+                _createCharacterUsingDefaultCharacterValuesDTO.CharacterName, _createCharacterUsingDefaultCharacterValuesDTO.DefaultSetName);
+
+            if (result == null || !result.Success)
+            {
+                // The repository puts raw exception text in ErrorMessage; only pass through messages meant for players.
+                return new SuccessAndErrorMessage()
+                {
+                    Success = false,
+                    ErrorMessage = result?.ErrorMessage == CharacterCreationMessages.UnknownDefaultCharacterSet
+                        ? CharacterCreationMessages.UnknownDefaultCharacterSet
+                        : CharacterCreationMessages.CharacterCreationFailed
+                };
+            }
 
             return new SuccessAndErrorMessage() { Success = true, ErrorMessage = "" };
         }
