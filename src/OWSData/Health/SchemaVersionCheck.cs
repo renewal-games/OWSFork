@@ -16,7 +16,7 @@ namespace OWSData.Health
     public static class SchemaVersionCheck
     {
         /// <summary>The last line of migration-manifest.txt. OWSTests fails until this follows a new script.</summary>
-        public const string ExpectedLastScript = "SamsaraUpdates/CustomCharacterDataUniqueField_2026-11-01.sql";
+        public const string ExpectedLastScript = "SamsaraUpdates/UniqueCharacterNames_2026-10-30.sql";
 
         /// <summary>Tables and columns the code reads directly, as (table, column); a null column checks the table only.</summary>
         public static readonly IReadOnlyList<(string Table, string Column)> RequiredObjects = new[]
