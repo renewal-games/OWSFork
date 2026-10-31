@@ -8,6 +8,9 @@ namespace OWSShared.Implementations
 {
     public class DefaultPublicAPIInputValidation : IPublicAPIInputValidation
     {
+        /// <summary>Matches the VARCHAR(50) CharName column in Characters.</summary>
+        public const int MaxCharacterNameLength = 50;
+
         public string ValidateCharacterName(string charName)
         {
             //Test for empty Character Names or Character Names that are shorter than the minimum Character name Length
@@ -15,6 +18,11 @@ namespace OWSShared.Implementations
             if (String.IsNullOrEmpty(normalizedCharacterName) || normalizedCharacterName.Length < 4)
             {
                 return "Please enter a valid Character Name that is at least 4 characters in length.";
+            }
+
+            if (normalizedCharacterName.Length > MaxCharacterNameLength)
+            {
+                return $"Please enter a Character Name that is no more than {MaxCharacterNameLength} characters in length.";
             }
 
             // Test for character names that use characters other than letters, numbers, spaces, or underscores.
