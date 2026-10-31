@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Delete the editor's throwaway PIE accounts (PurgePIEAccounts: @samsara.local, first name PIE) once they are
 # OWS_PIE_PURGE_AGE old, with their characters and shops, plus rows of characters that no longer exist.
+# Also deletes user sessions past UserSessionMaxAge() (PurgeExpiredUserSessions).
 # Run by ows-pie-purge.timer (daily). Settings: /etc/default/ows-pg-backup.
 set -euo pipefail
 if [ -f /etc/default/ows-pg-backup ]; then . /etc/default/ows-pg-backup; fi
@@ -31,3 +32,7 @@ purged="$(docker exec "$CONTAINER" psql -U postgres -d "$DB" -v ON_ERROR_STOP=1 
   -c "SELECT What, Removed FROM PurgeSamsaraLogs() WHERE Removed > 0")"
 echo "Console log purge ok: ${purged:-nothing to remove}" | tr '\n' ' '
 echo
+
+# Sessions already stop resolving at UserSessionMaxAge(); this removes their rows.
+sessions="$(docker exec "$CONTAINER" psql -U postgres -d "$DB" -v ON_ERROR_STOP=1 -At -c "SELECT PurgeExpiredUserSessions()")"
+echo "Expired session purge ok: $sessions removed"

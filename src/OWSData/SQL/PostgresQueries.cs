@@ -37,7 +37,11 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 				WHERE AB.CustomerGUID=@CustomerGUID
 				ORDER BY AB.AbilityName";
 
-		public static readonly string GetUserSessionSQL = @"SELECT US.CustomerGUID, US.UserGUID, US.UserSessionGUID, US.LoginDate, US.SelectedCharacterName,
+		// Sessions expire UserSessionMaxAge() after login, so the lookups by UserSessionGUID below filter on it.
+		public const string LiveSessionPredicate = "US.LoginDate > LOCALTIMESTAMP - UserSessionMaxAge()";
+
+		public static readonly string GetUserSessionSQL = @"SELECT US.CustomerGUID, US.UserGUID, US.UserSessionGUID, US.LoginDate,
+	            (US.LoginDate + UserSessionMaxAge())::TIMESTAMPTZ as ExpiresAt, US.SelectedCharacterName,
 	            U.Email, U.FirstName, U.LastName, U.CreateDate, U.LastAccess, U.Role,
 	            C.CharacterID, C.CharName, C.X, C.Y, C.Z, C.RX, C.RY, C.RZ, C.MapName as ZoneName
 	            FROM UserSessions US
@@ -47,18 +51,24 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 		            ON C.CustomerGUID=US.CustomerGUID
 		            AND C.CharName=US.SelectedCharacterName
 	            WHERE US.CustomerGUID=@CustomerGUID::UUID
-	            AND US.UserSessionGUID=@UserSessionGUID::UUID";
+	            AND US.UserSessionGUID=@UserSessionGUID::UUID
+	            AND " + LiveSessionPredicate;
 
         public static readonly string GetUserSessionOnlySQL = @"SELECT US.CustomerGUID, US.UserGUID, US.UserSessionGUID, US.LoginDate, US.SelectedCharacterName
 	            FROM UserSessions US
 	            WHERE US.CustomerGUID=@CustomerGUID::UUID
-	            AND US.UserSessionGUID=@UserSessionGUID";
+	            AND US.UserSessionGUID=@UserSessionGUID
+	            AND " + LiveSessionPredicate;
+
+        public static readonly string GetAllCharacters = GenericQueries.GetAllCharacters + @"
+            AND " + LiveSessionPredicate;
 
         // Chat and party trust SelectedCharacterName, so only a character of the session's own user can be selected.
         public static readonly string SetSelectedOwnedCharacterSQL = @"UPDATE UserSessions US
 	            SET SelectedCharacterName=@SelectedCharacterName
 	            WHERE US.CustomerGUID=@CustomerGUID
 	            AND US.UserSessionGUID=@UserSessionGUID
+	            AND " + LiveSessionPredicate + @"
 	            AND EXISTS (SELECT 1 FROM Characters C
 	                        WHERE C.CustomerGUID=US.CustomerGUID AND C.UserGUID=US.UserGUID AND C.CharName=@SelectedCharacterName)";
 

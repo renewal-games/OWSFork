@@ -47,7 +47,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 p.Add("@CustomerGUID", customerGUID);
                 p.Add("@UserSessionGUID", userSessionGUID);
 
-                outputObject = await Connection.QueryAsync<GetAllCharacters>(GenericQueries.GetAllCharacters,
+                outputObject = await Connection.QueryAsync<GetAllCharacters>(PostgresQueries.GetAllCharacters,
                     p,
                     commandType: CommandType.Text);
             }
@@ -65,7 +65,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 p.Add("CustomerGUID", customerGUID);
                 p.Add("UserSessionGUID", userSessionGUID);
 
-                outputObject = await Connection.QueryAsync<GetAllSamsaraCharacters>(GenericQueries.GetAllCharacters,
+                outputObject = await Connection.QueryAsync<GetAllSamsaraCharacters>(PostgresQueries.GetAllCharacters,
                 p,
                 commandType: CommandType.Text);
             }
@@ -521,6 +521,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                         INNER JOIN UserSessions US ON US.CustomerGUID = C.CustomerGUID AND US.UserGUID = C.UserGUID
                         WHERE C.CustomerGUID = @CustomerGUID
                             AND US.UserSessionGUID = @UserSessionGUID
+                            AND " + PostgresQueries.LiveSessionPredicate + @"
                             AND C.CharName = @CharacterName",
                         new { CustomerGUID = customerGUID, UserSessionGUID = userSessionGUID, CharacterName = characterName },
                         transaction);

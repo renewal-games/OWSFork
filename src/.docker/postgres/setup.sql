@@ -2322,6 +2322,30 @@ WHERE U.CustomerGUID = _CustomerGUID
   AND U.UserGUID = _UserGUID;
 $$;
 
+-- A session expires this long after LoginDate (see SamsaraUpdates/UserSessionExpiry_2026-10-30.sql).
+CREATE OR REPLACE FUNCTION UserSessionMaxAge()
+    RETURNS INTERVAL
+    LANGUAGE SQL
+    IMMUTABLE
+AS
+$$
+SELECT INTERVAL '72 hours';
+$$;
+
+CREATE OR REPLACE FUNCTION PurgeExpiredUserSessions()
+    RETURNS BIGINT
+    LANGUAGE plpgsql
+AS
+$$
+DECLARE
+    _Count BIGINT;
+BEGIN
+    DELETE FROM UserSessions WHERE LoginDate <= LOCALTIMESTAMP - UserSessionMaxAge();
+    GET DIAGNOSTICS _Count = ROW_COUNT;
+    RETURN _Count;
+END
+$$;
+
 CREATE OR REPLACE FUNCTION GetUserSession(_CustomerGUID UUID,
                                           _UserSessionGUID UUID)
     RETURNS TABLE
@@ -2330,6 +2354,7 @@ CREATE OR REPLACE FUNCTION GetUserSession(_CustomerGUID UUID,
                 UserGUID              UUID,
                 UserSessionGUID       UUID,
                 LoginDate             TIMESTAMP,
+                ExpiresAt             TIMESTAMPTZ,
                 SelectedCharacterName VARCHAR(50),
                 Email                 VARCHAR(255),
                 FirstName             VARCHAR(50),
@@ -2354,6 +2379,7 @@ SELECT US.CustomerGUID,
        US.UserGUID,
        US.UserSessionGUID,
        US.LoginDate,
+       (US.LoginDate + UserSessionMaxAge())::TIMESTAMPTZ AS ExpiresAt,
        US.SelectedCharacterName,
        U.Email,
        U.FirstName,
@@ -2378,7 +2404,8 @@ FROM UserSessions US
                        AND C.CharName = US.SelectedCharacterName
                        AND C.UserGUID = US.UserGUID
 WHERE US.CustomerGUID = _CustomerGUID
-  AND US.UserSessionGUID = _UserSessionGUID;
+  AND US.UserSessionGUID = _UserSessionGUID
+  AND US.LoginDate > LOCALTIMESTAMP - UserSessionMaxAge();
 $$;
 
 CREATE OR REPLACE FUNCTION GetWorldStartTime(_CustomerGUID UUID)

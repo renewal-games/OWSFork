@@ -39,8 +39,10 @@ namespace OWSData.Repositories.Implementations
                 return await _inner.GetUserSession(customerGUID, userSessionGUID);
             }
 
+            // A cached session is served only until its ExpiresAt; one without a deadline (cached
+            // before sessions expired) is revalidated against the DB.
             GetUserSession cached = await _cache.TryGetUserSession(customerGUID, userSessionGUID);
-            if (cached != null && cached.UserGuid.HasValue)
+            if (cached != null && cached.UserGuid.HasValue && RemainingLifetime(cached) > TimeSpan.Zero)
             {
                 return cached;
             }
@@ -48,14 +50,26 @@ namespace OWSData.Repositories.Implementations
             GetUserSession fromDb = await _inner.GetUserSession(customerGUID, userSessionGUID);
 
             // Only cache valid sessions, so a not-yet-created or just-invalidated session is
-            // never poisoned by a negative result.
+            // never poisoned by a negative result. The TTL never outlives the session itself.
             if (fromDb != null && fromDb.UserGuid.HasValue)
             {
-                await _cache.SetUserSession(customerGUID, userSessionGUID, fromDb, TimeSpan.FromSeconds(_options.SessionTtlSeconds));
+                TimeSpan ttl = TimeSpan.FromSeconds(_options.SessionTtlSeconds);
+                TimeSpan remaining = RemainingLifetime(fromDb);
+                if (remaining < ttl)
+                {
+                    ttl = remaining;
+                }
+                if (ttl > TimeSpan.Zero)
+                {
+                    await _cache.SetUserSession(customerGUID, userSessionGUID, fromDb, ttl);
+                }
             }
 
             return fromDb;
         }
+
+        private static TimeSpan RemainingLifetime(GetUserSession session)
+            => session.ExpiresAt.HasValue ? session.ExpiresAt.Value.ToUniversalTime() - DateTime.UtcNow : TimeSpan.Zero;
 
         public async Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid)
         {

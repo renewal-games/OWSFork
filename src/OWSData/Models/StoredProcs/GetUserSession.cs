@@ -19,6 +19,8 @@ namespace OWSData.Models.StoredProcs
         public Guid? UserGuid { get; set; }
         public Guid UserSessionGUID { get; set; }
         public DateTime LoginDate { get; set; }
+        // When the session stops resolving (UTC); null from backends that do not expire sessions.
+        public DateTime? ExpiresAt { get; set; }
         public string SelectedCharacterName { get; set; }
         public string FirstName { get; set; }
         public string LastName { get; set; }
