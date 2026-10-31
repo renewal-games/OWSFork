@@ -7,6 +7,7 @@ using System.Text;
 using Npgsql;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OWSData.Models;
 using OWSData.Models.Composites;
@@ -21,11 +22,17 @@ namespace OWSData.Repositories.Implementations.Postgres
 
     public class UsersRepository : IUsersRepository
     {
-        private readonly IOptions<StorageOptions> _storageOptions;
+        // Returned instead of ex.Message so Npgsql/Postgres error text (table, column and type names) never reaches clients.
+        public const string CreateCharacterFailedMessage = "Character creation failed. Please try again.";
+        public const string RemoveCharacterFailedMessage = "Character removal failed. Please try again.";
 
-        public UsersRepository(IOptions<StorageOptions> storageOptions)
+        private readonly IOptions<StorageOptions> _storageOptions;
+        private readonly ILogger<UsersRepository> _logger;
+
+        public UsersRepository(IOptions<StorageOptions> storageOptions, ILogger<UsersRepository> logger)
         {
             this._storageOptions = storageOptions;
+            this._logger = logger;
         }
 
         private readonly AsyncLocal<ScopedDbConnection> _scopedConnection = new AsyncLocal<ScopedDbConnection>();
@@ -148,8 +155,9 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "CreateSamsaraCharacter failed for character {CharacterName}", characterName);
                 outputObject.Success = false;
-                outputObject.ErrorMessage = ex.Message;
+                outputObject.ErrorMessage = CreateCharacterFailedMessage;
 
                 return outputObject;
             }
@@ -637,8 +645,9 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "RemoveCharacter failed for character {CharacterName}", characterName);
                 outputObject.Success = false;
-                outputObject.ErrorMessage = ex.Message;
+                outputObject.ErrorMessage = RemoveCharacterFailedMessage;
 
                 return outputObject;
             }
