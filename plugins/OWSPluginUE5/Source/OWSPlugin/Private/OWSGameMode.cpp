@@ -125,22 +125,30 @@ void AOWSGameMode::StartPlay()
 		FParse::Value(FCommandLine::Get(), TEXT("zoneinstanceid="), CommandLineZoneInstanceID);
 		ZoneInstanceID = FCString::Atoi(*CommandLineZoneInstanceID);
 
-		UE_LOG(OWS, Warning, TEXT("OWSGameMode::StartPlay - ZoneInstanceID: %d"), ZoneInstanceID)
+		//Editor/PIE or a launch without -zoneinstanceid= gives Atoi("") == 0: there is no zone instance to look up or report on.
+		if (ZoneInstanceID < 1)
+		{
+			UE_LOG(OWS, Warning, TEXT("OWSGameMode::StartPlay - no valid -zoneinstanceid=<id> command line argument found; skipping OWS instance status updates."))
+		}
+		else
+		{
+			UE_LOG(OWS, Warning, TEXT("OWSGameMode::StartPlay - ZoneInstanceID: %d"), ZoneInstanceID)
 
-		//Lookup which Zone this server is running for and get the ZoneName into IAmZoneName var
-		GetZoneInstanceFromZoneInstanceID(ZoneInstanceID);
+			//Lookup which Zone this server is running for and get the ZoneName into IAmZoneName var
+			GetZoneInstanceFromZoneInstanceID(ZoneInstanceID);
 
-		//Change Status of the Zone Instance to 2 (ready for players to connect)
-		UpdateNumberOfPlayers();
+			//Change Status of the Zone Instance to 2 (ready for players to connect)
+			UpdateNumberOfPlayers();
+
+			if (UpdateServerStatusEveryXSeconds > 0.f)
+			{
+				GetWorld()->GetTimerManager().SetTimer(UpdateServerStatusEveryXSecondsTimerHandle, this, &AOWSGameMode::UpdateNumberOfPlayers, UpdateServerStatusEveryXSeconds, true);
+			}
+		}
 
 		if (GetCharactersOnlineIntervalInSeconds > 0.f)
 		{
 			//GetWorld()->GetTimerManager().SetTimer(OnGetAllCharactersOnlineTimerHandle, this, &AOWSGameMode::GetAllCharactersOnline, GetCharactersOnlineIntervalInSeconds, true);
-		}
-
-		if (UpdateServerStatusEveryXSeconds > 0.f)
-		{
-			GetWorld()->GetTimerManager().SetTimer(UpdateServerStatusEveryXSecondsTimerHandle, this, &AOWSGameMode::UpdateNumberOfPlayers, UpdateServerStatusEveryXSeconds, true);
 		}
 
 		if (SaveIntervalInSeconds > 0.f)
