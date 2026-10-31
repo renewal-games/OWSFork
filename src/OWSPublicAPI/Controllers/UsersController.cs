@@ -286,7 +286,7 @@ namespace OWSPublicAPI.Controllers
         public async Task<PlayerLoginAndCreateSession> RegisterUser([FromBody] RegisterUserDTO requestDTO)
         {
             RegisterUserRequest request = new RegisterUserRequest(requestDTO, _usersRepository, _externalLoginProviderFactory, _customerGuid,
-                _container.GetInstance<Services.LoginGate>());
+                _container.GetInstance<Services.LoginGate>(), _publicAPIInputValidation, _logger);
             return await request.Handle();
         }
 
