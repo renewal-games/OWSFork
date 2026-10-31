@@ -20,6 +20,7 @@
     <ProjectReference Include="..\OWSChat\OWSChat.csproj" />
     <ProjectReference Include="..\OWSData\OWSData.csproj" />
     <ProjectReference Include="..\OWSGlobalData\OWSGlobalData.csproj" />
+    <ProjectReference Include="..\OWSGuild\OWSGuild.csproj" />
     <ProjectReference Include="..\OWSInstanceLauncher\OWSInstanceLauncher.csproj" />
     <ProjectReference Include="..\OWSInstanceManagement\OWSInstanceManagement.csproj" />
     <ProjectReference Include="..\OWSManagement\OWSManagement.csproj" />
