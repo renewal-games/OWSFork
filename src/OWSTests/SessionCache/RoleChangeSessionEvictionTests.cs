@@ -44,8 +44,9 @@ namespace OWSTests.SessionCache
             CachingUsersRepository repo = Caching(db, cache);
 
             Assert.Equal(before, (await repo.GetUserSession(Customer, session)).Role);
-            Assert.Equal(before, (await repo.GetUserSession(Customer, session)).Role); // now served from cache
             int dbReadsBefore = db.SessionReads;
+            Assert.Equal(before, (await repo.GetUserSession(Customer, session)).Role); // now served from cache
+            Assert.Equal(dbReadsBefore, db.SessionReads);
 
             await repo.UpdateUserRole(Customer, user, after);
 
@@ -158,6 +159,8 @@ namespace OWSTests.SessionCache
             UserGuid = user,
             UserSessionGUID = session,
             Role = role,
+            // The caching decorator only caches (and serves) a session with a live deadline (#31).
+            ExpiresAt = DateTime.UtcNow.AddHours(72),
         };
 
         /// <summary>The Postgres side: sessions and roles, served through IUsersRepository.</summary>
