@@ -2844,6 +2844,11 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Two first logins for the same SteamId (a double submit or a retry) both counted 0 and both inserted; the
+    -- second failed on a unique index (the synthetic email's AK_User_NormalizedEmail, or AK_User_SteamId) and the
+    -- client got a 500. The lock makes the second wait for the first to commit, and its count then sees the new row.
+    PERFORM pg_advisory_xact_lock(hashtext('steam_login:' || _CustomerGUID::TEXT || ':' || TRIM(_SteamId)));
+
     SELECT COUNT(*)
     INTO _MatchingUsers
     FROM Users

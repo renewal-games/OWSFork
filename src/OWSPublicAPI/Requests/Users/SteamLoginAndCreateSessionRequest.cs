@@ -62,7 +62,16 @@ namespace OWSPublicAPI.Requests.Users
                 personaName = personaName.Substring(0, 50);
             }
 
-            output = await usersRepository.SteamLoginAndCreateSession(customerGUID, validation.SteamId, personaName);
+            try
+            {
+                output = await usersRepository.SteamLoginAndCreateSession(customerGUID, validation.SteamId, personaName);
+            }
+            catch (Exception ex)
+            {
+                // A database error answers like any other unavailable login instead of an empty 500.
+                Log.Error(ex, "user_login {Method} failed in the database for steam {SteamId}", "steam", validation.SteamId);
+                output = null;
+            }
 
             if (output == null)
             {
@@ -80,6 +89,8 @@ namespace OWSPublicAPI.Requests.Users
                 (string refusal, string message) = await loginGate.RefusalForSession(customerGUID, output.UserSessionGuid.Value, checkMaintenance: true);
                 if (refusal != null)
                 {
+                    // The session row already exists; end it so a refused login leaves no live session behind.
+                    await usersRepository.Logout(customerGUID, output.UserSessionGuid.Value);
                     await RecordUserLogin(refusal, validation.SteamId, personaName, null);
                     return new OkObjectResult(new PlayerLoginAndCreateSession { Authenticated = false, UserSessionGuid = Guid.Empty, ErrorMessage = message });
                 }
