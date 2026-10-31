@@ -1,8 +1,10 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.Extensions.Options;
 using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Interfaces;
+using OWSShared.Options;
 using OWSCharacterPersistence.Requests.Characters;
 using System;
 using System.Collections.Generic;
@@ -21,12 +23,15 @@ namespace OWSCharacterPersistence.Controllers
         private readonly IJoinTicketsRepository _joinTicketsRepository;
         private readonly ICharacterOwnersRepository _ownersRepository;
         private readonly IHeaderCustomerGUID _customerGuid;
+        private readonly EconomyOptions _economyOptions;
 
         public CharactersController(ICharactersRepository charactersRepository,
             IJoinTicketsRepository joinTicketsRepository,
             ICharacterOwnersRepository ownersRepository,
-            IHeaderCustomerGUID customerGuid)
+            IHeaderCustomerGUID customerGuid,
+            IOptions<EconomyOptions> economyOptions)
         {
+            _economyOptions = economyOptions.Value;
             _charactersRepository = charactersRepository;
             _joinTicketsRepository = joinTicketsRepository;
             _ownersRepository = ownersRepository;
@@ -211,10 +216,10 @@ namespace OWSCharacterPersistence.Controllers
 
         [HttpPost]
         [Route("UpdateCharacterData")]
-        [Produces(typeof(SuccessAndErrorMessage))]
-        public async Task<SuccessAndErrorMessage> UpdateCharacterData([FromBody] UpdateCharacterDataRequest request)
+        [Produces(typeof(UpdateCharacterDataResponse))]
+        public async Task<UpdateCharacterDataResponse> UpdateCharacterData([FromBody] UpdateCharacterDataRequest request)
         {
-            request.SetData(_charactersRepository, _customerGuid);
+            request.SetData(_charactersRepository, _customerGuid, _economyOptions);
             return await request.Handle();
         }
 
@@ -241,7 +246,7 @@ namespace OWSCharacterPersistence.Controllers
         [Produces(typeof(UpdateCharacterInventoryResponse))]
         public async Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory([FromBody] UpdateCharacterInventoryRequest request)
         {
-            request.SetData(_charactersRepository, _customerGuid);
+            request.SetData(_charactersRepository, _customerGuid, _economyOptions);
             return await request.Handle();
         }
 
@@ -250,7 +255,7 @@ namespace OWSCharacterPersistence.Controllers
         [Produces(typeof(UpdateCharacterCurrencyResponse))]
         public async Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency([FromBody] UpdateCharacterCurrencyRequest request)
         {
-            request.SetData(_charactersRepository, _customerGuid);
+            request.SetData(_charactersRepository, _customerGuid, _economyOptions);
             return await request.Handle();
         }
 

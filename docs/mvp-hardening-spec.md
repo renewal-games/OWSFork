@@ -80,6 +80,20 @@ caller sending a stale `ExpectedRevision` is rejected instead of clobbering.
 **Follow-up (UE side, not in this change).** Have the zone server send `ExpectedRevision` on
 inventory saves and resync from `NewEconomyRevision`. Until then part B remains open by design.
 
+**Closing part B (backend half landed).** `OWSEconomyConfig:RequireExpectedRevision` makes the
+guard mandatory: `UpdateCharacterInventory`, `UpdateCharacterCurrency` and the inventory half of
+`UpdateCharacterData` refuse a write that omits `ExpectedRevision` with `revision_required` instead
+of writing it last-write-wins. `UpdateCharacterData` now accepts `ExpectedRevision` too and returns
+`NewEconomyRevision`/`ReasonCode` for its bag write. `0` is a real revision (the column default),
+so the zone server must send it rather than omit it. Rollout:
+1. Zone server sends `ExpectedRevision` from `GetEconomyRevision()` on every bag and wallet save
+   (autosave timers, logout/disconnect/travel flushes, `TradeActor`), adopts `NewEconomyRevision`,
+   and on `stale_revision` resyncs and recomputes rather than resending.
+2. Then set `RequireExpectedRevision` to `true`. Turning it on first rejects every autosave.
+
+`UpdateCharacterCurrency` also refuses negative gold, and gold above `OWSEconomyConfig:MaxGold`
+when that is set (0 = uncapped), with `gold_out_of_range`.
+
 ---
 
 ## 3. `GetServerToConnectTo` does not bind the session to the character (P0)
