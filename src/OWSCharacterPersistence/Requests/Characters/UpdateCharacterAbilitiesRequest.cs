@@ -33,10 +33,20 @@ namespace OWSCharacterPersistence.Requests.Characters
                             CharacterAbilities,
                             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
-            await _repo.UpdateCharacterAbilities(
+            int rowsWritten = await _repo.UpdateCharacterAbilities(
                     _cust.CustomerGUID,
                     CharacterName,
                     json);
+
+            // The upsert joins on the character, so nothing is written for an unknown name.
+            if (rowsWritten == 0 && CharacterAbilities.Count > 0)
+            {
+                return new SuccessAndErrorMessage
+                {
+                    Success = false,
+                    ErrorMessage = "Character not found."
+                };
+            }
 
             return new SuccessAndErrorMessage
             {
