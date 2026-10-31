@@ -61,7 +61,7 @@ namespace OWSParty.Service
             // Session auth is on unless OWS_GRPC_REQUIRE_SESSION_AUTH=false. Require valid
             // customerguid/usersessionguid metadata, the session must exist, and it must belong to
             // the character being registered — so a client cannot register the stream as someone else.
-            if (GrpcSessionAuth.IsRequired && !await IsRegistrationAuthorized(context, parsedCustomerGuid, userName))
+            if (GrpcSessionAuth.IsRequired && !await IsSessionAuthorized(context, parsedCustomerGuid, userName))
             {
                 GrpcSessionAuth.LogRejected(context, "party");
                 throw new RpcException(new Status(StatusCode.Unauthenticated, "Invalid session for party registration."));
@@ -103,7 +103,7 @@ namespace OWSParty.Service
             }
         }
 
-        private async Task<bool> IsRegistrationAuthorized(ServerCallContext context, Guid requestCustomerGuid, string userName)
+        private async Task<bool> IsSessionAuthorized(ServerCallContext context, Guid requestCustomerGuid, string userName)
         {
             if (!GrpcSessionAuth.TryReadCredentials(context, out Guid metaCustomerGuid, out Guid userSessionGuid))
             {
@@ -132,6 +132,20 @@ namespace OWSParty.Service
             if (request == null)
             {
                 ThrowInvalidArgument("Party request is required.");
+            }
+
+            // Same gate as RegisterParty: when session auth is on, the character acting in the request
+            // body must be the session's selected character, so a caller can't kick, dismiss or invite
+            // on someone else's behalf by naming them.
+            if (GrpcSessionAuth.IsRequired)
+            {
+                Guid.TryParse(request.CustomerGuid, out Guid requestCustomerGuid);
+                string actorName = GetActingCharacter(request)?.CharName?.Trim();
+                if (string.IsNullOrWhiteSpace(actorName) || !await IsSessionAuthorized(context, requestCustomerGuid, actorName))
+                {
+                    GrpcSessionAuth.LogRejected(context, "party");
+                    throw new RpcException(new Status(StatusCode.Unauthenticated, "Invalid session for party action."));
+                }
             }
 
             switch (request.PartyAction)
@@ -521,6 +535,17 @@ namespace OWSParty.Service
             {
                 ThrowInvalidArgument("A party_info.party_name is required.");
             }
+        }
+
+        // The character performing the action: the requester for Ask, the leaving member for Leave,
+        // and the leader for every leader action (matching who the handlers and repository act as).
+        private static PartyMemberInfo GetActingCharacter(PartyToSend request)
+        {
+            return request.PartyAction switch
+            {
+                PartyAction.MessageTypeAsk or PartyAction.MessageTypeLeave => request.PartyMembers.FirstOrDefault(),
+                _ => GetLeader(request)
+            };
         }
 
         private static PartyMemberInfo GetLeader(PartyToSend request)
