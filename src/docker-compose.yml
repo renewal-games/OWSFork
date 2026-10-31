@@ -75,6 +75,7 @@ services:
      - OWSAPIPathConfig__InternalCharacterPersistenceApiURL=${InternalCharacterPersistenceApiURL}
      - UserSessionCacheOptions__ConnectionString=usersessioncache:6379
      - UserSessionCacheOptions__Password=${UserSessionCacheValkeyPassword}
+     - OWS_SAMSARA_SERVICE_KEY=${OWS_SAMSARA_SERVICE_KEY:-}
     ports:
       - "44302:80"
       - "44303:443"
@@ -99,9 +100,11 @@ services:
      - RabbitMQOptions__RabbitMQPort=${RabbitMQPort}
      - RabbitMQOptions__RabbitMQUserName=${RabbitMQUserName}
      - RabbitMQOptions__RabbitMQPassword=${RabbitMQPassword}
+     - OWS_SAMSARA_SERVICE_KEY=${OWS_SAMSARA_SERVICE_KEY:-}
+    # Internal API (zone spin-up/shutdown): reachable from this host only.
     ports:
-      - "44328:80"
-      - "44329:443"
+      - "127.0.0.1:44328:80"
+      - "127.0.0.1:44329:443"
     depends_on:
       - database
       - messaging
@@ -164,6 +167,7 @@ services:
      - OWSAPIPathConfig__InternalPublicApiURL=${InternalPublicApiURL}
      - OWSAPIPathConfig__InternalInstanceManagementApiURL=${InternalInstanceManagementApiURL}
      - OWSAPIPathConfig__InternalCharacterPersistenceApiURL=${InternalCharacterPersistenceApiURL}
+     - OWS_SAMSARA_SERVICE_KEY=${OWS_SAMSARA_SERVICE_KEY:-}
     ports:
       - "44410:80"
       - "44411:443"

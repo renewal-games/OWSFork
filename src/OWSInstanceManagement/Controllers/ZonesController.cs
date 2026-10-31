@@ -15,6 +15,7 @@ using OWSData.Repositories.Interfaces;
 using OWSShared.Options;
 using System.Net.Http;
 using OWSInstanceManagement.Requests.Zones;
+using OWSInstanceManagement.Filters;
 
 namespace OWSInstanceManagement.Controllers
 {
@@ -26,6 +27,7 @@ namespace OWSInstanceManagement.Controllers
     /// </remarks>
     [Route("api/[controller]")]
     [ApiController]
+    [RequireSamsaraServiceKey]
     public class ZonesController : Controller
     {
         private readonly Container _container;

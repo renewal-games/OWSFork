@@ -186,7 +186,8 @@ services:
     healthcheck: *app-healthcheck
     environment:
       <<: *ows-common-env
-      # Internal routes check X-Samsara-Service-Key against this (see OWS_REQUIRE_SERVICE_KEY).
+      # Internal routes check X-Samsara-Service-Key against this (see OWS_REQUIRE_SERVICE_KEY). The launcher,
+      # PublicAPI and Management endpoints need it even when OWS_REQUIRE_SERVICE_KEY=false.
       OWS_SAMSARA_SERVICE_KEY: "${OWS_SAMSARA_SERVICE_KEY:-}"
     ports:
       - "127.0.0.1:${OWS_INSTANCE_MANAGEMENT_HOST_PORT:-44328}:80"

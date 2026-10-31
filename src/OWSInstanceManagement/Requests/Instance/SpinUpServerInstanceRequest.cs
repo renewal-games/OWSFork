@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using OWSData.Models.Composites;
 using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
+using OWSShared;
 using OWSShared.Interfaces;
 using OWSShared.Messages;
 using OWSShared.Options;
@@ -37,6 +38,12 @@ namespace OWSInstanceManagement.Requests.Instance
 
         public async Task<IActionResult> Handle()
         {
+            // ZoneName becomes the first token of the zone server's command line on the launcher.
+            if (!ZoneMapName.IsValid(ZoneName))
+            {
+                return new BadRequestObjectResult(new SuccessAndErrorMessage { Success = false, ErrorMessage = "Invalid ZoneName." });
+            }
+
             ConnectionFactory factory = new() 
             { 
                 HostName = _rabbitMQOptions.Value.RabbitMQHostName,

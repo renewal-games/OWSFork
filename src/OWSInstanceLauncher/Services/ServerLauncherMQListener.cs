@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using OWSData.Models;
 using OWSData.Models.Composites;
 using OWSData.Repositories.Interfaces;
+using OWSShared;
 using OWSShared.Interfaces;
 using OWSShared.Messages;
 using OWSShared.Options;
@@ -251,6 +252,13 @@ namespace OWSInstanceLauncher.Services
 
         private async Task HandleServerSpinUpMessage(Guid customerGUID, int worldServerID, int zoneInstanceID, string mapName, int port)
         {
+            //mapName is the first token of the server's single Arguments string: a space adds UE switches, a '?' URL options.
+            if (!ZoneMapName.IsValid(mapName))
+            {
+                Log.Error($"HandleServerSpinUpMessage - Refusing to start Zone Instance {zoneInstanceID}: map name is not in the allowed form (letters, digits, '_' and '/').");
+                return;
+            }
+
             Log.Information($"Starting up {customerGUID} : {worldServerID} : {mapName} : {port}");
 
             //Security Check on CustomerGUID

@@ -156,4 +156,13 @@ namespace OWSTests.Database
             Skip = PostgresTestDatabases.SkipReason;
         }
     }
+
+    /// <summary>A fact that needs <see cref="PostgresTestDatabases"/>; skipped when no test server is configured.</summary>
+    public sealed class PostgresFactAttribute : FactAttribute
+    {
+        public PostgresFactAttribute()
+        {
+            Skip = PostgresTestDatabases.SkipReason;
+        }
+    }
 }

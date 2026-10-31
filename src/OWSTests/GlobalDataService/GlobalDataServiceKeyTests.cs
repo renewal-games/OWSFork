@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -15,18 +14,6 @@ using Xunit;
 
 namespace OWSTests.GlobalDataService
 {
-    internal static class GlobalDataServiceKeyEnvironment
-    {
-        public const string Key = "test-service-key";
-
-        // SamsaraServiceKeyCheck reads the env var once, so it is set before any test touches it.
-        [ModuleInitializer]
-        internal static void SetServiceKey()
-        {
-            Environment.SetEnvironmentVariable("OWS_SAMSARA_SERVICE_KEY", Key);
-        }
-    }
-
     /// <summary>
     /// The CustomerGUID ships with game clients, so a global data write must also carry the zone servers'
     /// X-Samsara-Service-Key. Reads stay open to anyone with the CustomerGUID.
@@ -84,7 +71,7 @@ namespace OWSTests.GlobalDataService
         {
             var repository = new RecordingGlobalDataRepository();
 
-            var result = await Controller(repository, GlobalDataServiceKeyEnvironment.Key).AddOrUpdateGlobalDataItem(Item());
+            var result = await Controller(repository, TestServiceKey.Key).AddOrUpdateGlobalDataItem(Item());
 
             Assert.True(result.Value.Success);
             Assert.Single(repository.Writes);
