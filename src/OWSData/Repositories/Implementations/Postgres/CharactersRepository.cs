@@ -1211,7 +1211,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        public async Task<SuccessAndErrorMessage> UpdateCharacterAbilities(Guid customerGUID, string charName, string abilitiesJson)
+        public async Task<int> UpdateCharacterAbilities(Guid customerGUID, string charName, string abilitiesJson)
         {
             using (Connection)
             {
@@ -1220,17 +1220,12 @@ namespace OWSData.Repositories.Implementations.Postgres
                 p.Add("@CharName", charName);
                 p.Add("@AbilitiesJson", abilitiesJson);
 
-                await Connection.ExecuteAsync(
+                // Inserted plus updated rows. The upsert joins on the character, so an unknown name writes nothing.
+                return await Connection.ExecuteAsync(
                     PostgresQueries.UpsertCharacterAbilitiesJson,
                     p,
                     commandType: CommandType.Text);
             }
-
-            return new SuccessAndErrorMessage
-            {
-                Success = true,
-                ErrorMessage = string.Empty
-            };
         }
 
         public async Task<bool> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, int? callerZoneInstanceId = null)
@@ -2279,11 +2274,6 @@ namespace OWSData.Repositories.Implementations.Postgres
 
                 await Connection.ExecuteAsync(PostgresQueries.UpdateAbilityOnCharacter, parameters);
             }
-        }
-
-        Task ICharactersRepository.UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities)
-        {
-            return UpdateCharacterAbilities(customerGUID, characterName, characterAbilities);
         }
 
         public async Task<IEnumerable<AdminCharacterSummary>> GetCharactersForUser(Guid customerGUID, Guid userGUID)

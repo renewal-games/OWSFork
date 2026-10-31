@@ -39,7 +39,8 @@ namespace OWSData.Repositories.Interfaces
         // Response carries the post-write EconomyRevision (0 when unsupported) so callers can resync.
         Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, long? expectedRevision = null);
         Task UpdateCharacterClass(Guid customerGUID, string characterName, string className);
-        Task UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities);
+        /// <summary>Upserts the abilities in <paramref name="characterAbilities"/> (a camelCase JSON array) and returns the rows written: 0 when no such character exists.</summary>
+        Task<int> UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities);
         Task UpdatePosition(Guid customerGUID, string characterName, string mapName, float X, float Y, float Z, float RX, float RY, float RZ);
         Task PlayerLogout(Guid customerGUID, string characterName);
         Task<MapInstances> SpinUpInstance(Guid customerGUID, string zoneName, int playerGroupId = 0);

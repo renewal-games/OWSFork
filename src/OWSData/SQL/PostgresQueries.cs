@@ -174,7 +174,7 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
                 J->>'abilityIdTag'                                  AS abilityidtag,
                 (J->>'currentAbilityLevel')::int4                   AS currentabilitylevel,
                 (J->>'actualAbilityLevel') ::int4                   AS actualabilitylevel,
-                COALESCE(J->>'CustomData','')                       AS customdata
+                COALESCE(J->>'customData','')                       AS customdata
             FROM   jsonb_array_elements(@AbilitiesJson::jsonb) J
             JOIN   characters C
                    ON  C.customerguid = @CustomerGUID

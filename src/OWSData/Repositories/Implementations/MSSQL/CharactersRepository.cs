@@ -1127,7 +1127,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
             return guildInfo;
         }
 
-        public Task UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities)
+        public Task<int> UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities)
         {
             throw new NotImplementedException();
         }
