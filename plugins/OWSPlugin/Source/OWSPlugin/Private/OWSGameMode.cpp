@@ -535,6 +535,13 @@ void AOWSGameMode::SaveAllPlayerLocations()
 				DataToSave.Append(FString::SanitizeFloat(PawnRotation.Pitch));
 				DataToSave.Append(":");
 				DataToSave.Append(FString::SanitizeFloat(PawnRotation.Yaw));
+				if (const UOWSPlayerControllerComponent* OWSComponent = PlayerControllerToSave->FindComponentByClass<UOWSPlayerControllerComponent>())
+				{
+					if (!OWSComponent->OwnerToken.IsEmpty())
+					{
+						DataToSave.Append(":").Append(OWSComponent->OwnerToken);
+					}
+				}
 				DataToSave.Append("|");
 			}
 		}
@@ -549,7 +556,7 @@ void AOWSGameMode::SaveAllPlayerLocations()
 	}
 
 	DataToSave = DataToSave.Left(DataToSave.Len() - 1);
-	UE_LOG(OWS, Verbose, TEXT("SaveAllPlayerLocations - Data to save: %s"), *DataToSave);
+	// The serialized batch can contain owner tokens, so do not log its contents.
 
 	FUpdateAllPlayerPositionsJSONPost UpdateAllPlayerPositionsJSONPost;
 	UpdateAllPlayerPositionsJSONPost.SerializedPlayerLocationData = DataToSave;
@@ -569,6 +576,21 @@ void AOWSGameMode::OnSaveAllPlayerLocationsResponseReceived(FHttpRequestPtr Requ
 {
 	if (bWasSuccessful)
 	{
+		FSuccessAndErrorMessage Result;
+		if (!Response.IsValid() || !FJsonObjectConverter::JsonObjectStringToUStruct(Response->GetContentAsString(), &Result, 0, 0))
+		{
+			UE_LOG(OWS, Error, TEXT("OnSaveAllPlayerLocationsResponseReceived Invalid response!"));
+			return;
+		}
+		if (!Result.ErrorMessage.IsEmpty())
+		{
+			UE_LOG(OWS, Warning, TEXT("OnSaveAllPlayerLocationsResponseReceived: %s"), *Result.ErrorMessage);
+		}
+		if (!Result.Success)
+		{
+			UE_LOG(OWS, Error, TEXT("OnSaveAllPlayerLocationsResponseReceived Batch save failed!"));
+			return;
+		}
 		UE_LOG(OWS, Verbose, TEXT("OnSaveAllPlayerLocationsResponseReceived Success!"));
 	}
 	else
