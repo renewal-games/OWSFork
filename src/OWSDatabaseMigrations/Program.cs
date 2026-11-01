@@ -12,7 +12,8 @@ namespace OWSDatabaseMigrations
     /// Applies the Postgres schema scripts under Databases/Postgres in the order defined by
     /// migration-manifest.txt, journaling applied scripts in the schemaversions table so each
     /// runs exactly once. Run with --baseline against a database that already has the schema
-    /// to record every manifest script as applied without executing anything.
+    /// to record every manifest script as applied without executing anything (except scripts
+    /// in BaselineChecks whose changes are missing, which stay pending).
     /// </summary>
     public static class Program
     {
@@ -129,7 +130,7 @@ namespace OWSDatabaseMigrations
             return 0;
         }
 
-        // Records every manifest script as already applied, creating the same journal table
+        // Records the manifest scripts as already applied, creating the same journal table
         // DbUp's Postgres provider uses. For adopting the runner on an existing database.
         private static int Baseline(string connectionString, List<SqlScript> scripts)
         {
@@ -146,8 +147,15 @@ namespace OWSDatabaseMigrations
             }
 
             int marked = 0;
+            var pending = new List<string>();
             foreach (SqlScript script in scripts)
             {
+                if (BaselineChecks.TryGetValue(script.Name, out string check) && !IsInPlace(connection, check))
+                {
+                    pending.Add(script.Name);
+                    continue;
+                }
+
                 using var insert = new NpgsqlCommand(
                     "INSERT INTO schemaversions (scriptname, applied) " +
                     "SELECT @name, now() AT TIME ZONE 'utc' " +
@@ -157,7 +165,28 @@ namespace OWSDatabaseMigrations
             }
 
             Console.WriteLine($"Baseline complete: {marked} script(s) marked as applied without executing.");
+            if (pending.Count > 0)
+            {
+                Console.WriteLine($"Left pending because the database lacks their changes: {string.Join(", ", pending)}. " +
+                    "Run again without --baseline to apply them.");
+            }
             return 0;
+        }
+
+        // Baseline assumes the database already has every manifest script's changes. For the scripts listed here it
+        // checks instead: when the query returns false the script is not journaled, so the next normal run applies it.
+        // List only scripts that are safe to run on a database that has the rest of the schema.
+        private static readonly IReadOnlyDictionary<string, string> BaselineChecks = new Dictionary<string, string>
+        {
+            // Every custom character data save is an upsert on this index; without it each one fails.
+            ["SamsaraUpdates/CustomCharacterDataUniqueField_2026-11-01.sql"] =
+                "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ak_customcharacterdata_characterfield')"
+        };
+
+        private static bool IsInPlace(NpgsqlConnection connection, string check)
+        {
+            using var command = new NpgsqlCommand(check, connection);
+            return (bool)command.ExecuteScalar();
         }
 
         private static bool HasExistingSchemaWithoutJournal(string connectionString)

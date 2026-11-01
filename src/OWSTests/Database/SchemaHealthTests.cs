@@ -13,7 +13,8 @@ namespace OWSTests.Database
 {
     /// <summary>
     /// The Postgres health check behind /health reports Unhealthy when the schemaversions journal is missing or behind
-    /// the manifest, or when a journaled migration's columns are not there (a --baseline run or a half-applied script).
+    /// the manifest, or when a journaled migration's columns or indexes are not there (a --baseline run or a half-applied
+    /// script).
     /// </summary>
     public class SchemaHealthTests : IClassFixture<PostgresTestDatabases>
     {
@@ -67,6 +68,17 @@ namespace OWSTests.Database
             Assert.Contains("users.isinternalnetworktestuser", drifted.Entries["postgres"].Description);
 
             await Execute(connectionString, "ALTER TABLE Users ADD COLUMN IsInternalNetworkTestUser BOOLEAN NOT NULL DEFAULT FALSE");
+
+            // Journal complete but the custom character data upsert has no unique index to conflict on.
+            await Execute(connectionString, "DROP INDEX AK_CustomCharacterData_CharacterField");
+            HealthReport noIndex = await CheckHealth(connectionString);
+            Assert.Equal(HealthStatus.Unhealthy, noIndex.Status);
+            Assert.Contains("index ak_customcharacterdata_characterfield", noIndex.Entries["postgres"].Description);
+
+            await Execute(connectionString,
+                "CREATE UNIQUE INDEX AK_CustomCharacterData_CharacterField ON CustomCharacterData (CustomerGUID, CharacterID, CustomFieldName)");
+            Assert.Equal(HealthStatus.Healthy, (await CheckHealth(connectionString)).Status);
+
             await Execute(connectionString, "DROP TABLE LoginQueue");
             HealthReport noQueue = await CheckHealth(connectionString);
             Assert.Equal(HealthStatus.Unhealthy, noQueue.Status);
