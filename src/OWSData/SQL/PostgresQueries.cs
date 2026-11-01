@@ -356,7 +356,9 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 				--quiet ready row is a frozen server; without this filter players are routed to it until the 2-minute
 				--CleanUpInstances sweep deletes the row. Spawning rows (Status 1) have no heartbeat yet and pass through.
 				AND (MI.Status <> 2 OR MI.LastUpdateFromServer >= NOW() - INTERVAL '30 seconds')
-				AND (MI.PlayerGroupID = @PlayerGroupID OR @PlayerGroupID = 0)
+				--Group 0 means public instances only. It is not a wildcard: that would route a player into another
+				--party's or guild's private instance. A public instance has PlayerGroupID 0 (AddMapInstance) or NULL.
+				AND COALESCE(MI.PlayerGroupID, 0) = @PlayerGroupID
 				GROUP BY MI.MapInstanceID, WS.ServerIP, MI.Port, WS.WorldServerID, WS.InternalServerIP, WS.Port, MI.Status, MI.NumberOfReportedPlayers
 				HAVING GREATEST(COALESCE(MI.NumberOfReportedPlayers, 0), COUNT(DISTINCT CMI.CharacterID)) < @HardPlayerCap
 					OR COUNT(DISTINCT CASE WHEN CMI.CharacterID = @CharacterID THEN CMI.CharacterID END) > 0

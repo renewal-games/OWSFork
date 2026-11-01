@@ -536,13 +536,39 @@ namespace OWSData.Repositories.Implementations.Postgres
                     accountIsNetworkTestUser = account.IsInternalNetworkTestUser;
                 }
 
+                //Bound before the group lookup, which filters on it. Left unbound, Npgsql passes "@CharacterID" through
+                //and Postgres reads it as abs(CharacterID), so the lookup matched every member of every group of the type.
+                parameters.Add("@CharacterID", outputCharacter.CharacterId);
+
                 PlayerGroup outputPlayerGroup = new PlayerGroup();
 
                 if (playerGroupType > 0)
                 {
                     outputPlayerGroup = await conn.QuerySingleOrDefaultAsync<PlayerGroup>(GenericQueries.GetPlayerGroupIDByType,
                         parameters,
-                        commandType: CommandType.Text) ?? new PlayerGroup();
+                        commandType: CommandType.Text);
+
+                    //Refuse rather than fall back to group 0: the type comes from the client, and a type the
+                    //character has no group of is not a request for a public instance.
+                    if (outputPlayerGroup == null || outputPlayerGroup.PlayerGroupId < 1)
+                    {
+                        return new JoinMapByCharName()
+                        {
+                            Success = false,
+                            ErrorMessage = $"Character {characterName} is not in a player group of type {playerGroupType}.",
+                            ServerIP = "",
+                            Port = 0,
+                            WorldServerID = -1,
+                            WorldServerIP = "",
+                            WorldServerPort = 0,
+                            MapInstanceID = 0,
+                            MapNameToStart = "",
+                            MapInstanceStatus = -1,
+                            NeedToStartupMap = false,
+                            EnableAutoLoopback = false,
+                            NoPortForwarding = false
+                        };
+                    }
                 }
                 else
                 {
@@ -553,7 +579,6 @@ namespace OWSData.Repositories.Implementations.Postgres
                 parameters.Add("@HardPlayerCap", outputMap.HardPlayerCap);
                 parameters.Add("@PlayerGroupID", outputPlayerGroup.PlayerGroupId);
                 parameters.Add("@MapID", outputMap.MapId);
-                parameters.Add("@CharacterID", outputCharacter.CharacterId);
                 parameters.Add("@ServerRegion", serverRegion);
 
                 using IDbTransaction transaction = conn.BeginTransaction();
