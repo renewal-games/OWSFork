@@ -121,7 +121,7 @@ namespace OWSParty.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to update party description for {PartyGuid}.", partyGuid);
+                _logger.LogError(ex, "Failed to update party description for {PartyGuid}.", parsedPartyGuid);
                 return StatusCode(500, "Party description update failed.");
             }
         }
@@ -179,7 +179,7 @@ namespace OWSParty.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to update party exp distribution for {PartyGuid}.", partyGuid);
+                _logger.LogError(ex, "Failed to update party exp distribution for {PartyGuid}.", parsedPartyGuid);
                 return StatusCode(500, "Party exp distribution update failed.");
             }
         }
@@ -237,7 +237,7 @@ namespace OWSParty.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to update party loot distribution for {PartyGuid}.", partyGuid);
+                _logger.LogError(ex, "Failed to update party loot distribution for {PartyGuid}.", parsedPartyGuid);
                 return StatusCode(500, "Party loot distribution update failed.");
             }
         }
