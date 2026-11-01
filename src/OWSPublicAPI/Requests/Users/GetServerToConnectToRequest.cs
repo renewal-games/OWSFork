@@ -112,8 +112,8 @@ namespace OWSPublicAPI.Requests.Users
                 }
             }
 
-            //If ZoneName is empty, use the character's last zone.  This is used for the inital login.
-            if (String.IsNullOrEmpty(ZoneName) || ZoneName == "GETLASTZONENAME")
+            //Clients rejoin the character's stored zone; only a service-keyed zone server may request travel.
+            if (!callerIsZoneServer || String.IsNullOrEmpty(ZoneName) || ZoneName == "GETLASTZONENAME")
             {
                 ZoneName = ownedCharacter.MapName;
             }

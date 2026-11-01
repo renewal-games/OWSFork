@@ -143,7 +143,7 @@ namespace OWSPublicAPI.Controllers
         /// </summary>
         /// <remarks>
         /// Get the Zone Server to travel to based on the User referenced by the UserSessionGUID.  Prior to calling this API, you MUST set the Selected Character to connect with using the UserSessionSetSelectedCharacter API for the UserSessionGUID passed into this API.
-        /// Send in an empty ZoneName or ZoneName set to "GETLASTZONENAME" to use the last zone the Character was on rather than specifying a ZoneName.
+        /// Client calls use the character's stored zone regardless of ZoneName. A zone server with a valid service key may specify a destination ZoneName.
         /// </remarks>
         [HttpPost]
         [Route("GetServerToConnectTo")]
