@@ -53,4 +53,4 @@ SamsaraUpdates/UserSessionExpiry_2026-10-30.sql
 SamsaraUpdates/LoginBackoff_2026-10-30.sql
 SamsaraUpdates/CustomCharacterDataUniqueField_2026-11-01.sql
 SamsaraUpdates/UniqueCharacterNames_2026-10-30.sql
-SamsaraUpdates/SteamLoginFirstLoginLock_2026-10-31.sql
+SamsaraUpdates/LoginLockAndSessionReplace_2026-11-01.sql

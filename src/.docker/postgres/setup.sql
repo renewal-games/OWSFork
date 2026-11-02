@@ -2891,7 +2891,7 @@ BEGIN
             DELETE FROM LoginFailures WHERE CustomerGUID = _CustomerGUID AND Email = _EmailKey;
         END IF;
 
-        DELETE FROM UserSessions WHERE UserGUID = _UserGUID;
+        -- The account's earlier sessions stay until the API's LoginGate admits this one (EndEarlierSessions).
         _UserSessionGUID := gen_random_uuid();
         INSERT INTO UserSessions (CustomerGUID, UserSessionGUID, UserGUID, LoginDate)
         VALUES (_CustomerGUID, _UserSessionGUID, _UserGUID, NOW());
@@ -2984,7 +2984,7 @@ BEGIN
     END IF;
 
     _Authenticated := TRUE;
-    DELETE FROM UserSessions WHERE UserGUID = _UserGUID;
+    -- The account's earlier sessions stay until the API's LoginGate admits this one (EndEarlierSessions).
     _UserSessionGUID := gen_random_uuid();
     INSERT INTO UserSessions (CustomerGUID, UserSessionGUID, UserGUID, LoginDate)
     VALUES (_CustomerGUID, _UserSessionGUID, _UserGUID, NOW());

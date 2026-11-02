@@ -26,6 +26,14 @@ namespace OWSData.Repositories.Interfaces
         Task<GetUserSession> GetUserSessionORM(Guid customerGUID, Guid userSessionGUID);
         Task<PlayerLoginAndCreateSession> LoginAndCreateSession(Guid customerGUID, string email, string password, bool dontCheckPassword = false);
         Task<PlayerLoginAndCreateSession> SteamLoginAndCreateSession(Guid customerGUID, string steamId, string personaName);
+
+        /// <summary>
+        /// Ends the sessions of this session's account that started before it, and returns them. The login functions
+        /// leave earlier sessions alone so a login that LoginGate refuses does not kick the account's live session; the
+        /// API calls this once the gate admits the new session, so an account still keeps one session.
+        /// </summary>
+        Task<IReadOnlyList<Guid>> EndEarlierSessions(Guid customerGUID, Guid userSessionGUID);
+
         Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid);
         Task<SuccessAndErrorMessage> UserSessionSetSelectedCharacter(Guid customerGUID, Guid userSessionGUID, string selectedCharacterName);
         Task<SuccessAndErrorMessage> RegisterUser(Guid customerGUID, string userName, string password, string firstName, string lastName, string role = null);

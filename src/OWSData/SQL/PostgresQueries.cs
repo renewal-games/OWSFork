@@ -60,6 +60,17 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 	            AND US.UserSessionGUID=@UserSessionGUID
 	            AND " + LiveSessionPredicate;
 
+        // Only sessions older than the kept one, ordered by (LoginDate, UserSessionGUID): when two admitted logins
+        // overlap, the newer session survives whichever request finishes last.
+        public static readonly string EndEarlierSessionsSQL = @"DELETE FROM UserSessions Earlier
+	            USING UserSessions Kept
+	            WHERE Kept.CustomerGUID=@CustomerGUID::UUID
+	            AND Kept.UserSessionGUID=@UserSessionGUID::UUID
+	            AND Earlier.CustomerGUID=Kept.CustomerGUID
+	            AND Earlier.UserGUID=Kept.UserGUID
+	            AND (Earlier.LoginDate, Earlier.UserSessionGUID) < (Kept.LoginDate, Kept.UserSessionGUID)
+	            RETURNING Earlier.UserSessionGUID";
+
         public static readonly string GetAllCharacters = GenericQueries.GetAllCharacters + @"
             AND " + LiveSessionPredicate;
 

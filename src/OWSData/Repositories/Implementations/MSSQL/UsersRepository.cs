@@ -301,6 +301,12 @@ namespace OWSData.Repositories.Implementations.MSSQL
             throw new NotImplementedException("SteamLoginAndCreateSession is not implemented for MSSQL.");
         }
 
+        public Task<IReadOnlyList<Guid>> EndEarlierSessions(Guid customerGUID, Guid userSessionGUID)
+        {
+            // The MSSQL PlayerLoginAndCreateSession procedure still deletes the account's earlier sessions itself.
+            return Task.FromResult<IReadOnlyList<Guid>>(Array.Empty<Guid>());
+        }
+
         public async Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid)
         {
             SuccessAndErrorMessage outputObject = new SuccessAndErrorMessage();

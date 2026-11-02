@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
+using System.Linq;
 using System.Text;
 using Npgsql;
 using System.Threading;
@@ -368,6 +369,14 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
 
             return outputObject;
+        }
+
+        public async Task<IReadOnlyList<Guid>> EndEarlierSessions(Guid customerGUID, Guid userSessionGUID)
+        {
+            using IDbConnection connection = CreateConnection();
+            IEnumerable<Guid> ended = await connection.QueryAsync<Guid>(PostgresQueries.EndEarlierSessionsSQL,
+                new { CustomerGUID = customerGUID, UserSessionGUID = userSessionGUID });
+            return ended.ToList();
         }
 
         public async Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid)

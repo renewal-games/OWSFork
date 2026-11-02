@@ -15,8 +15,10 @@ using Xunit;
 namespace OWSTests.PublicAPI
 {
     /// <summary>
-    /// The password and Steam login handlers: a login that LoginGate refuses (ban, maintenance) ends the session the
-    /// login SQL already created, and a database error answers "Login service unavailable" instead of throwing.
+    /// The password and Steam login handlers, through LoginGate.AdmitNewSession: a login that LoginGate refuses (ban,
+    /// maintenance) logs out the session the login SQL created and leaves the account's earlier sessions alone; an
+    /// admitted one ends the earlier sessions; a database error answers "Login service unavailable" instead of throwing.
+    /// Database behaviour is in OWSTests.Database.LoginSessionReplaceTests.
     /// </summary>
     public class LoginHandlerTests
     {
@@ -24,7 +26,7 @@ namespace OWSTests.PublicAPI
         private static readonly Guid UserGUID = Guid.NewGuid();
 
         [Fact]
-        public async Task PasswordLogin_Banned_LogsOutTheNewSession()
+        public async Task PasswordLogin_Banned_LogsOutTheNewSession_KeepsEarlierOnes()
         {
             var env = new Env(banned: true);
 
@@ -33,10 +35,11 @@ namespace OWSTests.PublicAPI
             Assert.False(result.Authenticated);
             Assert.Equal(Guid.Empty, result.UserSessionGuid);
             Assert.Equal(new[] { SessionGUID }, env.LoggedOutSessions());
+            Assert.Empty(env.EndedEarlierThan());
         }
 
         [Fact]
-        public async Task PasswordLogin_Maintenance_LogsOutTheNewSession()
+        public async Task PasswordLogin_Maintenance_LogsOutTheNewSession_KeepsEarlierOnes()
         {
             var env = new Env(banned: false, loginsOpen: false);
 
@@ -45,10 +48,11 @@ namespace OWSTests.PublicAPI
             Assert.False(result.Authenticated);
             Assert.Equal(LoginGate.MaintenanceMessage, result.ErrorMessage);
             Assert.Equal(new[] { SessionGUID }, env.LoggedOutSessions());
+            Assert.Empty(env.EndedEarlierThan());
         }
 
         [Fact]
-        public async Task SteamLogin_Banned_LogsOutTheNewSession()
+        public async Task SteamLogin_Banned_LogsOutTheNewSession_KeepsEarlierOnes()
         {
             var env = new Env(banned: true);
 
@@ -57,16 +61,35 @@ namespace OWSTests.PublicAPI
             Assert.False(result.Authenticated);
             Assert.Equal(Guid.Empty, result.UserSessionGuid);
             Assert.Equal(new[] { SessionGUID }, env.LoggedOutSessions());
+            Assert.Empty(env.EndedEarlierThan());
         }
 
         [Fact]
-        public async Task AllowedLogins_KeepTheSession()
+        public async Task AllowedLogins_KeepTheSession_EndEarlierOnes()
         {
             var env = new Env(banned: false);
 
             Assert.Equal(SessionGUID, (await env.Password()).UserSessionGuid);
             Assert.Equal(SessionGUID, (await env.Steam()).UserSessionGuid);
             Assert.Empty(env.LoggedOutSessions());
+            Assert.Equal(new[] { SessionGUID, SessionGUID }, env.EndedEarlierThan());
+        }
+
+        [Fact]
+        public async Task EndingEarlierSessionsFails_RefusesAsUnavailable_LogsOutTheNewSession()
+        {
+            var env = new Env(banned: false, endEarlierThrows: true);
+
+            PlayerLoginAndCreateSession password = await env.Password();
+            PlayerLoginAndCreateSession steam = await env.Steam();
+
+            foreach (PlayerLoginAndCreateSession result in new[] { password, steam })
+            {
+                Assert.False(result.Authenticated);
+                Assert.Equal(Guid.Empty, result.UserSessionGuid);
+                Assert.Equal(LoginGate.UnavailableMessage, result.ErrorMessage);
+            }
+            Assert.Equal(new[] { SessionGUID, SessionGUID }, env.LoggedOutSessions());
         }
 
         [Fact]
@@ -77,7 +100,8 @@ namespace OWSTests.PublicAPI
             PlayerLoginAndCreateSession result = await env.Password();
 
             Assert.False(result.Authenticated);
-            Assert.Equal("Login service unavailable", result.ErrorMessage);
+            Assert.Equal(LoginGate.UnavailableMessage, result.ErrorMessage);
+            Assert.Empty(env.EndedEarlierThan());
         }
 
         [Fact]
@@ -89,7 +113,8 @@ namespace OWSTests.PublicAPI
 
             Assert.False(result.Authenticated);
             Assert.Equal(Guid.Empty, result.UserSessionGuid);
-            Assert.Equal("Login service unavailable", result.ErrorMessage);
+            Assert.Equal(LoginGate.UnavailableMessage, result.ErrorMessage);
+            Assert.Empty(env.EndedEarlierThan());
         }
 
         private sealed class Env
@@ -101,7 +126,7 @@ namespace OWSTests.PublicAPI
             private readonly ISteamAuthService _steam;
             private readonly IHeaderCustomerGUID _customer = new CustomerHeader { CustomerGUID = Guid.NewGuid() };
 
-            public Env(bool banned, bool loginsOpen = true, bool loginThrows = false)
+            public Env(bool banned, bool loginsOpen = true, bool loginThrows = false, bool endEarlierThrows = false)
             {
                 (_usersProxy, _users) = Fake<IUsersRepository>.Create();
                 Func<object[], object> login = loginThrows
@@ -111,6 +136,9 @@ namespace OWSTests.PublicAPI
                 _users.Handlers["SteamLoginAndCreateSession"] = login;
                 _users.Handlers["GetUserSession"] = _ => Task.FromResult(new GetUserSession { UserGuid = UserGUID, UserSessionGUID = SessionGUID, Role = "Player" });
                 _users.Handlers["Logout"] = _ => Task.FromResult(new SuccessAndErrorMessage { Success = true });
+                _users.Handlers["EndEarlierSessions"] = endEarlierThrows
+                    ? _ => Task.FromException<IReadOnlyList<Guid>>(new InvalidOperationException("connection refused"))
+                    : _ => Task.FromResult<IReadOnlyList<Guid>>(new[] { Guid.NewGuid() });
 
                 (ISanctionsRepository sanctions, Fake<ISanctionsRepository> sanctionsFake) = Fake<ISanctionsRepository>.Create();
                 sanctionsFake.Handlers["GetActive"] = _ => Task.FromResult(new ActiveSanctions
@@ -148,6 +176,10 @@ namespace OWSTests.PublicAPI
 
             public Guid[] LoggedOutSessions() =>
                 _users.Calls.Where(c => c.Method == "Logout").Select(c => (Guid)c.Args[1]).ToArray();
+
+            /// <summary>The kept session of each EndEarlierSessions call.</summary>
+            public Guid[] EndedEarlierThan() =>
+                _users.Calls.Where(c => c.Method == "EndEarlierSessions").Select(c => (Guid)c.Args[1]).ToArray();
 
             private static PlayerLoginAndCreateSession Body(IActionResult result) =>
                 Assert.IsType<PlayerLoginAndCreateSession>(Assert.IsType<OkObjectResult>(result).Value);

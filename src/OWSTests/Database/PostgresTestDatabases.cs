@@ -37,6 +37,9 @@ namespace OWSTests.Database
 
         private readonly Dictionary<SchemaSource, string> _connectionStrings = new();
 
+        // Every database this fixture created, the shared ones and any from CreateDatabaseAsync; dropped on dispose.
+        private readonly List<string> _createdDatabases = new();
+
         public string ConnectionString(SchemaSource source) => _connectionStrings[source];
 
         public async Task InitializeAsync()
@@ -52,6 +55,18 @@ namespace OWSTests.Database
                 throw new InvalidOperationException($"{ConnectionStringVariable} is not set.");
             }
 
+            foreach (SchemaSource source in Enum.GetValues<SchemaSource>())
+            {
+                _connectionStrings[source] = await CreateDatabaseAsync(source);
+            }
+        }
+
+        /// <summary>
+        /// A further database with <paramref name="source"/>'s schema, for a test that changes the schema or the journal
+        /// and so cannot use the shared one. Dropped with the fixture.
+        /// </summary>
+        public async Task<string> CreateDatabaseAsync(SchemaSource source)
+        {
             string repoRoot = FindRepoRoot();
             string postgresDir = Path.Combine(repoRoot, "Databases", "Postgres");
 
@@ -60,32 +75,33 @@ namespace OWSTests.Database
                 .Where(line => !line.StartsWith("CREATE DATABASE openworldserver", StringComparison.Ordinal)
                     && !line.StartsWith("\\connect", StringComparison.Ordinal)));
 
-            List<string> manifestScripts = File.ReadAllLines(Path.Combine(postgresDir, "migration-manifest.txt"))
+            string connectionString = await CreateDatabase(source);
+            _createdDatabases.Add(connectionString);
+
+            await Execute(connectionString, "setup.sql", setupSql);
+
+            if (source == SchemaSource.Migrated)
+            {
+                foreach (string script in ManifestScripts())
+                {
+                    await Execute(connectionString, script,
+                        await File.ReadAllTextAsync(Path.Combine(postgresDir, script.Replace('/', Path.DirectorySeparatorChar))));
+                }
+            }
+
+            return connectionString;
+        }
+
+        /// <summary>The scripts of migration-manifest.txt, in order.</summary>
+        public static List<string> ManifestScripts() =>
+            File.ReadAllLines(Path.Combine(FindRepoRoot(), "Databases", "Postgres", "migration-manifest.txt"))
                 .Select(line => line.Trim())
                 .Where(line => line.Length > 0 && !line.StartsWith("#"))
                 .ToList();
 
-            foreach (SchemaSource source in Enum.GetValues<SchemaSource>())
-            {
-                string connectionString = await CreateDatabase(source);
-                _connectionStrings[source] = connectionString;
-
-                await Execute(connectionString, "setup.sql", setupSql);
-
-                if (source == SchemaSource.Migrated)
-                {
-                    foreach (string script in manifestScripts)
-                    {
-                        await Execute(connectionString, script,
-                            await File.ReadAllTextAsync(Path.Combine(postgresDir, script.Replace('/', Path.DirectorySeparatorChar))));
-                    }
-                }
-            }
-        }
-
         public async Task DisposeAsync()
         {
-            if (_connectionStrings.Count == 0)
+            if (_createdDatabases.Count == 0)
             {
                 return;
             }
@@ -95,7 +111,7 @@ namespace OWSTests.Database
             await using var connection = new NpgsqlConnection(AdminConnectionString);
             await connection.OpenAsync();
 
-            foreach (string connectionString in _connectionStrings.Values)
+            foreach (string connectionString in _createdDatabases)
             {
                 string database = new NpgsqlConnectionStringBuilder(connectionString).Database;
                 await using var drop = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{database}\" WITH (FORCE)", connection);

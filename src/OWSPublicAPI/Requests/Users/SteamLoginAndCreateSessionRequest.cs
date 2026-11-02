@@ -86,11 +86,9 @@ namespace OWSPublicAPI.Requests.Users
 
             if (loggedIn)
             {
-                (string refusal, string message) = await loginGate.RefusalForSession(customerGUID, output.UserSessionGuid.Value, checkMaintenance: true);
+                (string refusal, string message) = await loginGate.AdmitNewSession(customerGUID, output.UserSessionGuid.Value);
                 if (refusal != null)
                 {
-                    // The session row already exists; end it so a refused login leaves no live session behind.
-                    await usersRepository.Logout(customerGUID, output.UserSessionGuid.Value);
                     await RecordUserLogin(refusal, validation.SteamId, personaName, null);
                     return new OkObjectResult(new PlayerLoginAndCreateSession { Authenticated = false, UserSessionGuid = Guid.Empty, ErrorMessage = message });
                 }

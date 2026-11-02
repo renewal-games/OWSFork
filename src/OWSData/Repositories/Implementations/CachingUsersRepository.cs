@@ -15,7 +15,7 @@ namespace OWSData.Repositories.Implementations
     /// Decorator over <see cref="IUsersRepository"/> that serves session validation from a
     /// best-effort cache (Valkey/Redis) to remove a database round trip from the hottest
     /// authenticated path. Only <see cref="GetUserSession"/> is cached; the operations that
-    /// change what it returns (logout, selected-character change, role change) invalidate it.
+    /// change what it returns (logout, ending earlier sessions, selected-character change, role change) invalidate it.
     /// Everything else passes straight through. When caching is disabled the decorator is a no-op
     /// pass-through, so behaviour is unchanged unless a cache is explicitly provisioned.
     /// </summary>
@@ -83,6 +83,20 @@ namespace OWSData.Repositories.Implementations
                 await _cache.RemoveUserSession(customerGuid, userSessionGuid);
             }
             return result;
+        }
+
+        // The ended sessions are evicted like a logout, so a cached copy cannot outlive its row.
+        public async Task<IReadOnlyList<Guid>> EndEarlierSessions(Guid customerGUID, Guid userSessionGUID)
+        {
+            IReadOnlyList<Guid> ended = await _inner.EndEarlierSessions(customerGUID, userSessionGUID);
+            if (_options.Enabled)
+            {
+                foreach (Guid session in ended)
+                {
+                    await _cache.RemoveUserSession(customerGUID, session);
+                }
+            }
+            return ended;
         }
 
         public async Task<SuccessAndErrorMessage> UserSessionSetSelectedCharacter(Guid customerGUID, Guid userSessionGUID, string selectedCharacterName)
