@@ -29,7 +29,8 @@ namespace OWSData.Health
         /// <summary>Indexes the code relies on, such as the target of an ON CONFLICT upsert.</summary>
         public static readonly IReadOnlyList<string> RequiredIndexes = new[]
         {
-            "ak_customcharacterdata_characterfield" // CustomCharacterDataUniqueField_2026-11-01.sql, every custom data save
+            "ak_customcharacterdata_characterfield", // CustomCharacterDataUniqueField_2026-11-01.sql, every custom data save
+            "ux_characters_customerguid_charname"    // UniqueCharacterNames_2026-10-30.sql, one character per name on create
         };
 
         public static bool IsCurrent(IEnumerable<string> appliedScripts, string expectedLastScript) =>
