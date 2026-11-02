@@ -28,6 +28,10 @@ namespace OWSCharacterPersistence.Requests.Characters
         // write most likely to land a stale bag over a shop transaction that just committed.
         public long? ExpectedRevision { get; set; }
 
+        // MapInstanceID of the zone server sending this save. The backend refuses the write if the
+        // character has since been handed to a different instance. Omit for legacy callers.
+        public int? ZoneInstanceID { get; set; }
+
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
         private EconomyOptions economyOptions;
@@ -46,31 +50,27 @@ namespace OWSCharacterPersistence.Requests.Characters
 
             try
             {
-                await charactersRepository.UpdateCharacterQuests(customerGUID, CharacterName, CharQuests);
-
-                // The inventory write can now fail its own guard (missing CharInventory row, and
-                // stale_revision once callers opt in). It used to return void, so a refused bag save
-                // reported success to the zone server; surface it instead.
-                // A missing revision under RequireExpectedRevision refuses only the bag, the same way
-                // a stale_revision would; quests and stats are not economy state and still save.
+                // One transaction: quests, inventory and stats are saved together. A missing section is
+                // refused rather than treated as empty, which would wipe the bag. The economy revision
+                // guard (ExpectedRevision / RequireExpectedRevision) refuses only the bag, as it did when
+                // these were separate saves: quests and stats are not economy state and still commit.
                 long? expectedRevision = ExpectedRevision >= 0 ? ExpectedRevision : null;
-                UpdateCharacterInventoryResponse inventoryResult =
-                    expectedRevision == null && economyOptions.RequireExpectedRevision
-                        ? new UpdateCharacterInventoryResponse { Success = false, ReasonCode = "revision_required" }
-                        : await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, CharInventory, expectedRevision);
-                successAndErrorMessage.NewEconomyRevision = inventoryResult.NewEconomyRevision;
-                successAndErrorMessage.ReasonCode = inventoryResult.ReasonCode;
+                UpdateCharacterDataResponse result = await charactersRepository.UpdateCharacterData(customerGUID, CharacterName,
+                    CharQuests, CharInventory, CharStats, ZoneInstanceID, expectedRevision, economyOptions.RequireExpectedRevision);
 
-                // Deliberately NOT an early return. These three are separate transactions, so
-                // bailing here would leave quests committed and silently drop the stats save
-                // forever — a refused bag must not also cost the player their stats. Run the
-                // remaining write, then report the inventory failure.
-                await charactersRepository.UpdateCharacterStats(customerGUID, CharacterName, CharStats);
+                successAndErrorMessage.NewEconomyRevision = result.NewEconomyRevision;
+                successAndErrorMessage.ReasonCode = result.ReasonCode;
 
-                if (!inventoryResult.Success)
+                if (result.ReasonCode == "stale_zone")
+                {
+                    // Success stays true, as in UpdateCharacterStats: the caller must not retry a write
+                    // that was refused because a newer zone owns the character.
+                    successAndErrorMessage.ErrorMessage = "stale_zone";
+                }
+                else if (!result.Success)
                 {
                     successAndErrorMessage.Success = false;
-                    successAndErrorMessage.ErrorMessage = $"UpdateCharacterInventory failed: {inventoryResult.ReasonCode}";
+                    successAndErrorMessage.ErrorMessage = $"UpdateCharacterData failed: {result.ReasonCode}";
                 }
             }
             catch (Exception ex)

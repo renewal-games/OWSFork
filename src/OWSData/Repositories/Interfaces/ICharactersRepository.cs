@@ -33,6 +33,15 @@ namespace OWSData.Repositories.Interfaces
         // was computed from to have a stale snapshot rejected instead of clobbering a shop
         // transaction that committed in the meantime; pass null for legacy last-write-wins.
         Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory, long? expectedRevision = null);
+        // Quests, inventory and stats in one transaction. Every section is required (an empty list is a
+        // valid empty section, null is rejected) because the inventory write replaces the whole bag.
+        // callerZoneInstanceId works as in UpdateCharacterStats; a stale zone writes nothing.
+        // expectedRevision works as in UpdateCharacterInventory, and requireExpectedRevision refuses a
+        // revision-less bag with "revision_required". Either revision refusal skips only the bag: quests
+        // and stats still commit (together), and the response reports the refusal with Success = false.
+        Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, int? callerZoneInstanceId = null,
+            long? expectedRevision = null, bool requireExpectedRevision = false);
         // Absolute wallet write. expectedRevision is opt-in, mirroring UpdateCharacterInventory: pass the
         // Characters.EconomyRevision the wallet was computed from to have a stale copy rejected instead of
         // undoing a shop transaction that committed in the meantime; pass null for legacy last-write-wins.
