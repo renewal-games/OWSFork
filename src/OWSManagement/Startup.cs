@@ -106,6 +106,8 @@ namespace OWSManagement
             });
 
             services.Configure<OWSShared.Options.StorageOptions>(Configuration.GetSection(OWSShared.Options.StorageOptions.SectionName));
+            // The console changes roles, which the PublicAPI's cached sessions carry; see InitializeContainer.
+            OWSShared.Extensions.ServiceCollectionExtensions.AddUserSessionCacheOptions(services, Configuration);
 
             InitializeContainer(services, owsManagementOptions);
         }
@@ -186,6 +188,12 @@ namespace OWSManagement
                 container.Register<ILoginQueueRepository, OWSData.Repositories.Implementations.Postgres.LoginQueueRepository>(Lifestyle.Transient);
                 container.Register<IConsoleInsightRepository, OWSData.Repositories.Implementations.Postgres.ConsoleInsightRepository>(Lifestyle.Transient);
             }
+
+            // Same session-cache decorator as the PublicAPI, so a role change made here evicts the user's
+            // sessions from the shared Valkey cache (LoginGate authorizes on the cached Role). A no-op
+            // pass-through unless UserSessionCacheOptions.Enabled.
+            container.RegisterSingleton<IUserSessionRepository, OWSData.Repositories.Implementations.ValKey.UserSessionRepository>();
+            container.RegisterDecorator<IUsersRepository, OWSData.Repositories.Implementations.CachingUsersRepository>(Lifestyle.Transient);
 
             container.RegisterSingleton(() => new ConsoleCustomer(managementOptions.CustomerGUID, container.GetInstance<IConsoleQueriesRepository>()));
             container.Register<IHeaderCustomerGUID, ConsoleCustomerGUID>(Lifestyle.Singleton);

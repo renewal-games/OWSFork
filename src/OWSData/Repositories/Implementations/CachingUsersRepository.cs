@@ -14,9 +14,9 @@ namespace OWSData.Repositories.Implementations
     /// <summary>
     /// Decorator over <see cref="IUsersRepository"/> that serves session validation from a
     /// best-effort cache (Valkey/Redis) to remove a database round trip from the hottest
-    /// authenticated path. Only <see cref="GetUserSession"/> is cached; the two operations
-    /// that mutate a session (logout, selected-character change) invalidate it. Everything
-    /// else passes straight through. When caching is disabled the decorator is a no-op
+    /// authenticated path. Only <see cref="GetUserSession"/> is cached; the operations that
+    /// change what it returns (logout, selected-character change, role change) invalidate it.
+    /// Everything else passes straight through. When caching is disabled the decorator is a no-op
     /// pass-through, so behaviour is unchanged unless a cache is explicitly provisioned.
     /// </summary>
     public class CachingUsersRepository : IUsersRepository
@@ -148,12 +148,19 @@ namespace OWSData.Repositories.Implementations
         public Task<SuccessAndErrorMessage> UpdateUser(Guid customerGuid, Guid userGuid, string firstName, string lastName, string email)
             => _inner.UpdateUser(customerGuid, userGuid, firstName, lastName, email);
 
-        // GetUserSession carries Role, and the cache is keyed by UserSessionGUID, so there is
-        // no way to invalidate by UserGUID without a scan. A role change is therefore visible
-        // to new sessions at once but to an already-cached session only after its TTL. Harmless
-        // while nothing authorizes on Role; revisit if that changes.
-        public Task<SuccessAndErrorMessage> UpdateUserRole(Guid customerGuid, Guid userGuid, string role)
-            => _inner.UpdateUserRole(customerGuid, userGuid, role);
+        // GetUserSession carries Role, and the PublicAPI authorizes on it (LoginGate lets staff
+        // past maintenance and the player cap), so a demoted or promoted user's cached sessions
+        // are evicted at once rather than left to their TTL. OWSManagement registers this
+        // decorator too, so both console role routes evict.
+        public async Task<SuccessAndErrorMessage> UpdateUserRole(Guid customerGuid, Guid userGuid, string role)
+        {
+            SuccessAndErrorMessage result = await _inner.UpdateUserRole(customerGuid, userGuid, role);
+            if (_options.Enabled)
+            {
+                await _cache.RemoveUserSessionsForUser(customerGuid, userGuid);
+            }
+            return result;
+        }
 
         // No session invalidation: GetUserSession does not carry PreferredServerRegion, and the routing
         // path reads the column straight from Users on every join rather than from the cached session.

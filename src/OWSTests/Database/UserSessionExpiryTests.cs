@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Dapper;
 using Npgsql;
@@ -209,6 +210,15 @@ namespace OWSTests.Database
             public Task RemoveUserSession(Guid customerGuid, Guid userSessionGuid)
             {
                 Entries.Remove((customerGuid, userSessionGuid));
+                return Task.CompletedTask;
+            }
+
+            public Task RemoveUserSessionsForUser(Guid customerGuid, Guid userGuid)
+            {
+                foreach ((Guid, Guid) key in Entries.Where(e => e.Key.Item1 == customerGuid && e.Value.UserGuid == userGuid).Select(e => e.Key).ToList())
+                {
+                    Entries.Remove(key);
+                }
                 return Task.CompletedTask;
             }
         }
