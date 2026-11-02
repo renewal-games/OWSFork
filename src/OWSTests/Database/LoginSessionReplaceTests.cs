@@ -124,7 +124,7 @@ namespace OWSTests.Database
             {
                 _connectionString = connectionString;
                 var storage = Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = connectionString });
-                Users = new UsersRepository(storage);
+                Users = new UsersRepository(storage, Microsoft.Extensions.Logging.Abstractions.NullLogger<UsersRepository>.Instance);
                 _customer = new CustomerHeader { CustomerGUID = Guid.NewGuid() };
 
                 (ISanctionsRepository sanctions, Fake<ISanctionsRepository> sanctionsFake) = Fake<ISanctionsRepository>.Create();
