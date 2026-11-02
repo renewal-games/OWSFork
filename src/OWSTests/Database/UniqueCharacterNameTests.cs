@@ -106,7 +106,8 @@ namespace OWSTests.Database
         }
 
         private UsersRepository Repository(SchemaSource source) =>
-            new(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) }));
+            new(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) }),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<UsersRepository>.Instance);
 
         /// <summary>Applies the unique-name migration, adds a user and a "Default" default character set for the customer; returns the user.</summary>
         private async Task<Guid> Seed(SchemaSource source, Guid customerGUID)

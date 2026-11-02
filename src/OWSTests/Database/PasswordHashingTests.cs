@@ -125,7 +125,8 @@ namespace OWSTests.Database
         }
 
         private UsersRepository Repository(SchemaSource source) =>
-            new(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) }));
+            new(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) }),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<UsersRepository>.Instance);
 
         private async Task<string> SeedMd5User(SchemaSource source, Guid customerGUID, string email, string password)
         {

@@ -144,7 +144,8 @@ namespace OWSTests.Database
         }
 
         private UsersRepository Repository(SchemaSource source) =>
-            new(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) }));
+            new(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) }),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<UsersRepository>.Instance);
 
         private static CachingUsersRepository Caching(UsersRepository users, InMemorySessionCache cache) =>
             new(users, cache, Microsoft.Extensions.Options.Options.Create(new UserSessionCacheOptions { Enabled = true, SessionTtlSeconds = 60 }));

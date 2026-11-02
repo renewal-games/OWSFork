@@ -55,7 +55,8 @@ namespace OWSTests.Database
         private async Task<(UsersRepository, Guid, Guid)> Seed()
         {
             UsersRepository users = new(Microsoft.Extensions.Options.Options.Create(
-                new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(Source) }));
+                new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(Source) }),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<UsersRepository>.Instance);
             Guid customerGUID = Guid.NewGuid();
 
             Assert.True((await users.RegisterUser(customerGUID, "defaults@example.com", "pw", "Default", "User")).Success);
