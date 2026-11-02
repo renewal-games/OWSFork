@@ -5,6 +5,9 @@ namespace OWSData.Models.Composites
     {
         public const string UnknownDefaultCharacterSet = "Unknown default character set";
 
+        /// <summary>Another character of the same customer already has this name, ignoring case and surrounding spaces.</summary>
+        public const string CharacterNameTaken = "Character name already exists!";
+
         public const string CharacterCreationFailed = "Character could not be created";
     }
 }
