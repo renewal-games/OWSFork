@@ -57,7 +57,11 @@ namespace OWSTests.Database
         public async Task Baseline_JournalsLoginScript_WhenFunctionsAreCurrent()
         {
             // A fresh install's setup.sql already has the current login functions.
-            string connectionString = await _databases.CreateDatabaseAsync(SchemaSource.SetupSql);
+            Assert.True(await LoginFunctionsAreCurrent(_databases.ConnectionString(SchemaSource.SetupSql)));
+
+            // Baseline on a database with every script's changes. setup.sql alone is not one: it lacks the unique
+            // character name index, so --baseline rightly leaves UniqueCharacterNames_2026-10-30.sql pending there.
+            string connectionString = await _databases.CreateDatabaseAsync(SchemaSource.Migrated);
             Assert.True(await LoginFunctionsAreCurrent(connectionString));
 
             await RunMigrations(connectionString, "--baseline");
