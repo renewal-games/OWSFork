@@ -460,6 +460,11 @@ CREATE TABLE CustomCharacterData
         FOREIGN KEY (CustomerGUID, CharacterID) REFERENCES Characters (CustomerGUID, CharacterID)
 );
 
+-- One row per character and field; AddOrUpdateCustomCharacterData upserts on it
+-- (see SamsaraUpdates/CustomCharacterDataUniqueField_2026-11-01.sql).
+CREATE UNIQUE INDEX AK_CustomCharacterData_CharacterField
+    ON CustomCharacterData (CustomerGUID, CharacterID, CustomFieldName);
+
 CREATE TABLE GlobalData
 (
     CustomerGUID    UUID        NOT NULL,

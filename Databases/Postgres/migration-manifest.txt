@@ -51,3 +51,4 @@ SamsaraUpdates/AddUserNetworkTestFlag_2026-10-29.sql
 SamsaraUpdates/BcryptPasswordHashes_2026-10-30.sql
 SamsaraUpdates/UserSessionExpiry_2026-10-30.sql
 SamsaraUpdates/LoginBackoff_2026-10-30.sql
+SamsaraUpdates/CustomCharacterDataUniqueField_2026-11-01.sql

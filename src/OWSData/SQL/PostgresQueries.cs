@@ -119,6 +119,12 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 
         #region Character Queries
 
+        // One statement on AK_CustomCharacterData_CharacterField, so two first writes of a field cannot both insert.
+        public static readonly string AddOrUpdateCharacterCustomDataField = @"
+        INSERT INTO CustomCharacterData (CustomerGUID, CharacterID, CustomFieldName, FieldValue)
+        VALUES (@CustomerGUID, @CharacterID, @CustomFieldName, @FieldValue)
+        ON CONFLICT (CustomerGUID, CharacterID, CustomFieldName) DO UPDATE SET FieldValue = EXCLUDED.FieldValue";
+
         public static readonly string AddAbilityToCharacter = @"
         INSERT INTO CharHasAbilities (CustomerGUID, CharacterID, AbilityID, AbilityLevel, CharHasAbilitiesCustomJSON)
         SELECT @CustomerGUID::UUID,

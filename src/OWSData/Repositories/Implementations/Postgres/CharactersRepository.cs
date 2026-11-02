@@ -329,22 +329,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                 {
                     parameters.Add("@CharacterID", outputCharacter.CharacterId);
 
-                    var hasCustomCharacterData = await Connection.QuerySingleOrDefaultAsync<int>(GenericQueries.HasCustomCharacterDataForField,
+                    await Connection.ExecuteAsync(PostgresQueries.AddOrUpdateCharacterCustomDataField,
                         parameters,
                         commandType: CommandType.Text);
-
-                    if (hasCustomCharacterData > 0)
-                    {
-                        await Connection.ExecuteAsync(GenericQueries.UpdateCharacterCustomDataField,
-                            parameters,
-                            commandType: CommandType.Text);
-                    }
-                    else
-                    {
-                        await Connection.ExecuteAsync(GenericQueries.AddCharacterCustomDataField,
-                            parameters,
-                            commandType: CommandType.Text);
-                    }
                 }
             }
         }
