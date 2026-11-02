@@ -12,7 +12,10 @@ using Xunit;
 
 namespace OWSTests.PublicAPI
 {
-    /// <summary>The handler reports what the repository did, without leaking raw exception text.</summary>
+    /// <summary>
+    /// The handler reports what the repository did, without leaking raw exception text, and refuses a name that is
+    /// already taken whoever holds it.
+    /// </summary>
     public class CreateCharacterUsingDefaultCharacterValuesRequestTests
     {
         [Fact]
@@ -37,6 +40,35 @@ namespace OWSTests.PublicAPI
         }
 
         [Fact]
+        public async Task NameTakenByConcurrentCreate_ReturnsNameAlreadyExists()
+        {
+            // The repository maps the unique index's violation (23505) to this message.
+            SuccessAndErrorMessage result = await Handle(new SuccessAndErrorMessage
+            {
+                Success = false,
+                ErrorMessage = CharacterCreationMessages.CharacterNameAlreadyExists
+            });
+
+            Assert.False(result.Success);
+            Assert.Equal(CharacterCreationMessages.CharacterNameAlreadyExists, result.ErrorMessage);
+        }
+
+        [Fact]
+        public async Task NameHeldByCharacterWithEmptyUserGuid_IsRejected()
+        {
+            ICharactersRepository characters = Stub<ICharactersRepository>.Create(new()
+            {
+                [nameof(ICharactersRepository.GetCharByCharName)] = _ => Task.FromResult(new GetCharByCharName { UserGuid = Guid.Empty })
+            });
+
+            // The repository result is never used: the users stub has no CreateCharacterUsingDefaultCharacterValues, so reaching the insert throws.
+            SuccessAndErrorMessage result = await Handle(null, characters);
+
+            Assert.False(result.Success);
+            Assert.Equal(CharacterCreationMessages.CharacterNameAlreadyExists, result.ErrorMessage);
+        }
+
+        [Fact]
         public async Task RepositoryException_ReturnsGenericFailure()
         {
             SuccessAndErrorMessage result = await Handle(new SuccessAndErrorMessage
@@ -49,14 +81,18 @@ namespace OWSTests.PublicAPI
             Assert.Equal(CharacterCreationMessages.CharacterCreationFailed, result.ErrorMessage);
         }
 
-        private static Task<SuccessAndErrorMessage> Handle(SuccessAndErrorMessage repositoryResult)
+        private static Task<SuccessAndErrorMessage> Handle(SuccessAndErrorMessage repositoryResult, ICharactersRepository characters = null)
         {
-            IUsersRepository users = Stub<IUsersRepository>.Create(new()
+            var userMembers = new Dictionary<string, Func<object[], object>>
             {
-                [nameof(IUsersRepository.GetUserSession)] = _ => Task.FromResult(new GetUserSession { UserGuid = Guid.NewGuid() }),
-                [nameof(IUsersRepository.CreateCharacterUsingDefaultCharacterValues)] = _ => Task.FromResult(repositoryResult)
-            });
-            ICharactersRepository characters = Stub<ICharactersRepository>.Create(new()
+                [nameof(IUsersRepository.GetUserSession)] = _ => Task.FromResult(new GetUserSession { UserGuid = Guid.NewGuid() })
+            };
+            if (repositoryResult != null)
+            {
+                userMembers[nameof(IUsersRepository.CreateCharacterUsingDefaultCharacterValues)] = _ => Task.FromResult(repositoryResult);
+            }
+            IUsersRepository users = Stub<IUsersRepository>.Create(userMembers);
+            characters ??= Stub<ICharactersRepository>.Create(new()
             {
                 [nameof(ICharactersRepository.GetCharByCharName)] = _ => Task.FromResult<GetCharByCharName>(null)
             });

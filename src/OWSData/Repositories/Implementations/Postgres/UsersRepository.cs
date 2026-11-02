@@ -37,6 +37,16 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         private DbConnection Connection => _scopedConnection.Value ??= new ScopedDbConnection(CreateConnection(), () => _scopedConnection.Value = null);
 
+        // UX_Characters_CustomerGUID_LowerCharName (UniqueCharacterNames_2026-10-30.sql); Postgres folds the unquoted name.
+        private const string CharacterNameIndex = "ux_characters_customerguid_lowercharname";
+
+        /// <summary>The insert lost to an existing name: one differing only in case, or a concurrent create of the same name.</summary>
+        private static bool IsCharacterNameTaken(PostgresException ex) =>
+            ex.SqlState == PostgresErrorCodes.UniqueViolation && ex.ConstraintName == CharacterNameIndex;
+
+        // What AddCharacter and AddSamsaraCharacter return when the name is already taken exactly.
+        private const string InvalidCharacterName = "Invalid Character Name";
+
         public async Task<IEnumerable<GetAllCharacters>> GetAllCharacters(Guid customerGUID, Guid userSessionGUID)
         {
             IEnumerable<GetAllCharacters> outputObject;
@@ -96,6 +106,13 @@ namespace OWSData.Repositories.Implementations.Postgres
 
                 return outputObject;
             }
+            catch (PostgresException ex) when (IsCharacterNameTaken(ex))
+            {
+                outputObject.Success = false;
+                outputObject.ErrorMessage = InvalidCharacterName;
+
+                return outputObject;
+            }
             catch (Exception ex)
             {
                 outputObject.Success = false;
@@ -146,6 +163,13 @@ namespace OWSData.Repositories.Implementations.Postgres
 
                 return outputObject;
             }
+            catch (PostgresException ex) when (IsCharacterNameTaken(ex))
+            {
+                outputObject.Success = false;
+                outputObject.ErrorMessage = InvalidCharacterName;
+
+                return outputObject;
+            }
             catch (Exception ex)
             {
                 outputObject.Success = false;
@@ -192,6 +216,15 @@ namespace OWSData.Repositories.Implementations.Postgres
                     transaction: transaction,
                     commandType: CommandType.Text);
                 transaction.Commit();
+            }
+            catch (PostgresException ex) when (IsCharacterNameTaken(ex))
+            {
+                transaction.Rollback();
+                return new SuccessAndErrorMessage()
+                {
+                    Success = false,
+                    ErrorMessage = CharacterCreationMessages.CharacterNameAlreadyExists
+                };
             }
             catch (Exception ex)
             {
