@@ -79,6 +79,16 @@ namespace OWSTests.Database
                 "CREATE UNIQUE INDEX AK_CustomCharacterData_CharacterField ON CustomCharacterData (CustomerGUID, CharacterID, CustomFieldName)");
             Assert.Equal(HealthStatus.Healthy, (await CheckHealth(connectionString)).Status);
 
+            // Journal complete but character names are not unique.
+            await Execute(connectionString, "DROP INDEX UX_Characters_CustomerGUID_LowerCharName");
+            HealthReport noNameIndex = await CheckHealth(connectionString);
+            Assert.Equal(HealthStatus.Unhealthy, noNameIndex.Status);
+            Assert.Contains("index ux_characters_customerguid_lowercharname", noNameIndex.Entries["postgres"].Description);
+
+            await Execute(connectionString,
+                "CREATE UNIQUE INDEX UX_Characters_CustomerGUID_LowerCharName ON Characters (CustomerGUID, LOWER(CharName))");
+            Assert.Equal(HealthStatus.Healthy, (await CheckHealth(connectionString)).Status);
+
             await Execute(connectionString, "DROP TABLE LoginQueue");
             HealthReport noQueue = await CheckHealth(connectionString);
             Assert.Equal(HealthStatus.Unhealthy, noQueue.Status);

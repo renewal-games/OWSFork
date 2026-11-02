@@ -180,7 +180,12 @@ namespace OWSDatabaseMigrations
         {
             // Every custom character data save is an upsert on this index; without it each one fails.
             ["SamsaraUpdates/CustomCharacterDataUniqueField_2026-11-01.sql"] =
-                "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ak_customcharacterdata_characterfield')"
+                "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ak_customcharacterdata_characterfield')",
+
+            // The name check before a character insert is case-sensitive and races a concurrent create; this index is
+            // what keeps names unique. The script renames existing clashes before building it.
+            ["SamsaraUpdates/UniqueCharacterNames_2026-10-30.sql"] =
+                "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ux_characters_customerguid_lowercharname')"
         };
 
         private static bool IsInPlace(NpgsqlConnection connection, string check)

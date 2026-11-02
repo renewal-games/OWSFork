@@ -83,7 +83,7 @@ namespace OWSPublicAPI.Requests.Users
                 return successAndErrorMessage;
             }
 
-SuccessAndErrorMessage result = await _usersRepository.CreateCharacterUsingDefaultCharacterValues(_customerGUID, userSession.UserGuid.Value,
+            SuccessAndErrorMessage result = await _usersRepository.CreateCharacterUsingDefaultCharacterValues(_customerGUID, userSession.UserGuid.Value,
                 _createCharacterUsingDefaultCharacterValuesDTO.CharacterName, _createCharacterUsingDefaultCharacterValuesDTO.DefaultSetName);
 
             if (result == null || !result.Success)
