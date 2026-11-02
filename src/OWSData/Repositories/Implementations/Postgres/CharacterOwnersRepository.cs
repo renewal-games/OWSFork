@@ -72,8 +72,10 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         // The replaced owner of a running handover may still write, except where AllowPrevious is false (logout).
         // CharactersRepository.UpdatePosition puts it in its UPDATE.
+        // clock_timestamp(), not NOW(): the saves run this after waiting on the character row lock, and NOW() is when
+        // their transaction began. A save that began during the handover and waited past its end would still pass.
         internal const string NotOwnerSql =@"CO.OwnerToken IS DISTINCT FROM @OwnerToken::uuid
-                AND NOT (@AllowPrevious AND COALESCE(CO.PreviousOwnerToken = @OwnerToken::uuid AND CO.PreviousOwnerUntil > NOW(), false))";
+                AND NOT (@AllowPrevious AND COALESCE(CO.PreviousOwnerToken = @OwnerToken::uuid AND CO.PreviousOwnerUntil > clock_timestamp(), false))";
 
         private const string StaleByNameSql = @"SELECT EXISTS (SELECT 1 FROM CharacterOwners CO
                 JOIN Characters C ON C.CustomerGUID = CO.CustomerGUID AND C.CharacterID = CO.CharacterID

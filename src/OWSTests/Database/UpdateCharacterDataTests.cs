@@ -220,6 +220,34 @@ namespace OWSTests.Database
 
         [PostgresTheory]
         [InlineData(SchemaSource.Migrated)]
+        public async Task ReplacedOwnerWaitingOnTheRowLockWhileTheHandoverEndsWritesNothing(SchemaSource source)
+        {
+            Guid customerGUID = await SeedCharacter(source);
+            Guid oldToken = (await Owners(source).ClaimByName(customerGUID, CharName, OwningZone)).OwnerToken;
+            Assert.True((await Owners(source).ClaimByName(customerGUID, CharName, OwningZone)).HandoverSeconds > 0);
+
+            // Another transaction (a shop purchase, say) holds the character row when the replaced owner's save arrives.
+            await using var lockConnection = new NpgsqlConnection(_databases.ConnectionString(source));
+            await lockConnection.OpenAsync();
+            await using NpgsqlTransaction lockTx = await lockConnection.BeginTransactionAsync();
+            await lockConnection.ExecuteAsync(@"SELECT CharacterID FROM Characters
+                WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName FOR UPDATE", new { CustomerGUID = customerGUID, CharName }, lockTx);
+
+            Task<UpdateCharacterDataResponse> save = Request(source, customerGUID, NewQuests("Quest.Second"), NewInventory(), NewStats(), OwningZone,
+                ownerToken: oldToken).Handle();
+            await WaitUntilBlockedOnLock(source, save);
+            await EndHandoverWhileTheSaveWaits(source, customerGUID);
+
+            await lockTx.RollbackAsync();
+            UpdateCharacterDataResponse result = await save;
+
+            Assert.False(result.Success);
+            Assert.Equal("stale_owner", result.ReasonCode);
+            await AssertUnchanged(source, customerGUID);
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
         public async Task ReplacedOwnerDuringHandoverStillSaves(SchemaSource source)
         {
             // Same policy as the controller: the replaced owner's last save lands while the handover runs.
@@ -243,6 +271,21 @@ namespace OWSTests.Database
             await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
             await connection.ExecuteAsync(@"UPDATE CharacterOwners SET PreviousOwnerUntil = NOW() - INTERVAL '1 second'
                 WHERE CustomerGUID = @CustomerGUID", new { CustomerGUID = customerGUID });
+        }
+
+        // Ends the running handover now, while the save waits on the row lock, and checks the save's transaction began
+        // before that. NOW() inside the save is its transaction start, so this is the case it let through.
+        private async Task EndHandoverWhileTheSaveWaits(SchemaSource source, Guid customerGUID)
+        {
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            bool saveBeganDuringHandover = await connection.QuerySingleAsync<bool>(@"WITH Ended AS (
+                    UPDATE CharacterOwners SET PreviousOwnerUntil = clock_timestamp()
+                    WHERE CustomerGUID = @CustomerGUID AND PreviousOwnerUntil > clock_timestamp()
+                    RETURNING PreviousOwnerUntil)
+                SELECT COALESCE((SELECT xact_start FROM pg_stat_activity
+                    WHERE datname = current_database() AND wait_event_type = 'Lock') < (SELECT PreviousOwnerUntil FROM Ended), false)",
+                new { CustomerGUID = customerGUID });
+            Assert.True(saveBeganDuringHandover, "The save's transaction must begin while the handover is still running.");
         }
 
         // The save must reach the row lock before the claim commits, or the test proves nothing about the race. Each test
