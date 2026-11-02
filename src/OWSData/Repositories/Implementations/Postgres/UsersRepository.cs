@@ -16,6 +16,7 @@ using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
 using OWSData.SQL;
 using OWSData.Models.Tables;
+using OWSShared;
 using OWSShared.Options;
 
 namespace OWSData.Repositories.Implementations.Postgres
@@ -180,7 +181,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "CreateSamsaraCharacter failed for character {CharacterName}", characterName);
+                _logger.LogError(ex, "CreateSamsaraCharacter failed for character {CharacterName}", LogSanitizer.Sanitize(characterName));
                 outputObject.Success = false;
                 outputObject.ErrorMessage = CreateCharacterFailedMessage;
 
@@ -668,7 +669,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "RemoveCharacter failed for character {CharacterName}", characterName);
+                _logger.LogError(ex, "RemoveCharacter failed for character {CharacterName}", LogSanitizer.Sanitize(characterName));
                 outputObject.Success = false;
                 outputObject.ErrorMessage = RemoveCharacterFailedMessage;
 
