@@ -185,7 +185,16 @@ namespace OWSDatabaseMigrations
             // The name check before a character insert is case-sensitive and races a concurrent create; this index is
             // what keeps names unique. The script renames existing clashes before building it.
             ["SamsaraUpdates/UniqueCharacterNames_2026-10-30.sql"] =
-                "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ux_characters_customerguid_lowercharname')"
+                "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ux_characters_customerguid_lowercharname')",
+
+            // Only the function bodies change. With the older ones, concurrent first Steam logins fail with 23505, and a
+            // login refused by LoginGate has already deleted the account's live session.
+            ["SamsaraUpdates/LoginLockAndSessionReplace_2026-11-01.sql"] =
+                "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'public'::regnamespace " +
+                "    AND proname = 'steamloginandcreatesession' AND prosrc LIKE '%pg_advisory_xact_lock%') " +
+                "AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'public'::regnamespace " +
+                "    AND proname IN ('playerloginandcreatesession', 'steamloginandcreatesession') " +
+                "    AND prosrc ~* 'DELETE\\s+FROM\\s+UserSessions')"
         };
 
         private static bool IsInPlace(NpgsqlConnection connection, string check)

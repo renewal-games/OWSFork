@@ -5,6 +5,7 @@ using OWSData.Models;
 using OWSData.Models.Composites;
 using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
+using Serilog;
 
 namespace OWSPublicAPI.Services
 {
@@ -16,6 +17,7 @@ namespace OWSPublicAPI.Services
     public class LoginGate
     {
         public const string MaintenanceMessage = "The servers are closed for maintenance. Try again later.";
+        public const string UnavailableMessage = "Login service unavailable";
 
         private readonly ISanctionsRepository _sanctions;
         private readonly IConsoleSettingsRepository _settings;
@@ -26,6 +28,37 @@ namespace OWSPublicAPI.Services
             _sanctions = sanctions;
             _settings = settings;
             _users = users;
+        }
+
+        /// <summary>
+        /// Admits a session a login has just created, or refuses it. The login functions create the session without
+        /// touching the account's earlier ones. A refused session is logged out and the earlier sessions stay, so a
+        /// banned or maintenance-blocked login does not kick the account's live session. An admitted session ends
+        /// the earlier ones, so the account keeps one session. A database error refuses the login as unavailable.
+        /// </summary>
+        /// <returns>The refusal as (result, player message), or (null, null) when admitted.</returns>
+        public async Task<(string Result, string Message)> AdmitNewSession(Guid customerGUID, Guid userSessionGUID)
+        {
+            (string Result, string Message) refusal;
+            try
+            {
+                refusal = await RefusalForSession(customerGUID, userSessionGUID, checkMaintenance: true);
+                if (refusal.Result == null)
+                {
+                    await _users.EndEarlierSessions(customerGUID, userSessionGUID);
+                    return (null, null);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Fail closed, as the login functions did when they replaced the earlier sessions themselves.
+                Log.Error(ex, "user_login could not admit session {UserSessionGuid}", userSessionGUID);
+                refusal = ("unavailable", UnavailableMessage);
+            }
+
+            // The session row already exists; end it so a refused login leaves no live session behind.
+            await _users.Logout(customerGUID, userSessionGUID);
+            return refusal;
         }
 
         /// <summary>The refusal for this session's account, or null. A session that does not resolve is left to the caller's own checks.</summary>

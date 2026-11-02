@@ -32,7 +32,16 @@ namespace OWSPublicAPI.Requests.Users
 
         public async Task<IActionResult> Handle()
         {
-            output = await usersRepository.LoginAndCreateSession(customerGUID, Email, Password, false);
+            try
+            {
+                output = await usersRepository.LoginAndCreateSession(customerGUID, Email, Password, false);
+            }
+            catch (Exception ex)
+            {
+                // A database error answers like any other unavailable login instead of an empty 500.
+                Log.Error(ex, "user_login {Method} failed in the database", "password");
+                output = null;
+            }
 
             if (output == null)
             {
@@ -52,7 +61,7 @@ namespace OWSPublicAPI.Requests.Users
             string result = loggedIn ? "ok" : "refused";
             if (loggedIn)
             {
-                (string refusal, string message) = await loginGate.RefusalForSession(customerGUID, output.UserSessionGuid.Value, checkMaintenance: true);
+                (string refusal, string message) = await loginGate.AdmitNewSession(customerGUID, output.UserSessionGuid.Value);
                 if (refusal != null)
                 {
                     output = new PlayerLoginAndCreateSession { Authenticated = false, UserSessionGuid = Guid.Empty, ErrorMessage = message };
