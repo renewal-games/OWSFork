@@ -598,8 +598,8 @@ namespace OWSData.Repositories.Implementations.MSSQL
             }
         }
         public Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
-            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, int? callerZoneInstanceId = null,
-            long? expectedRevision = null, bool requireExpectedRevision = false)
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
+            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false)
         {
             throw new NotSupportedException("UpdateCharacterData's single-transaction save is only implemented for Postgres.");
         }
@@ -610,7 +610,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
         // so expectedRevision is rejected here rather than silently ignored — a caller that thinks
         // it has optimistic protection must not be told the write succeeded without it.
         public async Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName,
-            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, long? expectedRevision = null)
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, Guid? ownerToken, long? expectedRevision = null)
         {
             if (expectedRevision.HasValue)
             {

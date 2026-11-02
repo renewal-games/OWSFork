@@ -32,16 +32,21 @@ namespace OWSData.Repositories.Interfaces
         // Whole-bag rewrite. expectedRevision is opt-in: pass the Characters.EconomyRevision the bag
         // was computed from to have a stale snapshot rejected instead of clobbering a shop
         // transaction that committed in the meantime; pass null for legacy last-write-wins.
-        Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory, long? expectedRevision = null);
+        // ownerToken is the caller's CharacterOwners token. Once the character has an owner, a save whose token is
+        // neither that owner nor the one a running handover replaced is refused with "stale_owner" and writes nothing.
+        // It is checked under the Characters row lock, so a claim cannot commit between the check and the write.
+        // A null token passes only while the character has no owner (legacy builds).
+        Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory, Guid? ownerToken, long? expectedRevision = null);
         // Quests, inventory and stats in one transaction. Every section is required (an empty list is a
         // valid empty section, null is rejected) because the inventory write replaces the whole bag.
+        // ownerToken works as in UpdateCharacterInventory; a stale owner writes nothing.
         // callerZoneInstanceId works as in UpdateCharacterStats; a stale zone writes nothing.
         // expectedRevision works as in UpdateCharacterInventory, and requireExpectedRevision refuses a
         // revision-less bag with "revision_required". Either revision refusal skips only the bag: quests
         // and stats still commit (together), and the response reports the refusal with Success = false.
         Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
-            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, int? callerZoneInstanceId = null,
-            long? expectedRevision = null, bool requireExpectedRevision = false);
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
+            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false);
         // Absolute wallet write. expectedRevision is opt-in, mirroring UpdateCharacterInventory: pass the
         // Characters.EconomyRevision the wallet was computed from to have a stale copy rejected instead of
         // undoing a shop transaction that committed in the meantime; pass null for legacy last-write-wins.

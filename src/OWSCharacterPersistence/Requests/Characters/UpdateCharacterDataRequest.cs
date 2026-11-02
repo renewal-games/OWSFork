@@ -56,12 +56,19 @@ namespace OWSCharacterPersistence.Requests.Characters
                 // these were separate saves: quests and stats are not economy state and still commit.
                 long? expectedRevision = ExpectedRevision >= 0 ? ExpectedRevision : null;
                 UpdateCharacterDataResponse result = await charactersRepository.UpdateCharacterData(customerGUID, CharacterName,
-                    CharQuests, CharInventory, CharStats, ZoneInstanceID, expectedRevision, economyOptions.RequireExpectedRevision);
+                    CharQuests, CharInventory, CharStats, OwnerToken, ZoneInstanceID, expectedRevision, economyOptions.RequireExpectedRevision);
 
                 successAndErrorMessage.NewEconomyRevision = result.NewEconomyRevision;
                 successAndErrorMessage.ReasonCode = result.ReasonCode;
 
-                if (result.ReasonCode == "stale_zone")
+                if (result.ReasonCode == "stale_owner")
+                {
+                    // A claim committed after the controller's owner check: nothing was written. Reported exactly
+                    // as the controller reports a stale owner, so the zone server handles both the same way.
+                    successAndErrorMessage.Success = false;
+                    successAndErrorMessage.ErrorMessage = "stale_owner";
+                }
+                else if (result.ReasonCode == "stale_zone")
                 {
                     // Success stays true, as in UpdateCharacterStats: the caller must not retry a write
                     // that was refused because a newer zone owns the character.

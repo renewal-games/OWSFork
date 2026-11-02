@@ -10,6 +10,7 @@ namespace OWSData.Models.Composites
 
         // "" on success. "stale_revision" when the caller's snapshot lost a race with a shop
         // transaction and must be recomputed against NewEconomyRevision rather than retried as-is.
+        // "stale_owner" when the owner token no longer owns the character: nothing was written.
         public string ReasonCode { get; set; } = "";
     }
 }
