@@ -16,12 +16,10 @@ namespace OWSCharacterPersistence.Requests.Characters
 
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
-        private ICharacterOwnersRepository ownersRepository;
 
-        public void SetData(ICharactersRepository charactersRepository, ICharacterOwnersRepository ownersRepository, IHeaderCustomerGUID customerGuid)
+        public void SetData(ICharactersRepository charactersRepository, IHeaderCustomerGUID customerGuid)
         {
             this.charactersRepository = charactersRepository;
-            this.ownersRepository = ownersRepository;
             customerGUID = customerGuid.CustomerGUID;
         }
 
@@ -53,12 +51,12 @@ namespace OWSCharacterPersistence.Requests.Characters
 
                 string PlayerName = PlayerDataValues[0];
 
-                if (!TryParsePosition(PlayerDataValues[1], out float X)
-                    || !TryParsePosition(PlayerDataValues[2], out float Y)
-                    || !TryParsePosition(PlayerDataValues[3], out float Z)
-                    || !TryParsePosition(PlayerDataValues[4], out float RX)
-                    || !TryParsePosition(PlayerDataValues[5], out float RY)
-                    || !TryParsePosition(PlayerDataValues[6], out float RZ))
+                if (!TryParseLocation(PlayerDataValues[1], out float X)
+                    || !TryParseLocation(PlayerDataValues[2], out float Y)
+                    || !TryParseLocation(PlayerDataValues[3], out float Z)
+                    || !TryParseRotation(PlayerDataValues[4], out float RX)
+                    || !TryParseRotation(PlayerDataValues[5], out float RY)
+                    || !TryParseRotation(PlayerDataValues[6], out float RZ))
                 {
                     skipped.Add(PlayerName);
                     continue;
@@ -71,12 +69,11 @@ namespace OWSCharacterPersistence.Requests.Characters
 
                 try
                 {
-                    if (await ownersRepository.IsStaleOwnerWrite(customerGUID, PlayerName, ownerToken))
+                    // The ownership check is part of the write, so a handover cannot land between the two.
+                    if (!await charactersRepository.UpdatePosition(customerGUID, PlayerName, MapName, X, Y, Z, RX, RY, RZ, ownerToken))
                     {
                         skipped.Add(PlayerName);
-                        continue;
                     }
-                    await charactersRepository.UpdatePosition(customerGUID, PlayerName, MapName, X, Y, Z, RX, RY, RZ);
                 }
                 catch
                 {
@@ -99,9 +96,19 @@ namespace OWSCharacterPersistence.Requests.Characters
             return successAndErrorMessage;
         }
 
+        // UE5's world bound (UE_LARGE_HALF_WORLD_MAX, in cm). Nothing in a level lies outside it.
+        public const double MaxWorldCoordinate = 4398046511104.0;
+
         // The zone server always serializes with '.' as the decimal separator; parsing with the
         // server's current culture is what makes this locale-dependent.
-        private static bool TryParsePosition(string value, out float parsed) =>
-            float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out parsed);
+        // NumberStyles.Float also accepts "NaN" and "Infinity". Saved, either becomes the character's
+        // spawn point, and the zone server cannot place a character there.
+        private static bool TryParseRotation(string value, out float parsed) =>
+            float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out parsed)
+            && float.IsFinite(parsed);
+
+        // Finite but outside the world is as unusable a spawn point.
+        private static bool TryParseLocation(string value, out float parsed) =>
+            TryParseRotation(value, out parsed) && Math.Abs(parsed) <= MaxWorldCoordinate;
     }
 }

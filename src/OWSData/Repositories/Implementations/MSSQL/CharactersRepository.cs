@@ -712,7 +712,8 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     commandType: CommandType.Text);
             }
         }
-        public async Task UpdatePosition(Guid customerGUID, string characterName, string mapName, float X, float Y, float Z, float RX, float RY, float RZ)
+        // Character ownership is Postgres only, so ownerToken is not checked here.
+        public async Task<bool> UpdatePosition(Guid customerGUID, string characterName, string mapName, float X, float Y, float Z, float RX, float RY, float RZ, Guid? ownerToken = null)
         {
             using (Connection)
             {
@@ -744,6 +745,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     p,
                     commandType: CommandType.Text);
             }
+            return true;
         }
         public async Task PlayerLogout(Guid customerGUID, string characterName)
         {

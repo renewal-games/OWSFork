@@ -71,7 +71,8 @@ namespace OWSData.Repositories.Implementations.Postgres
                 WHERE CO.CustomerGUID = C.CustomerGUID AND CO.CharacterID = C.CharacterID AND CO.OwnerToken = P.Token";
 
         // The replaced owner of a running handover may still write, except where AllowPrevious is false (logout).
-        private const string NotOwnerSql = @"CO.OwnerToken IS DISTINCT FROM @OwnerToken::uuid
+        // CharactersRepository.UpdatePosition puts it in its UPDATE.
+        internal const string NotOwnerSql =@"CO.OwnerToken IS DISTINCT FROM @OwnerToken::uuid
                 AND NOT (@AllowPrevious AND COALESCE(CO.PreviousOwnerToken = @OwnerToken::uuid AND CO.PreviousOwnerUntil > NOW(), false))";
 
         private const string StaleByNameSql = @"SELECT EXISTS (SELECT 1 FROM CharacterOwners CO

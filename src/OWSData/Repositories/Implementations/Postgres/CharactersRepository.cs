@@ -832,38 +832,72 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        public async Task UpdatePosition(Guid customerGUID, string characterName, string mapName, float X, float Y, float Z, float RX, float RY, float RZ)
+        private const string LockCharacterIdByNameSql = @"SELECT CharacterID FROM Characters
+                WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName
+                FOR UPDATE";
+
+        // An empty MapName keeps the stored map. The owner condition is the same one IsStaleOwnerWrite applies.
+        private const string UpdateOwnedCharacterPositionSql = @"UPDATE Characters C
+                SET MapName = CASE WHEN @MapName = '' THEN C.MapName ELSE @MapName END,
+                    X = @X, Y = @Y, Z = @Z, RX = @RX, RY = @RY, RZ = @RZ
+                WHERE C.CustomerGUID = @CustomerGUID AND C.CharacterID = @CharacterID
+                  AND NOT EXISTS (SELECT 1 FROM CharacterOwners CO
+                      WHERE CO.CustomerGUID = C.CustomerGUID AND CO.CharacterID = C.CharacterID AND "
+                    + CharacterOwnersRepository.NotOwnerSql + ")";
+
+        public async Task<bool> UpdatePosition(Guid customerGUID, string characterName, string mapName, float X, float Y, float Z, float RX, float RY, float RZ, Guid? ownerToken = null)
         {
-            using (Connection)
+            // The ownership check used to be a separate statement before the UPDATE, so a claim that committed between
+            // the two let the replaced zone server's save land after all. The character row is locked first, as a claim
+            // locks it, so no claim can commit between the check and the write; the last-access write rides along.
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+            using DbTransaction tx = await conn.BeginTransactionAsync();
+
+            var p = new DynamicParameters();
+            p.Add("@CustomerGUID", customerGUID);
+            p.Add("@CharName", characterName);
+            p.Add("@MapName", mapName);
+            p.Add("@X", X);
+            p.Add("@Y", Y);
+            // The zone server spawns the character at the stored location as is (OWSGameMode sets
+            // PlayerStartLocation from it), so this lifts the capsule clear of the floor it was standing on.
+            // Every save takes the live location again, so it does not accumulate while the character is grounded.
+            p.Add("@Z", Z + 1);
+            p.Add("@RX", RX);
+            p.Add("@RY", RY);
+            p.Add("@RZ", RZ);
+            p.Add("@OwnerToken", ownerToken);
+            p.Add("@AllowPrevious", true);
+
+            int? characterID = await conn.QuerySingleOrDefaultAsync<int?>(LockCharacterIdByNameSql,
+                p,
+                transaction: tx, commandType: CommandType.Text);
+
+            if (characterID == null)
             {
-                var p = new DynamicParameters();
-                p.Add("@CustomerGUID", customerGUID);
-                p.Add("@CharName", characterName);
-                p.Add("@MapName", mapName);
-                p.Add("@X", X);
-                p.Add("@Y", Y);
-                p.Add("@Z", Z + 1);
-                p.Add("@RX", RX);
-                p.Add("@RY", RY);
-                p.Add("@RZ", RZ);
-
-                if (mapName != String.Empty)
-                {
-                    await Connection.ExecuteAsync(GenericQueries.UpdateCharacterPositionAndMap,
-                        p,
-                        commandType: CommandType.Text);
-                }
-                else
-                {
-                    await Connection.ExecuteAsync(GenericQueries.UpdateCharacterPosition,
-                        p,
-                        commandType: CommandType.Text);
-                }
-
-                await Connection.ExecuteAsync(PostgresQueries.UpdateUserLastAccess,
-                    p,
-                    commandType: CommandType.Text);
+                await tx.RollbackAsync();
+                return false;
             }
+
+            p.Add("@CharacterID", characterID.Value);
+
+            int updated = await conn.ExecuteAsync(UpdateOwnedCharacterPositionSql,
+                p,
+                transaction: tx, commandType: CommandType.Text);
+
+            if (updated == 0)
+            {
+                await tx.RollbackAsync();
+                return false;
+            }
+
+            await conn.ExecuteAsync(PostgresQueries.UpdateUserLastAccess,
+                p,
+                transaction: tx, commandType: CommandType.Text);
+
+            await tx.CommitAsync();
+            return true;
         }
 
         public async Task PlayerLogout(Guid customerGUID, string characterName)
