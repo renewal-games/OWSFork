@@ -209,11 +209,13 @@ namespace OWSTests.CharacterPersistence
                 switch (targetMethod.Name)
                 {
                     case nameof(ICharactersRepository.UpdateCharacterInventory):
-                        return Task.FromResult(WriteInventory((IEnumerable<UpdateCharacterInventory>)args[2], (long?)args[3]));
+                        // args[3] is the owner token; the stale-owner check is covered by InventoryOwnerTokenTests.
+                        return Task.FromResult(WriteInventory((IEnumerable<UpdateCharacterInventory>)args[2], (long?)args[4]));
                     case nameof(ICharactersRepository.UpdateCharacterCurrency):
                         return Task.FromResult(WriteCurrency((int)args[2], (long?)args[3]));
                     case nameof(ICharactersRepository.UpdateCharacterData):
-                        return Task.FromResult(WriteCharacterData((IEnumerable<UpdateCharacterInventory>)args[3], (long?)args[6], (bool)args[7]));
+                        // args[5] is the owner token, args[6] the zone instance; both checks are covered by the database tests.
+                        return Task.FromResult(WriteCharacterData((IEnumerable<UpdateCharacterInventory>)args[3], (long?)args[7], (bool)args[8]));
                     case nameof(ICharactersRepository.UpdateCharacterQuests):
                         QuestSaves++;
                         return Task.FromResult(true);

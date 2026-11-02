@@ -1057,7 +1057,7 @@ namespace OWSData.Repositories.Implementations.Postgres
         }
 
         public async Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName,
-            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, long? expectedRevision = null)
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, Guid? ownerToken, long? expectedRevision = null)
         {
             // A whole-bag rewrite is DELETE-then-INSERT, so it has to be one transaction. This ran
             // on an auto-committing connection before: a failure part-way through the insert loop
@@ -1083,6 +1083,12 @@ namespace OWSData.Repositories.Implementations.Postgres
                 {
                     await tx.RollbackAsync();
                     return InventoryFail("bad_request");
+                }
+
+                if (await IsStaleOwnerUnderLock(conn, tx, customerGUID, character.CharacterID, ownerToken))
+                {
+                    await tx.RollbackAsync();
+                    return InventoryFail("stale_owner", character.EconomyRevision);
                 }
 
                 // Opt-in optimistic guard. Serializing on the lock alone does not save a stale
@@ -1150,6 +1156,20 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
+        // The controller checks the owner token on its own connection before the save's transaction begins, so a claim
+        // that commits in between (zone handoff, second login) would otherwise let the replaced zone server overwrite the
+        // new owner's data. Call this after locking the Characters row: claims lock that row before changing the owner,
+        // so the answer holds until commit. Same policy as the controller: the replaced owner's saves still land during
+        // the handover window.
+        private static Task<bool> IsStaleOwnerUnderLock(DbConnection conn, DbTransaction tx, Guid customerGUID, int characterID, Guid? ownerToken) =>
+            conn.ExecuteScalarAsync<bool>(CharacterOwnersRepository.StaleByIdSql, new
+            {
+                CustomerGUID = customerGUID,
+                CharacterID = characterID,
+                OwnerToken = ownerToken,
+                AllowPrevious = true
+            }, transaction: tx, commandType: CommandType.Text);
+
         private static async Task InsertInventoryItems(DbConnection conn, DbTransaction tx, Guid customerGUID, int charInventoryID,
             IEnumerable<UpdateCharacterInventory> updateCharacterInventory)
         {
@@ -1171,8 +1191,8 @@ namespace OWSData.Repositories.Implementations.Postgres
         }
 
         public async Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
-            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, int? callerZoneInstanceId = null,
-            long? expectedRevision = null, bool requireExpectedRevision = false)
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
+            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false)
         {
             // A missing section is refused, not skipped: the inventory write deletes the bag before
             // inserting, so a null CharInventory would read as "empty bag" and wipe it.
@@ -1205,6 +1225,13 @@ namespace OWSData.Repositories.Implementations.Postgres
                 {
                     await tx.RollbackAsync();
                     return CharacterDataFail("bad_request");
+                }
+
+                // Same owner re-check as UpdateCharacterInventory: a stale owner writes none of the three sections.
+                if (await IsStaleOwnerUnderLock(conn, tx, customerGUID, character.CharacterID, ownerToken))
+                {
+                    await tx.RollbackAsync();
+                    return CharacterDataFail("stale_owner");
                 }
 
                 // Checked inside the transaction so the decision and the writes see the same ownership.

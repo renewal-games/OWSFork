@@ -16,8 +16,8 @@ namespace OWSTests.Database
 {
     /// <summary>
     /// api/Characters/UpdateCharacterData saves quests, inventory and stats in one transaction: a failure in any
-    /// section, a missing section, or a save from a zone that no longer owns the character writes nothing. Runs on the
-    /// migrated schema only, because setup.sql alone has no CharQuests or CharStats tables.
+    /// section, a missing section, or a save from a zone or owner token that no longer owns the character writes nothing.
+    /// Runs on the migrated schema only, because setup.sql alone has no CharQuests, CharStats or CharacterOwners tables.
     /// </summary>
     public class UpdateCharacterDataTests : IClassFixture<PostgresTestDatabases>
     {
@@ -165,6 +165,104 @@ namespace OWSTests.Database
             Assert.Equal(revision, await Revision(source, customerGUID));
         }
 
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task OldOwnerAfterClaimPastHandoverWritesNothing(SchemaSource source)
+        {
+            // The save names the zone the character is on, so only the owner token can refuse it.
+            Guid customerGUID = await SeedCharacter(source);
+            Guid oldToken = (await Owners(source).ClaimByName(customerGUID, CharName, OwningZone)).OwnerToken;
+
+            // The controller's check passes for the old owner...
+            Assert.False(await Owners(source).IsStaleOwnerWrite(customerGUID, CharName, oldToken));
+
+            // ...then a second login claims the character and the handover ends before the save reaches the database.
+            Assert.True((await Owners(source).ClaimByName(customerGUID, CharName, OwningZone)).Success);
+            await ExpireHandover(source, customerGUID);
+
+            UpdateCharacterDataResponse result = await Request(source, customerGUID, NewQuests("Quest.Second"), NewInventory(), NewStats(), OwningZone,
+                ownerToken: oldToken).Handle();
+
+            Assert.False(result.Success);
+            Assert.Equal("stale_owner", result.ReasonCode);
+            Assert.Equal("stale_owner", result.ErrorMessage);
+            await AssertUnchanged(source, customerGUID);
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task OldOwnerWaitingOnTheRowLockWhileAClaimCommitsWritesNothing(SchemaSource source)
+        {
+            Guid customerGUID = await SeedCharacter(source);
+            Guid oldToken = (await Owners(source).ClaimByName(customerGUID, CharName, OwningZone)).OwnerToken;
+
+            // A claim in flight: it holds the character row lock, as SetOwner does, and replaces the owner outright.
+            await using var claimConnection = new NpgsqlConnection(_databases.ConnectionString(source));
+            await claimConnection.OpenAsync();
+            await using NpgsqlTransaction claimTx = await claimConnection.BeginTransactionAsync();
+            await claimConnection.ExecuteAsync(@"SELECT CharacterID FROM Characters
+                WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName FOR UPDATE", new { CustomerGUID = customerGUID, CharName }, claimTx);
+            await claimConnection.ExecuteAsync(@"UPDATE CharacterOwners SET OwnerToken = @NewToken, PreviousOwnerToken = NULL,
+                PreviousOwnerUntil = NULL WHERE CustomerGUID = @CustomerGUID",
+                new { CustomerGUID = customerGUID, NewToken = Guid.NewGuid() }, claimTx);
+
+            Task<UpdateCharacterDataResponse> save = Request(source, customerGUID, NewQuests("Quest.Second"), NewInventory(), NewStats(), OwningZone,
+                ownerToken: oldToken).Handle();
+            await WaitUntilBlockedOnLock(source, save);
+
+            await claimTx.CommitAsync();
+            UpdateCharacterDataResponse result = await save;
+
+            Assert.False(result.Success);
+            Assert.Equal("stale_owner", result.ReasonCode);
+            await AssertUnchanged(source, customerGUID);
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task ReplacedOwnerDuringHandoverStillSaves(SchemaSource source)
+        {
+            // Same policy as the controller: the replaced owner's last save lands while the handover runs.
+            Guid customerGUID = await SeedCharacter(source);
+            Guid oldToken = (await Owners(source).ClaimByName(customerGUID, CharName, OwningZone)).OwnerToken;
+            Assert.True((await Owners(source).ClaimByName(customerGUID, CharName, OwningZone)).HandoverSeconds > 0);
+
+            UpdateCharacterDataResponse result = await Request(source, customerGUID, NewQuests("Quest.Second"), NewInventory(), NewStats(), OwningZone,
+                ownerToken: oldToken).Handle();
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Equal(new[] { "NewSword" }, await Items(source, customerGUID));
+            Assert.Equal(7, await Stat(source, customerGUID));
+        }
+
+        private CharacterOwnersRepository Owners(SchemaSource source) =>
+            new(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) }));
+
+        private async Task ExpireHandover(SchemaSource source, Guid customerGUID)
+        {
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            await connection.ExecuteAsync(@"UPDATE CharacterOwners SET PreviousOwnerUntil = NOW() - INTERVAL '1 second'
+                WHERE CustomerGUID = @CustomerGUID", new { CustomerGUID = customerGUID });
+        }
+
+        // The save must reach the row lock before the claim commits, or the test proves nothing about the race. Each test
+        // class has its own database and its tests run one at a time, so any lock wait here is the save's.
+        private async Task WaitUntilBlockedOnLock(SchemaSource source, Task save)
+        {
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            for (int attempt = 0; attempt < 200; attempt++)
+            {
+                Assert.False(save.IsCompleted, "The save finished while the claim still held the character row lock.");
+                if (await connection.ExecuteScalarAsync<bool>(@"SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                    WHERE datname = current_database() AND wait_event_type = 'Lock')"))
+                {
+                    return;
+                }
+                await Task.Delay(50);
+            }
+            throw new TimeoutException("The save never blocked on the character row lock.");
+        }
+
         private async Task<long> Revision(SchemaSource source, Guid customerGUID)
         {
             await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
@@ -175,7 +273,7 @@ namespace OWSTests.Database
 
         private UpdateCharacterDataRequest Request(SchemaSource source, Guid customerGUID, IEnumerable<UpdateCharacterQuest> quests,
             IEnumerable<UpdateCharacterInventory> inventory, IEnumerable<UpdateCharacterStats> stats, int? zoneInstanceID,
-            long? expectedRevision = null, EconomyOptions economyOptions = null)
+            long? expectedRevision = null, EconomyOptions economyOptions = null, Guid? ownerToken = null)
         {
             var request = new UpdateCharacterDataRequest
             {
@@ -184,7 +282,8 @@ namespace OWSTests.Database
                 CharInventory = inventory,
                 CharStats = stats,
                 ZoneInstanceID = zoneInstanceID,
-                ExpectedRevision = expectedRevision
+                ExpectedRevision = expectedRevision,
+                OwnerToken = ownerToken
             };
             request.SetData(
                 new CharactersRepository(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) })),
