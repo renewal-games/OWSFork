@@ -43,5 +43,10 @@ namespace OWSData.Repositories.Implementations.InMemory
         {
             zoneServerProcesses.RemoveAll(item => item.ZoneInstanceId == zoneInstanceId);
         }
+
+        public void RemoveZoneServerProcess(int zoneInstanceId, int processId)
+        {
+            zoneServerProcesses.RemoveAll(item => item.ZoneInstanceId == zoneInstanceId && item.ProcessId == processId);
+        }
     }
 }

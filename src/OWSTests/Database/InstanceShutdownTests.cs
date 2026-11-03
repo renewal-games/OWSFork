@@ -84,6 +84,24 @@ namespace OWSTests.Database
             Assert.Equal(ReadyStatus, await Status(source, customerGUID, zoneInstanceID));
         }
 
+        //SpinUpServerInstance compares these values with the request, so a column that stopped mapping would refuse every spin-up.
+        [PostgresTheory]
+        [InlineData(SchemaSource.SetupSql)]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task GetZoneInstance_ReturnsWorldServerAndPort_ToTheOwningCustomerOnly(SchemaSource source)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            int zoneInstanceID = await SeedMapInstance(source, customerGUID, worldServerID: 7, ReadyStatus);
+
+            var row = await Repository(source).GetZoneInstance(customerGUID, zoneInstanceID);
+            var otherCustomersView = await Repository(source).GetZoneInstance(Guid.NewGuid(), zoneInstanceID);
+
+            Assert.Equal(zoneInstanceID, row.MapInstanceID);
+            Assert.Equal(7, row.WorldServerID);
+            Assert.Equal(7777, row.Port);
+            Assert.Equal(0, otherCustomersView.MapInstanceID);
+        }
+
         private async Task<SuccessAndErrorMessage> Handle(RecordingShutDownRequest request, SchemaSource source, Guid customerGUID)
         {
             request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), Repository(source),

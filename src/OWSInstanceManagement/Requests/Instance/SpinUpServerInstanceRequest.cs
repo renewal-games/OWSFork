@@ -28,12 +28,12 @@ namespace OWSInstanceManagement.Requests.Instance
         private SuccessAndErrorMessage Output;
         private Guid CustomerGUID;
         //private IServiceProvider ServiceProvider;
-        private ICharactersRepository _charactersRepository;
+        private IInstanceManagementRepository _instanceManagementRepository;
 
-        public void SetData(IOptions<RabbitMQOptions> rabbitMQOptions, ICharactersRepository charactersRepository, IHeaderCustomerGUID customerGuid)
+        public void SetData(IOptions<RabbitMQOptions> rabbitMQOptions, IInstanceManagementRepository instanceManagementRepository, IHeaderCustomerGUID customerGuid)
         {
             _rabbitMQOptions = rabbitMQOptions;
-            _charactersRepository = charactersRepository;
+            _instanceManagementRepository = instanceManagementRepository;
             CustomerGUID = customerGuid.CustomerGUID;
         }
 
@@ -43,6 +43,22 @@ namespace OWSInstanceManagement.Requests.Instance
             if (!ZoneMapName.IsValid(ZoneName))
             {
                 return new BadRequestObjectResult(new SuccessAndErrorMessage { Success = false, ErrorMessage = "Invalid ZoneName." });
+            }
+
+            if (WorldServerID < 1 || ZoneInstanceID < 1 || !SpinUpPort.IsValid(Port))
+            {
+                return new BadRequestObjectResult(new SuccessAndErrorMessage { Success = false, ErrorMessage = "Invalid WorldServerID, ZoneInstanceID or Port." });
+            }
+
+            //The launcher starts a process from these values, so they must describe a zone instance this customer already has.
+            //GetZoneInstance also returns an empty row when the lookup fails, which refuses the spin-up too.
+            GetServerInstanceFromPort zoneInstance = await _instanceManagementRepository.GetZoneInstance(CustomerGUID, ZoneInstanceID);
+
+            if (zoneInstance == null || zoneInstance.MapInstanceID != ZoneInstanceID
+                || zoneInstance.WorldServerID != WorldServerID || zoneInstance.Port != Port)
+            {
+                Log.Warning($"SpinUpServerInstance - Refused: World Server {WorldServerID} and Port {Port} do not match a Zone Instance {ZoneInstanceID} of this customer.");
+                return new BadRequestObjectResult(new SuccessAndErrorMessage { Success = false, ErrorMessage = "WorldServerID, ZoneInstanceID and Port do not match a zone instance." });
             }
 
             MQSpinUpServerMessage serverSpinUpMessage = new()

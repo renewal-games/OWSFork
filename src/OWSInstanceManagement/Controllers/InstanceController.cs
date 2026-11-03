@@ -131,7 +131,7 @@ namespace OWSInstanceManagement.Controllers
         [SwaggerResponse(404)]*/
         public async Task<IActionResult> SpinUpServerInstance([FromBody] SpinUpServerInstanceRequest request)
         {
-            request.SetData(_rabbitMQOptions, _charactersRepository, _customerGuid);
+            request.SetData(_rabbitMQOptions, _instanceManagementRepository, _customerGuid);
 
             return await request.Handle();
         }

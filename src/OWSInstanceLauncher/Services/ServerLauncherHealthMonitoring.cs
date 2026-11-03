@@ -171,27 +171,12 @@ namespace OWSInstanceLauncher.Services
 
             try
             {
-                System.Diagnostics.Process procToKill = System.Diagnostics.Process.GetProcessById(trackedProcess.ProcessId);
-
-                //PID-reuse guard: if the live process's start time no longer matches, the PID was reused by an unrelated
-                //process. Never kill it; just drop the stale map entry.
-                if (trackedProcess.ProcessStartTimeUtc.HasValue
-                    && Math.Abs((procToKill.StartTime.ToUniversalTime() - trackedProcess.ProcessStartTimeUtc.Value).TotalSeconds) > 2)
+                //A reused PID is left running and only the stale map entry is dropped.
+                if (TrackedZoneProcess.Stop(trackedProcess) == TrackedZoneProcessStopResult.StillRunning)
                 {
-                    Log.Warning($"Reconciliation: PID {trackedProcess.ProcessId} start time no longer matches Zone Instance {trackedProcess.ZoneInstanceId}; PID was reused. Dropping stale map entry.");
-                    _zoneServerProcessesRepository.RemoveZoneServerProcess(trackedProcess.ZoneInstanceId);
+                    Log.Error($"Reconciliation: orphaned process for Zone Instance {trackedProcess.ZoneInstanceId} did not exit. Will retry next cycle.");
                     return;
                 }
-
-                if (!procToKill.HasExited)
-                {
-                    procToKill.Kill(entireProcessTree: true);
-                    procToKill.WaitForExit(10000);
-                }
-            }
-            catch (ArgumentException)
-            {
-                //No process with that Id is running; it already exited.
             }
             catch (Exception ex)
             {

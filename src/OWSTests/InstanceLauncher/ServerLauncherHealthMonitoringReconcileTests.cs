@@ -3,6 +3,7 @@ using OWSInstanceLauncher.Services;
 using OWSShared.Options;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -112,6 +113,41 @@ namespace OWSTests.InstanceLauncher
             Assert.Equal(new[] { TrackedZoneInstanceId }, processes.Removed);
         }
 
+        [Fact]
+        public void DoWork_DropsTheEntryButLeavesTheProcess_WhenThePidWasReused()
+        {
+            var startInfo = OperatingSystem.IsWindows()
+                ? new ProcessStartInfo("ping", "-n 300 127.0.0.1")
+                : new ProcessStartInfo("sleep", "300");
+            startInfo.UseShellExecute = false;
+            startInfo.RedirectStandardOutput = true;
+            startInfo.CreateNoWindow = true;
+            using Process unrelated = Process.Start(startInfo);
+
+            try
+            {
+                var processes = new FakeZoneServerProcessesRepository(new ZoneServerProcess
+                {
+                    ZoneInstanceId = TrackedZoneInstanceId,
+                    ProcessId = unrelated.Id,
+                    ProcessStartTimeUtc = unrelated.StartTime.ToUniversalTime().AddHours(-1)
+                });
+                var monitor = CreateMonitor(new StubHandler(HttpStatusCode.OK, "[]"), processes);
+
+                for (int tick = 0; tick < ServerLauncherHealthMonitoring.OrphanProcessMissesBeforeKill; tick++)
+                {
+                    monitor.DoWork();
+                }
+
+                Assert.Equal(new[] { TrackedZoneInstanceId }, processes.Removed);
+                Assert.False(unrelated.HasExited);
+            }
+            finally
+            {
+                unrelated.Kill(entireProcessTree: true);
+            }
+        }
+
         private static ZoneServerProcess TrackedProcessPastGrace()
         {
             //No start time means the grace window and PID-reuse guard don't apply, like a process tracked long ago.
@@ -189,6 +225,14 @@ namespace OWSTests.InstanceLauncher
             {
                 Removed.Add(zoneInstanceId);
                 _processes.RemoveAll(p => p.ZoneInstanceId == zoneInstanceId);
+            }
+
+            public void RemoveZoneServerProcess(int zoneInstanceId, int processId)
+            {
+                if (_processes.RemoveAll(p => p.ZoneInstanceId == zoneInstanceId && p.ProcessId == processId) > 0)
+                {
+                    Removed.Add(zoneInstanceId);
+                }
             }
         }
 

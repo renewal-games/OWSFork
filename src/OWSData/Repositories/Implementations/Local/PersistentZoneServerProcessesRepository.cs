@@ -75,6 +75,17 @@ namespace OWSData.Repositories.Implementations.Local
             }
         }
 
+        public void RemoveZoneServerProcess(int zoneInstanceId, int processId)
+        {
+            lock (_lock)
+            {
+                if (_zoneServerProcesses.RemoveAll(item => item.ZoneInstanceId == zoneInstanceId && item.ProcessId == processId) > 0)
+                {
+                    Persist();
+                }
+            }
+        }
+
         //Load the persisted map and drop any entry whose process is gone or whose PID has been reused (start time mismatch).
         private List<ZoneServerProcess> LoadAndReconcile()
         {
