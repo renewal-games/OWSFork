@@ -83,8 +83,8 @@ namespace OWSManagement.Controllers
         public async Task<IActionResult> Compare(string name)
         {
             if (!StagingReady(out IActionResult refusal)) return refusal;
-            CharacterRestoreRepository.Snapshot live = await _restore.GetSnapshot(false, _customer.CustomerGUID, name);
-            CharacterRestoreRepository.Snapshot backup = await _restore.GetSnapshot(true, _customer.CustomerGUID, name);
+            (CharacterRestoreRepository.Snapshot live, CharacterRestoreRepository.Snapshot backup) =
+                await _restore.GetComparison(_customer.CustomerGUID, name);
             if (live == null) return NotFound();
             return Ok(new { Live = live, Backup = backup, Status = ReadStatus() });
         }
@@ -112,6 +112,8 @@ namespace OWSManagement.Controllers
             {
                 string message = error switch
                 {
+                    var e when e.StartsWith("shop_escrow:", StringComparison.Ordinal) =>
+                        "Restore refused because these shops were created after the backup and still have open listings or unclaimed escrow: " + e.Substring("shop_escrow:".Length) + ". Close and claim them, then compare again.",
                     "online" => "The character is in the world. Kick them, wait a minute, then restore.",
                     "not_in_backup" => "The backup has no character with this name.",
                     "different_character" => "This name belongs to a different character than in the backup.",
