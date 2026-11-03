@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc.Testing;
 using OWSData.Models.Composites;
+using OWSData.Models.StoredProcs;
 using OWSShared;
 using OWSShared.Middleware;
 using OWSTests.Database;
@@ -140,6 +141,30 @@ namespace OWSTests.InstanceManagement
             using HttpResponseMessage response = await client.PostAsJsonAsync("api/Instance/CleanUpInstances", new { });
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+
+        //Takes a bare ID, so unlike the endpoints above it needs a real body to get as far as the key check.
+        [Fact]
+        public async Task GetZoneInstanceForSpinUp_WithoutServiceKey_IsUnauthorized()
+        {
+            using HttpClient client = _host.CreateClient();
+
+            using HttpResponseMessage response = await client.PostAsJsonAsync("api/Instance/GetZoneInstanceForSpinUp", 1);
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        }
+
+        [PostgresFact]
+        public async Task GetZoneInstanceForSpinUp_UnknownInstance_ReturnsAnEmptyRow()
+        {
+            using HttpClient client = _host.CreateClient(InstanceManagementHost.ServiceKey);
+
+            using HttpResponseMessage response = await client.PostAsJsonAsync("api/Instance/GetZoneInstanceForSpinUp", 999999);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            GetServerInstanceFromPort row = await response.Content.ReadFromJsonAsync<GetServerInstanceFromPort>();
+            Assert.False(row.MatchesSpinUp(0, 999999, null, 0));
+            Assert.Equal(0, row.MapInstanceID);
         }
 
         [PostgresFact]

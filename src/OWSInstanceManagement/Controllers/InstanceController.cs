@@ -131,7 +131,7 @@ namespace OWSInstanceManagement.Controllers
         [SwaggerResponse(404)]*/
         public async Task<IActionResult> SpinUpServerInstance([FromBody] SpinUpServerInstanceRequest request)
         {
-            request.SetData(_rabbitMQOptions, _charactersRepository, _customerGuid);
+            request.SetData(_rabbitMQOptions, _instanceManagementRepository, _customerGuid);
 
             return await request.Handle();
         }
@@ -205,6 +205,17 @@ namespace OWSInstanceManagement.Controllers
         {
             GetZoneInstanceRequest request = new GetZoneInstanceRequest(ZoneInstanceId, _instanceManagementRepository, _customerGuid);
             return await request.Handle();
+        }
+
+        //For the launcher: the values a spin-up command must match. Separate from GetZoneInstance because zone servers read
+        //that one and react to what it returns. An unknown instance comes back as an empty row.
+        [HttpPost]
+        [Route("GetZoneInstanceForSpinUp")]
+        [RequireSamsaraServiceKey]
+        [Produces(typeof(GetServerInstanceFromPort))]
+        public async Task<GetServerInstanceFromPort> GetZoneInstanceForSpinUp([FromBody] int ZoneInstanceId)
+        {
+            return await _instanceManagementRepository.GetZoneInstanceForSpinUp(_customerGuid.CustomerGUID, ZoneInstanceId) ?? new GetServerInstanceFromPort();
         }
 
         [HttpPost]

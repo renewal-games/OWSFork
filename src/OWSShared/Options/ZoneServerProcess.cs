@@ -10,7 +10,10 @@ namespace OWSShared.Options
         public int ProcessId { get; set; }
         public string ProcessName { get; set; }
 
-        //Process start time, used to guard against PID reuse when the map is reloaded from disk after a launcher restart.
+        //When the process started, for the health monitor's grace window. Not precise or stable enough to identify a process.
         public DateTime? ProcessStartTimeUtc { get; set; }
+
+        //What identifies the process, together with its PID (see OWSShared.ProcessStartStamp). Without one the process is never killed.
+        public long? ProcessStartStamp { get; set; }
     }
 }

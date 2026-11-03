@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using OWSData.Models.Composites;
+using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Implementations.InMemory;
 using OWSData.Repositories.Interfaces;
 using OWSInstanceLauncher.Services;
@@ -87,7 +88,7 @@ namespace OWSTests.InstanceLauncher
         public async Task SpinUpServerInstance_ReportsFailureWhenThePublishIsNotConfirmed()
         {
             var request = new RecordingSpinUpRequest { WorldServerID = 7, ZoneInstanceID = 42, ZoneName = "Map", Port = 7777, PublishFails = true };
-            request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), null, new FixedCustomerGuid());
+            request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), FakeInstanceManagementRepository.Returning(MatchingRow()), new FixedCustomerGuid());
 
             var result = Assert.IsType<OkObjectResult>(await request.Handle());
 
@@ -100,7 +101,7 @@ namespace OWSTests.InstanceLauncher
         public async Task SpinUpServerInstance_ReportsSuccessOnceConfirmed()
         {
             var request = new RecordingSpinUpRequest { WorldServerID = 7, ZoneInstanceID = 42, ZoneName = "Map", Port = 7777 };
-            request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), null, new FixedCustomerGuid());
+            request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), FakeInstanceManagementRepository.Returning(MatchingRow()), new FixedCustomerGuid());
 
             var result = Assert.IsType<OkObjectResult>(await request.Handle());
 
@@ -108,6 +109,39 @@ namespace OWSTests.InstanceLauncher
             MQSpinUpServerMessage published = Assert.Single(request.Published);
             Assert.Equal(42, published.ZoneInstanceID);
             Assert.Equal(7, published.WorldServerID);
+        }
+
+        [Theory]
+        [InlineData(7, 42, -1)]
+        [InlineData(7, 42, 0)]
+        [InlineData(7, 42, 65536)]
+        [InlineData(0, 42, 7777)]
+        [InlineData(-7, 42, 7777)]
+        [InlineData(7, 0, 7777)]
+        [InlineData(7, -42, 7777)]
+        public async Task SpinUpServerInstance_RejectsOutOfRangeValues_WithoutPublishing(int worldServerId, int zoneInstanceId, int port)
+        {
+            var request = new RecordingSpinUpRequest { WorldServerID = worldServerId, ZoneInstanceID = zoneInstanceId, ZoneName = "Map", Port = port };
+            request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), FakeInstanceManagementRepository.Returning(MatchingRow()), new FixedCustomerGuid());
+
+            Assert.IsType<BadRequestObjectResult>(await request.Handle());
+
+            Assert.Empty(request.Published);
+        }
+
+        [Theory]
+        [InlineData(8, 42, "Map", 7777)] //Another launcher's row.
+        [InlineData(7, 42, "Map", 7778)] //Another port than the row was given.
+        [InlineData(7, 42, "OtherMap", 7777)] //Another map than the row is for.
+        [InlineData(7, 43, "Map", 7777)] //No such row, or another customer's: the lookup comes back empty.
+        public async Task SpinUpServerInstance_RejectsValuesThatDoNotMatchTheRow_WithoutPublishing(int worldServerId, int zoneInstanceId, string zoneName, int port)
+        {
+            var request = new RecordingSpinUpRequest { WorldServerID = worldServerId, ZoneInstanceID = zoneInstanceId, ZoneName = zoneName, Port = port };
+            request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), FakeInstanceManagementRepository.Returning(MatchingRow()), new FixedCustomerGuid());
+
+            Assert.IsType<BadRequestObjectResult>(await request.Handle());
+
+            Assert.Empty(request.Published);
         }
 
         [Fact]
@@ -153,7 +187,7 @@ namespace OWSTests.InstanceLauncher
             //Mirrors HandleServerSpinUpMessage: skip a zone instance that already runs, otherwise start and track it.
             Func<Task> spinUp = () =>
             {
-                if (ServerLauncherMQListener.IsZoneInstanceAlreadyRunning(processes, 42, pid => !liveProcessIds.Contains(pid)))
+                if (ServerLauncherMQListener.IsZoneInstanceAlreadyRunning(processes, 42, process => liveProcessIds.Contains(process.ProcessId)))
                 {
                     return Task.CompletedTask;
                 }
@@ -191,9 +225,14 @@ namespace OWSTests.InstanceLauncher
             IZoneServerProcessesRepository processes = new ZoneServerProcessesRepository();
             processes.AddZoneServerProcess(new ZoneServerProcess { ZoneInstanceId = 42, ProcessId = 1234 });
 
-            Assert.True(ServerLauncherMQListener.IsZoneInstanceAlreadyRunning(processes, 42, _ => false));
-            Assert.False(ServerLauncherMQListener.IsZoneInstanceAlreadyRunning(processes, 42, _ => true));
-            Assert.False(ServerLauncherMQListener.IsZoneInstanceAlreadyRunning(processes, 43, _ => false));
+            Assert.True(ServerLauncherMQListener.IsZoneInstanceAlreadyRunning(processes, 42, _ => true));
+            Assert.False(ServerLauncherMQListener.IsZoneInstanceAlreadyRunning(processes, 42, _ => false));
+            Assert.False(ServerLauncherMQListener.IsZoneInstanceAlreadyRunning(processes, 43, _ => true));
+        }
+
+        private static GetServerInstanceFromPort MatchingRow()
+        {
+            return new GetServerInstanceFromPort { MapInstanceID = 42, WorldServerID = 7, Port = 7777, MapName = "Map" };
         }
 
         private static BasicDeliverEventArgs Delivery(ulong deliveryTag, bool redelivered)
@@ -220,6 +259,25 @@ namespace OWSTests.InstanceLauncher
                 }
 
                 Published.Add(serverSpinUpMessage);
+            }
+        }
+
+        /// <summary>Answers GetZoneInstanceForSpinUp from one row, like the real lookup: null for any other ID. Nothing else is called.</summary>
+        public class FakeInstanceManagementRepository : DispatchProxy
+        {
+            private GetServerInstanceFromPort _row;
+
+            public static IInstanceManagementRepository Returning(GetServerInstanceFromPort row)
+            {
+                IInstanceManagementRepository repository = Create<IInstanceManagementRepository, FakeInstanceManagementRepository>();
+                ((FakeInstanceManagementRepository)(object)repository)._row = row;
+                return repository;
+            }
+
+            protected override object Invoke(MethodInfo targetMethod, object[] args)
+            {
+                Assert.Equal(nameof(IInstanceManagementRepository.GetZoneInstanceForSpinUp), targetMethod.Name);
+                return Task.FromResult((int)args[1] == _row.MapInstanceID ? _row : null);
             }
         }
 

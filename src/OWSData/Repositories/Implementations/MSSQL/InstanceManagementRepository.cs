@@ -59,6 +59,20 @@ namespace OWSData.Repositories.Implementations.MSSQL
             }
         }
 
+        public async Task<GetServerInstanceFromPort> GetZoneInstanceForSpinUp(Guid customerGUID, int zoneInstanceId)
+        {
+            using (Connection)
+            {
+                var parameter = new DynamicParameters();
+                parameter.Add("@CustomerGUID", customerGUID);
+                parameter.Add("@MapInstanceID", zoneInstanceId);
+
+                return await Connection.QuerySingleOrDefaultAsync<GetServerInstanceFromPort>(GenericQueries.GetMapInstanceForSpinUp,
+                    parameter,
+                    commandType: CommandType.Text);
+            }
+        }
+
         public async Task<GetServerInstanceFromPort> GetServerInstanceFromPort(Guid customerGUID, string serverIP, int port)
         {
             GetServerInstanceFromPort output;

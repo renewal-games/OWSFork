@@ -298,7 +298,7 @@ static async Task RequestSpinUp(HarnessOptions options, int worldServerId, int z
     {
         WorldServerID = worldServerId,
         ZoneInstanceID = zoneInstanceId,
-        ZoneName = options.ZoneName,
+        ZoneName = options.MapName,
         Port = options.ZonePort
     });
 

@@ -1,4 +1,5 @@
 using OWSData.Repositories.Interfaces;
+using OWSShared;
 using OWSShared.Options;
 using System;
 using System.Collections.Generic;
@@ -75,7 +76,18 @@ namespace OWSData.Repositories.Implementations.Local
             }
         }
 
-        //Load the persisted map and drop any entry whose process is gone or whose PID has been reused (start time mismatch).
+        public void RemoveZoneServerProcess(int zoneInstanceId, int processId)
+        {
+            lock (_lock)
+            {
+                if (_zoneServerProcesses.RemoveAll(item => item.ZoneInstanceId == zoneInstanceId && item.ProcessId == processId) > 0)
+                {
+                    Persist();
+                }
+            }
+        }
+
+        //Load the persisted map and drop any entry whose process is gone or can't be shown to be the same one (start stamp mismatch).
         private List<ZoneServerProcess> LoadAndReconcile()
         {
             var loaded = new List<ZoneServerProcess>();
@@ -122,17 +134,8 @@ namespace OWSData.Repositories.Implementations.Local
                     return false;
                 }
 
-                //Guard against PID reuse: if we recorded a start time, it must match the live process.
-                if (entry.ProcessStartTimeUtc.HasValue)
-                {
-                    var liveStartUtc = process.StartTime.ToUniversalTime();
-                    if (Math.Abs((liveStartUtc - entry.ProcessStartTimeUtc.Value).TotalSeconds) > 2)
-                    {
-                        return false;
-                    }
-                }
-
-                return true;
+                //Guard against PID reuse. An entry with no stamp can't be tied to this process, so it is dropped too.
+                return ProcessStartStamp.Matches(entry.ProcessStartStamp, ProcessStartStamp.Read(process));
             }
             catch
             {

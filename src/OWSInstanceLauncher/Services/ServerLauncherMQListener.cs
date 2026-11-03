@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Options;
 using OWSData.Models;
 using OWSData.Models.Composites;
+using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
 using OWSShared;
 using OWSShared.Interfaces;
@@ -11,6 +12,7 @@ using OWSShared.RequestPayloads;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using System;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -242,11 +244,18 @@ namespace OWSInstanceLauncher.Services
 
         //Spin-up commands can be delivered more than once (a launcher that started the server but died before acking).
         //A zone instance whose tracked process is still running already has its server, so the duplicate is ignored.
-        public static bool IsZoneInstanceAlreadyRunning(IZoneServerProcessesRepository zoneServerProcessesRepository, int zoneInstanceID, Func<int, bool> hasProcessExited)
+        public static bool IsZoneInstanceAlreadyRunning(IZoneServerProcessesRepository zoneServerProcessesRepository, int zoneInstanceID, Func<ZoneServerProcess, bool> isProcessRunning)
         {
-            int processId = zoneServerProcessesRepository.FindZoneServerProcessId(zoneInstanceID);
+            ZoneServerProcess tracked = zoneServerProcessesRepository.GetZoneServerProcesses().Find(process => process.ZoneInstanceId == zoneInstanceID);
 
-            return processId > 0 && !hasProcessExited(processId);
+            return tracked != null && tracked.ProcessId > 0 && isProcessRunning(tracked);
+        }
+
+        //Normal allocation stays inside MaxNumberOfInstances (it picks a free port from that range), but SpinUpServerInstance
+        //takes its IDs from the request, so the launcher enforces the limit itself. Exited servers don't use a slot.
+        public static bool IsAtInstanceLimit(IZoneServerProcessesRepository zoneServerProcessesRepository, int maxNumberOfInstances, Func<ZoneServerProcess, bool> isProcessRunning)
+        {
+            return zoneServerProcessesRepository.GetZoneServerProcesses().Count(isProcessRunning) >= maxNumberOfInstances;
         }
 
         // OtherCustomFlags never goes through String.Format, so a literal brace in a path cannot break the spin-up.
@@ -257,7 +266,7 @@ namespace OWSInstanceLauncher.Services
                 .Replace("{port}", port.ToString());
         }
 
-        private async Task HandleServerSpinUpMessage(Guid customerGUID, int worldServerID, int zoneInstanceID, string mapName, int port)
+        public async Task HandleServerSpinUpMessage(Guid customerGUID, int worldServerID, int zoneInstanceID, string mapName, int port)
         {
             //mapName is the first token of the server's single Arguments string: a space adds UE switches, a '?' URL options.
             if (!ZoneMapName.IsValid(mapName))
@@ -275,10 +284,28 @@ namespace OWSInstanceLauncher.Services
                 return;
             }
 
+            //RabbitMQ access is enough to publish a command, and CustomerGUID is not a secret, so the command must describe a
+            //row this customer really has on this launcher. Until that is shown nothing about it can be trusted, including which
+            //row it names, so no row is cleaned up. If one exists, health monitoring reclaims it once it goes stale.
+            if (zoneInstanceID < 1 || !SpinUpPort.IsValid(port) || worldServerID != _worldServerId
+                || !await SpinUpMatchesZoneInstanceRow(worldServerID, zoneInstanceID, mapName, port))
+            {
+                Log.Error($"HandleServerSpinUpMessage - Refusing to start Zone Instance {zoneInstanceID} on port {port} for World Server {worldServerID}: it does not match a zone instance of this launcher, which is World Server {_worldServerId}.");
+                return;
+            }
+
             //Before the port guard: a duplicate's port is held by the instance's own server, which is not a conflict.
-            if (IsZoneInstanceAlreadyRunning(_zoneServerProcessesRepository, zoneInstanceID, HasProcessExited))
+            //One command is handled at a time (prefetch 1, acked after handling), so nothing can start between this check and the Add below.
+            if (IsZoneInstanceAlreadyRunning(_zoneServerProcessesRepository, zoneInstanceID, TrackedZoneProcess.IsRunning))
             {
                 Log.Warning($"HandleServerSpinUpMessage - Zone Instance {zoneInstanceID} already has a running server process. Ignoring the duplicate spin-up.");
+                return;
+            }
+
+            if (IsAtInstanceLimit(_zoneServerProcessesRepository, _MaxNumberOfInstances, TrackedZoneProcess.IsRunning))
+            {
+                Log.Error($"HandleServerSpinUpMessage - Refusing to start Zone Instance {zoneInstanceID}: this launcher is already running its limit of {_MaxNumberOfInstances} instances. Marking the instance broken so it can be cleaned up.");
+                await CleanUpFailedSpinUp(zoneInstanceID, "instance limit");
                 return;
             }
 
@@ -336,14 +363,18 @@ namespace OWSInstanceLauncher.Services
             //proc.WaitForInputIdle();
 
             DateTime? processStartTimeUtc = null;
+            long? processStartStamp = null;
             try
             {
                 processStartTimeUtc = proc.StartTime.ToUniversalTime();
+                processStartStamp = ProcessStartStamp.Read(proc);
             }
             catch
             {
-                //StartTime can throw if the process exited immediately; the PID-reuse guard simply won't apply for this entry.
+                //These can throw if the process exited immediately. Without a stamp this entry's PID will never be killed.
             }
+
+            string processName = proc.ProcessName;
 
             _zoneServerProcessesRepository.AddZoneServerProcess(new ZoneServerProcess
             {
@@ -351,13 +382,38 @@ namespace OWSInstanceLauncher.Services
                 MapName = mapName,
                 Port = port,
                 ProcessId = proc.Id,
-                ProcessName = proc.ProcessName,
-                ProcessStartTimeUtc = processStartTimeUtc
+                ProcessName = processName,
+                ProcessStartTimeUtc = processStartTimeUtc,
+                ProcessStartStamp = processStartStamp
             });
 
-            Log.Information($"{customerGUID} : {worldServerID} : {mapName} : {port} has started.  ProcessId: {proc.Id}, ProcessName: {proc.ProcessName}");
+            Log.Information($"{customerGUID} : {worldServerID} : {mapName} : {port} has started.  ProcessId: {proc.Id}, ProcessName: {processName}");
+
+            //An exit before the Add above found nothing to remove, so check once more now the entry is there.
+            if (proc.HasExited)
+            {
+                _zoneServerProcessesRepository.RemoveZoneServerProcess(zoneInstanceID, proc.Id);
+            }
 
             //Readiness (Status = 2) is now reported by the dedicated server itself via UpdateNumberOfPlayers (see AOWSGameMode::StartPlay).
+        }
+
+        //A failed lookup throws, so the command is requeued once: an Instance Management restart must not lose a spin-up.
+        private async Task<bool> SpinUpMatchesZoneInstanceRow(int worldServerID, int zoneInstanceID, string mapName, int port)
+        {
+            var instanceManagementHttpClient = _httpClientFactory.CreateClient("OWSInstanceManagement");
+
+            var zoneInstanceRequest = new StringContent(zoneInstanceID.ToString(), Encoding.UTF8, "application/json");
+            var responseMessage = await instanceManagementHttpClient.PostAsync("api/Instance/GetZoneInstanceForSpinUp", zoneInstanceRequest);
+            responseMessage.EnsureSuccessStatusCode();
+
+            string responseContentString = await responseMessage.Content.ReadAsStringAsync();
+            var zoneInstance = JsonSerializer.Deserialize<GetServerInstanceFromPort>(responseContentString, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+
+            return zoneInstance != null && zoneInstance.MatchesSpinUp(worldServerID, zoneInstanceID, mapName, port);
         }
 
         //Marks a zone instance that never got a running server as shutting down and removes its row.
@@ -374,7 +430,7 @@ namespace OWSInstanceLauncher.Services
             }
         }
 
-        private async Task HandleServerShutDownMessage(Guid customerGUID, int zoneInstanceID)
+        public async Task HandleServerShutDownMessage(Guid customerGUID, int zoneInstanceID)
         {
             Log.Information($"Shutting down {customerGUID} : {zoneInstanceID}");
 
@@ -385,35 +441,14 @@ namespace OWSInstanceLauncher.Services
                 return;
             }
 
-            int foundProcessId = _zoneServerProcessesRepository.FindZoneServerProcessId(zoneInstanceID);
+            ZoneServerProcess tracked = _zoneServerProcessesRepository.GetZoneServerProcesses().Find(process => process.ZoneInstanceId == zoneInstanceID);
 
-            bool completeShutdown = foundProcessId <= 0;
+            bool completeShutdown = true;
 
-            if (foundProcessId > 0)
+            if (tracked != null && tracked.ProcessId > 0)
             {
-                try
-                {
-                    System.Diagnostics.Process procToKill = System.Diagnostics.Process.GetProcessById(foundProcessId);
-
-                    if (procToKill != null && !procToKill.HasExited)
-                    {
-                        procToKill.Kill(entireProcessTree: true);
-                        procToKill.WaitForExit(10000);
-                    }
-
-                    completeShutdown = procToKill == null || procToKill.HasExited;
-                }
-                catch (ArgumentException ex)
-                {
-                    completeShutdown = true;
-                    Log.Warning($"HandleServerShutDownMessage - Zone Instance {zoneInstanceID} process {foundProcessId} was already gone: {ex.Message}");
-                }
-                catch (Exception ex)
-                {
-                    //Kill can throw while the process is already exiting. Only a process that is really gone may lose its row.
-                    Log.Warning($"HandleServerShutDownMessage - Error killing Zone Instance {zoneInstanceID} process {foundProcessId}: {ex.Message}");
-                    completeShutdown = HasProcessExited(foundProcessId);
-                }
+                //A PID that can't be shown to be the zone server's is left alone, and there is nothing more to wait for.
+                completeShutdown = TrackedZoneProcess.Stop(tracked) != TrackedZoneProcessStopResult.StillRunning;
             }
             else
             {
@@ -442,37 +477,28 @@ namespace OWSInstanceLauncher.Services
             }
         }
 
-        private static bool HasProcessExited(int processId)
-        {
-            try
-            {
-                using System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById(processId);
-                return process.HasExited;
-            }
-            catch (ArgumentException)
-            {
-                return true;
-            }
-            catch (Exception)
-            {
-                return false;
-            }
-        }
-
-        private void ShutDownAllZoneServerInstances()
+        public void ShutDownAllZoneServerInstances()
         {
             Log.Information("Shutting down all Server Instances...");
 
             foreach (var zoneServerInstance in _zoneServerProcessesRepository.GetZoneServerProcesses())
             {
-                if (zoneServerInstance.ProcessId > 0)
+                if (zoneServerInstance.ProcessId <= 0)
                 {
-                    System.Diagnostics.Process procToKill = System.Diagnostics.Process.GetProcessById(zoneServerInstance.ProcessId);
+                    continue;
+                }
 
-                    if (procToKill != null)
+                //One entry that can't be stopped must not leave the servers after it running.
+                try
+                {
+                    if (TrackedZoneProcess.Stop(zoneServerInstance) == TrackedZoneProcessStopResult.StillRunning)
                     {
-                        procToKill.Kill();
+                        Log.Error($"ShutDownAllZoneServerInstances - Zone Instance {zoneServerInstance.ZoneInstanceId} process {zoneServerInstance.ProcessId} did not exit.");
                     }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, $"ShutDownAllZoneServerInstances - Could not stop Zone Instance {zoneServerInstance.ZoneInstanceId} process {zoneServerInstance.ProcessId}.");
                 }
             }
         }
@@ -615,6 +641,10 @@ namespace OWSInstanceLauncher.Services
         // Instance Management decides expected vs unexpected from the instance's row; this only reports the exit code.
         private async Task ReportZoneProcessExited(System.Diagnostics.Process proc, int zoneInstanceID, string mapName, int port)
         {
+            //Otherwise the entry outlives the process and its PID can later be handed to an unrelated one. The process ID is
+            //part of the match because a new server for this zone instance may already have replaced the entry.
+            _zoneServerProcessesRepository.RemoveZoneServerProcess(zoneInstanceID, proc.Id);
+
             try
             {
                 int exitCode = proc.ExitCode;
@@ -723,30 +753,41 @@ namespace OWSInstanceLauncher.Services
 
         private void RabbitMQ_ConnectionShutdown(object sender, ShutdownEventArgs e) { }
 
+        private static void RunShutDownStep(string description, Action step)
+        {
+            try
+            {
+                step();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, $"Error {description}.");
+            }
+        }
+
         public void Dispose()
         {
             Log.Information("Shutting Down OWS Instance Launcher...");
 
             if (_worldServerId > 0)
             {
-                var shutDownTask = ShutDownInstanceLauncherRequest(_worldServerId);
+                //The zone servers must still be stopped when Instance Management can't be reached.
+                RunShutDownStep("telling Instance Management the launcher is shutting down", () => ShutDownInstanceLauncherRequest(_worldServerId).Wait());
 
-                shutDownTask.Wait();
-
-                ShutDownAllZoneServerInstances();
+                RunShutDownStep("stopping the zone servers", ShutDownAllZoneServerInstances);
             }
 
             if (serverSpinUpChannel != null)
             {
-                serverSpinUpChannel.Close();
+                RunShutDownStep("closing the spin-up channel", serverSpinUpChannel.Close);
             }
             if (serverShutDownChannel != null)
             {
-                serverShutDownChannel.Close();
+                RunShutDownStep("closing the shut-down channel", serverShutDownChannel.Close);
             }
             if (connection != null)
             {
-                connection.Close();
+                RunShutDownStep("closing the RabbitMQ connection", connection.Close);
             }
 
             Log.Information("Done!");
