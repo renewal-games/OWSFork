@@ -25,11 +25,12 @@ namespace OWSData.Repositories.Implementations.ValKey
         private static readonly TimeSpan CircuitCooldown = TimeSpan.FromSeconds(10);
         private static long _skipCacheUntilTicks;
 
-        // When a session is invalidated (logout / selected-character change / role change) a short-lived
+        // When a session is invalidated (selected-character change / role change) a short-lived
         // tombstone is written next to the deleted key. A concurrent reader that fetched the
         // DB row just BEFORE the invalidation committed is blocked from re-populating the cache
-        // with the now-stale session while the tombstone is live — closing the read-repopulate
-        // race that a plain delete leaves open.
+        // with the now-stale session while the tombstone is live. A revoked session's tombstone
+        // lasts for its remaining lifetime instead (RevokeUserSession), so no delay lets a reader
+        // re-cache it: past its ExpiresAt a cached copy is no longer served.
         private static readonly TimeSpan InvalidationTombstoneTtl = TimeSpan.FromSeconds(10);
 
         private const string SetSessionScript = @"
@@ -53,8 +54,12 @@ if ARGV[4] == '1' then
 end
 return 1";
 
+        // Only ever extends the tombstone: a repeated logout or a late selected-character change
+        // must not cut a revoked session's tombstone back to the short one.
         private const string InvalidateSessionScript = @"
-redis.call('PSETEX', KEYS[2], ARGV[1], '1')
+if redis.call('PTTL', KEYS[2]) < tonumber(ARGV[1]) then
+    redis.call('PSETEX', KEYS[2], ARGV[1], '1')
+end
 redis.call('DEL', KEYS[1])
 return 1";
 
@@ -152,7 +157,14 @@ return 1";
             }
         }
 
-        public async Task RemoveUserSession(Guid customerGuid, Guid userSessionGuid)
+        public Task RemoveUserSession(Guid customerGuid, Guid userSessionGuid)
+            => InvalidateUserSession(customerGuid, userSessionGuid, InvalidationTombstoneTtl);
+
+        public Task RevokeUserSession(Guid customerGuid, Guid userSessionGuid, TimeSpan remainingLifetime)
+            => InvalidateUserSession(customerGuid, userSessionGuid,
+                remainingLifetime > InvalidationTombstoneTtl ? remainingLifetime : InvalidationTombstoneTtl);
+
+        private async Task InvalidateUserSession(Guid customerGuid, Guid userSessionGuid, TimeSpan tombstoneTtl)
         {
             string key = ConstructUserSessionKey(customerGuid, userSessionGuid);
             if (key == null)
@@ -166,7 +178,7 @@ return 1";
                 // successful script makes the tombstone and deletion indivisible to readers.
                 await Database.ScriptEvaluateAsync(InvalidateSessionScript,
                     new RedisKey[] { key, TombstoneKey(key) },
-                    new RedisValue[] { (long)InvalidationTombstoneTtl.TotalMilliseconds });
+                    new RedisValue[] { (long)Math.Ceiling(tombstoneTtl.TotalMilliseconds) });
                 CircuitReset();
             }
             catch (Exception ex)

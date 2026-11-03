@@ -73,18 +73,40 @@ namespace OWSData.Repositories.Implementations
         private static TimeSpan RemainingLifetime(GetUserSession session)
             => session.ExpiresAt.HasValue ? session.ExpiresAt.Value.ToUniversalTime() - DateTime.UtcNow : TimeSpan.Zero;
 
+        // How long a revoked session's cache block must last, read from the database rather than the
+        // cache. Zero for a GUID with no live row: the caller is an open endpoint, so a request with a
+        // made-up GUID must not leave a long-lived key in the cache.
+        private async Task<TimeSpan> RemainingLifetimeInDatabase(Guid customerGuid, Guid userSessionGuid)
+        {
+            try
+            {
+                GetUserSession session = await _inner.GetUserSession(customerGuid, userSessionGuid);
+                return session != null ? RemainingLifetime(session) : TimeSpan.Zero;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "user_session_revoke could not read session {UserSessionGuid}", userSessionGuid);
+                return TimeSpan.Zero;
+            }
+        }
+
         public async Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid)
         {
+            // The lifetime has to be read before the row is deleted.
+            TimeSpan remaining = _options.Enabled
+                ? await RemainingLifetimeInDatabase(customerGuid, userSessionGuid)
+                : TimeSpan.Zero;
+
             // Invalidate after the DB write, even a failed one: the write may have committed, and
-            // evicting a live session only costs its next read a DB round trip. Report a cache
-            // failure without throwing, so login refusal paths can still return their intended
-            // result. Logging out again retries the eviction.
+            // revoking a live session only sends its reads to the DB. Report a cache failure
+            // without throwing, so login refusal paths can still return their intended result.
+            // Logging out again retries the eviction.
             SuccessAndErrorMessage result = await _inner.Logout(customerGuid, userSessionGuid);
             if (_options.Enabled)
             {
                 try
                 {
-                    await _cache.RemoveUserSession(customerGuid, userSessionGuid);
+                    await _cache.RevokeUserSession(customerGuid, userSessionGuid, remaining);
                 }
                 catch (Exception ex)
                 {
@@ -106,13 +128,15 @@ namespace OWSData.Repositories.Implementations
         public async Task<IReadOnlyList<Guid>> EndEarlierSessions(Guid customerGUID, Guid userSessionGUID)
         {
             IReadOnlyList<Guid> ended = await _inner.EndEarlierSessions(customerGUID, userSessionGUID);
-            if (_options.Enabled)
+            if (_options.Enabled && ended.Count > 0)
             {
+                // Every ended session logged in before the kept one, so none outlives it.
+                TimeSpan remaining = await RemainingLifetimeInDatabase(customerGUID, userSessionGUID);
                 foreach (Guid session in ended)
                 {
                     try
                     {
-                        await _cache.RemoveUserSession(customerGUID, session);
+                        await _cache.RevokeUserSession(customerGUID, session, remaining);
                     }
                     catch (Exception ex)
                     {

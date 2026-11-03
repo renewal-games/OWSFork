@@ -18,6 +18,8 @@ namespace OWSTests.SessionCache
 {
     public class UserSessionInvalidationTests
     {
+        private static readonly TimeSpan ShortTombstone = TimeSpan.FromSeconds(10);
+
         [Fact]
         public async Task LogoutWhileCircuitOpen_RemovesCachedSessionBeforeRecovery()
         {
@@ -100,6 +102,161 @@ namespace OWSTests.SessionCache
                 Assert.False(result.Success);
                 Assert.Equal(SessionStoreProxy.LogoutError, result.ErrorMessage);
                 Assert.Equal(0, database.SessionCount);
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        [Fact]
+        public async Task RepopulateDelayedPastTheShortTombstone_DoesNotRestoreLoggedOutSession()
+        {
+            var (users, _, database, store, customer, session) = CreateRepositories();
+            try
+            {
+                // The reader has its row when the logout commits, then stalls past the short tombstone.
+                store.AfterNextRead = () =>
+                {
+                    Assert.True(users.Logout(customer, session).GetAwaiter().GetResult().Success);
+                    database.AdvanceTime(ShortTombstone + TimeSpan.FromSeconds(1));
+                };
+
+                Assert.NotNull(await users.GetUserSession(customer, session));
+
+                Assert.Equal(0, database.SessionCount);
+                Assert.Null(await users.GetUserSession(customer, session));
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        [Fact]
+        public async Task RepopulateDelayedPastTheShortTombstone_DoesNotRestoreEndedEarlierSession()
+        {
+            var (users, cache, database, store, customer, session) = CreateRepositories();
+            try
+            {
+                Guid earlier = Guid.NewGuid();
+                store.EarlierSessions.Add(earlier);
+                GetUserSession staleRead = Session(customer, earlier, store.Session.UserGuid);
+
+                await users.EndEarlierSessions(customer, session);
+                database.AdvanceTime(ShortTombstone + TimeSpan.FromSeconds(1));
+                await cache.SetUserSession(customer, earlier, staleRead, TimeSpan.FromSeconds(60));
+
+                Assert.Null(await cache.TryGetUserSession(customer, earlier));
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        [Fact]
+        public async Task LogoutOfAnUnknownSession_LeavesOnlyAShortTombstone()
+        {
+            var (users, _, database, store, customer, _) = CreateRepositories();
+            try
+            {
+                store.Session = null;
+
+                Assert.True((await users.Logout(customer, Guid.NewGuid())).Success);
+
+                Assert.Equal(ShortTombstone, database.LongestTombstone);
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        [Fact]
+        public async Task RepeatedLogout_DoesNotShortenTheLongTombstone()
+        {
+            var (users, cache, database, store, customer, session) = CreateRepositories();
+            try
+            {
+                GetUserSession staleRead = store.Session;
+                Assert.True((await users.Logout(customer, session)).Success);
+                Assert.True((await users.Logout(customer, session)).Success); // the row is gone by now
+
+                database.AdvanceTime(ShortTombstone + TimeSpan.FromSeconds(1));
+                await cache.SetUserSession(customer, session, staleRead, TimeSpan.FromSeconds(60));
+
+                Assert.Equal(0, database.SessionCount);
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        [Fact]
+        public async Task CharacterSelection_BlocksRecachingOnlyBriefly()
+        {
+            var (users, _, database, _, customer, session) = CreateRepositories();
+            try
+            {
+                Assert.True((await users.UserSessionSetSelectedCharacter(customer, session, "Hero")).Success);
+                Assert.Equal(ShortTombstone, database.LongestTombstone);
+
+                database.AdvanceTime(ShortTombstone + TimeSpan.FromSeconds(1));
+                Assert.NotNull(await users.GetUserSession(customer, session));
+
+                Assert.Equal(1, database.SessionCount); // the live session is cached again
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        /// <summary>
+        /// The revocation tombstone on a real server: its length, that a shorter invalidation cannot cut it
+        /// back, and a write delayed past the short tombstone. Runs only when OWS_TEST_VALKEY names a server.
+        /// </summary>
+        [ValkeyFact]
+        public async Task Valkey_revocation_outlasts_the_short_tombstone_and_blocks_a_delayed_repopulate()
+        {
+            string prefix = $"test:{Guid.NewGuid():N}:";
+            var cache = new UserSessionRepository(Microsoft.Extensions.Options.Options.Create(new UserSessionCacheOptions
+            {
+                Enabled = true,
+                ConnectionString = ValkeyFactAttribute.ConnectionString,
+                KeyPrefix = prefix,
+            }));
+            Guid customer = Guid.NewGuid();
+            Guid session = Guid.NewGuid();
+            Guid live = Guid.NewGuid();
+            Guid user = Guid.NewGuid();
+            GetUserSession staleRead = Session(customer, session, user);
+            TimeSpan ttl = TimeSpan.FromSeconds(60);
+            using ConnectionMultiplexer connection = await ConnectionMultiplexer.ConnectAsync(ValkeyFactAttribute.ConnectionString);
+            IDatabase raw = connection.GetDatabase();
+            try
+            {
+                await cache.SetUserSession(customer, session, staleRead, ttl);
+                await cache.RevokeUserSession(customer, session, TimeSpan.FromMinutes(5));
+                Assert.InRange((await raw.KeyTimeToLiveAsync($"{prefix}{customer}:{session}:invalidated")).Value, TimeSpan.FromMinutes(4), TimeSpan.FromMinutes(5));
+
+                // Neither a later brief invalidation nor a repeated logout of the deleted row shortens it.
+                await cache.RemoveUserSession(customer, session);
+                await cache.RevokeUserSession(customer, session, TimeSpan.Zero);
+                Assert.InRange((await raw.KeyTimeToLiveAsync($"{prefix}{customer}:{session}:invalidated")).Value, TimeSpan.FromMinutes(4), TimeSpan.FromMinutes(5));
+
+                // A live session's tombstone stays short, and revoking it later still extends it.
+                await cache.RemoveUserSession(customer, live);
+                Assert.InRange((await raw.KeyTimeToLiveAsync($"{prefix}{customer}:{live}:invalidated")).Value, TimeSpan.FromSeconds(1), ShortTombstone);
+                await cache.RevokeUserSession(customer, live, TimeSpan.FromMinutes(5));
+                Assert.InRange((await raw.KeyTimeToLiveAsync($"{prefix}{customer}:{live}:invalidated")).Value, TimeSpan.FromMinutes(4), TimeSpan.FromMinutes(5));
+
+                // The writer arrives after a short tombstone would have expired.
+                await Task.Delay(ShortTombstone + TimeSpan.FromSeconds(1));
+                await cache.SetUserSession(customer, session, staleRead, ttl);
+                Assert.Null(await cache.TryGetUserSession(customer, session));
             }
             finally
             {
@@ -290,7 +447,8 @@ namespace OWSTests.SessionCache
         public class CacheDatabaseProxy : DispatchProxy
         {
             private readonly Dictionary<string, string> _values = new();
-            private readonly HashSet<string> _tombstones = new();
+            private readonly Dictionary<string, TimeSpan> _tombstones = new(); // key -> expiry on _now
+            private TimeSpan _now;
             private readonly Dictionary<string, HashSet<string>> _indexes = new();
 
             public bool FailNextGet { get; set; }
@@ -307,6 +465,24 @@ namespace OWSTests.SessionCache
                 }
             }
             public int InvalidationAttempts { get; private set; }
+            public TimeSpan LongestTombstone { get; private set; }
+
+            public void AdvanceTime(TimeSpan by) => _now += by;
+
+            private bool TombstoneLive(string key) => _tombstones.TryGetValue(key, out TimeSpan expiry) && expiry > _now;
+
+            // Extends only, as the invalidation script does.
+            private void WriteTombstone(string key, TimeSpan ttl)
+            {
+                if (!_tombstones.TryGetValue(key, out TimeSpan expiry) || expiry < _now + ttl)
+                {
+                    _tombstones[key] = _now + ttl;
+                }
+                if (ttl > LongestTombstone)
+                {
+                    LongestTombstone = ttl;
+                }
+            }
 
             protected override object Invoke(MethodInfo targetMethod, object[] args)
             {
@@ -331,8 +507,8 @@ namespace OWSTests.SessionCache
                             RedisValue[] scriptArgs = (RedisValue[])args[2];
                             bool hasUser = scriptArgs[3].ToString() == "1";
                             string userTombstoneKey = keys[2].ToString();
-                            if (!_tombstones.Contains(tombstoneKey)
-                                && (!hasUser || !_tombstones.Contains(userTombstoneKey)))
+                            if (!TombstoneLive(tombstoneKey)
+                                && (!hasUser || !TombstoneLive(userTombstoneKey)))
                             {
                                 _values[sessionKey] = scriptArgs[0].ToString();
                                 if (hasUser)
@@ -349,17 +525,17 @@ namespace OWSTests.SessionCache
                         }
                         else
                         {
-                            Invalidate(sessionKey, tombstoneKey);
+                            Invalidate(sessionKey, tombstoneKey, TimeSpan.FromMilliseconds((long)((RedisValue[])args[2])[0]));
                         }
                         return Task.FromResult<RedisResult>(null);
                     // These paths model the old separate operations, so this test fails
                     // against the implementation before the atomic-script change.
                     case "KeyExistsAsync":
-                        return Task.FromResult(_tombstones.Contains(key));
+                        return Task.FromResult(TombstoneLive(key));
                     case "StringSetAsync":
                         if (key.EndsWith(":invalidated"))
                         {
-                            _tombstones.Add(key);
+                            WriteTombstone(key, ShortTombstone);
                         }
                         else
                         {
@@ -392,11 +568,11 @@ namespace OWSTests.SessionCache
             {
                 if (!InvalidateBeforeNextSet) return;
                 InvalidateBeforeNextSet = false;
-                _tombstones.Add(tombstoneKey);
+                WriteTombstone(tombstoneKey, ShortTombstone);
                 _values.Remove(sessionKey);
             }
 
-            private void Invalidate(string sessionKey, string tombstoneKey)
+            private void Invalidate(string sessionKey, string tombstoneKey, TimeSpan ttl)
             {
                 InvalidationAttempts++;
                 if (FailNextInvalidation)
@@ -404,7 +580,7 @@ namespace OWSTests.SessionCache
                     FailNextInvalidation = false;
                     throw new RedisException("Simulated invalidation failure");
                 }
-                _tombstones.Add(tombstoneKey);
+                WriteTombstone(tombstoneKey, ttl);
                 _values.Remove(sessionKey);
             }
         }
@@ -415,6 +591,7 @@ namespace OWSTests.SessionCache
 
             public GetUserSession Session { get; set; }
             public bool FailLogout { get; set; }
+            public Action AfterNextRead { get; set; }
             public List<Guid> EarlierSessions { get; } = new();
             public int EndedCount { get; private set; }
 
@@ -423,7 +600,11 @@ namespace OWSTests.SessionCache
                 switch (targetMethod.Name)
                 {
                     case "GetUserSession":
-                        return Task.FromResult(Session);
+                        GetUserSession read = Session;
+                        Action afterRead = AfterNextRead;
+                        AfterNextRead = null;
+                        afterRead?.Invoke();
+                        return Task.FromResult(read);
                     case "Logout":
                         if (FailLogout)
                         {

@@ -241,6 +241,9 @@ namespace OWSTests.SessionCache
                 return Task.CompletedTask;
             }
 
+            public Task RevokeUserSession(Guid customerGuid, Guid userSessionGuid, TimeSpan remainingLifetime)
+                => RemoveUserSession(customerGuid, userSessionGuid);
+
             public Task RemoveUserSessionsForUser(Guid customerGuid, Guid userGuid)
             {
                 UserEvictions++;
