@@ -464,6 +464,12 @@ namespace OWSData.SQL
                 WHERE CustomerGUID = @CustomerGUID
                   AND MapInstanceID = @MapInstanceID";
 
+        public static readonly string GetMapInstanceForSpinUp = @"SELECT M.MapName, MI.MapInstanceID, MI.WorldServerID, MI.Port
+                FROM MapInstances MI
+                INNER JOIN Maps M ON M.MapID = MI.MapID AND M.CustomerGUID = MI.CustomerGUID
+                WHERE MI.CustomerGUID = @CustomerGUID
+                  AND MI.MapInstanceID = @MapInstanceID";
+
         public static readonly string GetMapInstancesByIpAndPort = @"SELECT M.MapName, M.ZoneName, M.WorldCompContainsFilter, M.WorldCompListFilter, 
                 MI.MapInstanceID, MI.Status, 
                 WS.MaxNumberOfInstances, WS.ActiveStartTime, WS.ServerStatus, WS.InternalServerIP

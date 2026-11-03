@@ -7,12 +7,14 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using OWSData.Repositories.Implementations.InMemory;
 using OWSData.Repositories.Implementations.Local;
 using OWSData.Repositories.Interfaces;
 using OWSInstanceLauncher.Services;
+using OWSShared;
 using OWSShared.Interfaces;
 using OWSShared.Options;
 using Xunit;
@@ -40,7 +42,7 @@ namespace OWSTests.InstanceLauncher
         public async Task ShutDown_LeavesAProcessWithAReusedPidRunning()
         {
             Process bystander = StartLongRunningProcess();
-            _processes.AddZoneServerProcess(TrackedAs(1, bystander, bystander.StartTime.ToUniversalTime().AddHours(-1)));
+            _processes.AddZoneServerProcess(TrackedAs(1, bystander, ProcessStartStamp.Read(bystander) + 1));
 
             await Listener().HandleServerShutDownMessage(CustomerGuid, 1);
 
@@ -51,10 +53,23 @@ namespace OWSTests.InstanceLauncher
         }
 
         [Fact]
+        public async Task ShutDown_LeavesAProcessWithNoRecordedStampRunning()
+        {
+            Process bystander = StartLongRunningProcess();
+            _processes.AddZoneServerProcess(TrackedAs(1, bystander, null));
+
+            await Listener().HandleServerShutDownMessage(CustomerGuid, 1);
+
+            Assert.False(bystander.HasExited);
+            Assert.Contains(_http.Calls, path => path.EndsWith("CompleteZoneInstanceShutdown"));
+            Assert.Empty(_processes.GetZoneServerProcesses());
+        }
+
+        [Fact]
         public async Task ShutDown_KillsTheProcessItStarted()
         {
             Process server = StartLongRunningProcess();
-            _processes.AddZoneServerProcess(TrackedAs(1, server, server.StartTime.ToUniversalTime()));
+            _processes.AddZoneServerProcess(TrackedAs(1, server, ProcessStartStamp.Read(server)));
 
             await Listener().HandleServerShutDownMessage(CustomerGuid, 1);
 
@@ -63,25 +78,28 @@ namespace OWSTests.InstanceLauncher
         }
 
         [Fact]
-        public void ShutDownAll_StopsTheLiveServerAfterADeadPid_AndSparesAReusedPid()
+        public void ShutDownAll_StopsTheLiveServerAfterADeadPid_AndSparesUnverifiedPids()
         {
             Process reusedPid = StartLongRunningProcess();
+            Process noStamp = StartLongRunningProcess();
             Process server = StartLongRunningProcess();
             _processes.AddZoneServerProcess(new ZoneServerProcess { ZoneInstanceId = 1, ProcessId = NotRunningProcessId });
-            _processes.AddZoneServerProcess(TrackedAs(2, reusedPid, reusedPid.StartTime.ToUniversalTime().AddHours(-1)));
-            _processes.AddZoneServerProcess(TrackedAs(3, server, server.StartTime.ToUniversalTime()));
+            _processes.AddZoneServerProcess(TrackedAs(2, reusedPid, ProcessStartStamp.Read(reusedPid) + 1));
+            _processes.AddZoneServerProcess(TrackedAs(3, noStamp, null));
+            _processes.AddZoneServerProcess(TrackedAs(4, server, ProcessStartStamp.Read(server)));
 
             Listener().ShutDownAllZoneServerInstances();
 
             Assert.True(server.WaitForExit(Timeout));
             Assert.False(reusedPid.HasExited);
+            Assert.False(noStamp.HasExited);
         }
 
         [Fact]
         public void Dispose_StopsTheServers_WhenInstanceManagementCannotBeReached()
         {
             Process server = StartLongRunningProcess();
-            _processes.AddZoneServerProcess(TrackedAs(1, server, server.StartTime.ToUniversalTime()));
+            _processes.AddZoneServerProcess(TrackedAs(1, server, ProcessStartStamp.Read(server)));
             ServerLauncherMQListener listener = Listener();
             _http.FailPathsEndingWith = "ShutDownInstanceLauncher";
 
@@ -95,9 +113,10 @@ namespace OWSTests.InstanceLauncher
         {
             ServerLauncherMQListener listener = Listener();
 
-            await listener.HandleServerSpinUpMessage(CustomerGuid, WorldServerId, 1, "Map", FreeUdpPort());
+            await SpinUp(listener, 1, FreeUdpPort());
             ZoneServerProcess first = Assert.Single(_processes.GetZoneServerProcesses());
-            await listener.HandleServerSpinUpMessage(CustomerGuid, WorldServerId, 1, "Map", FreeUdpPort());
+            //The row matches the second port too, so it is the running server that stops this one.
+            await SpinUp(listener, 1, FreeUdpPort());
 
             ZoneServerProcess tracked = Assert.Single(_processes.GetZoneServerProcesses());
             Assert.Equal(first.ProcessId, tracked.ProcessId);
@@ -108,9 +127,9 @@ namespace OWSTests.InstanceLauncher
         public async Task SpinUp_StartsAServer_WhenTheTrackedPidWasReused()
         {
             Process bystander = StartLongRunningProcess();
-            _processes.AddZoneServerProcess(TrackedAs(1, bystander, bystander.StartTime.ToUniversalTime().AddHours(-1)));
+            _processes.AddZoneServerProcess(TrackedAs(1, bystander, ProcessStartStamp.Read(bystander) + 1));
 
-            await Listener().HandleServerSpinUpMessage(CustomerGuid, WorldServerId, 1, "Map", FreeUdpPort());
+            await SpinUp(Listener(), 1, FreeUdpPort());
 
             ZoneServerProcess tracked = Assert.Single(_processes.GetZoneServerProcesses());
             Assert.NotEqual(bystander.Id, tracked.ProcessId);
@@ -130,16 +149,64 @@ namespace OWSTests.InstanceLauncher
 
             Assert.Empty(_processes.GetZoneServerProcesses());
             //The command can't be trusted to name the right row, so it must not clean one up either.
-            Assert.DoesNotContain(_http.Calls, path => path.EndsWith("SetZoneInstanceStatus") || path.EndsWith("CompleteZoneInstanceShutdown"));
+            AssertNoRowWasCleanedUp();
+        }
+
+        [Theory]
+        [InlineData(WorldServerId + 1, "Map", 0)] //The row belongs to another launcher.
+        [InlineData(WorldServerId, "OtherMap", 0)] //The row is for another map.
+        [InlineData(WorldServerId, "Map", 1)] //The row was given another port.
+        public async Task SpinUp_ThatDoesNotMatchItsRow_StartsNothingAndCleansUpNothing(int rowWorldServerId, string rowMapName, int rowPortOffset)
+        {
+            int port = FreeUdpPort();
+            _http.Rows[1] = new { MapInstanceID = 1, WorldServerID = rowWorldServerId, MapName = rowMapName, Port = port + rowPortOffset };
+
+            await Listener().HandleServerSpinUpMessage(CustomerGuid, WorldServerId, 1, "Map", port);
+
+            Assert.Empty(_processes.GetZoneServerProcesses());
+            Assert.Contains(_http.Calls, path => path.EndsWith("GetZoneInstanceForSpinUp"));
+            AssertNoRowWasCleanedUp();
+        }
+
+        [Fact]
+        public async Task SpinUp_ForARowThisCustomerDoesNotHave_StartsNothingAndCleansUpNothing()
+        {
+            await Listener().HandleServerSpinUpMessage(CustomerGuid, WorldServerId, 1, "Map", FreeUdpPort());
+
+            Assert.Empty(_processes.GetZoneServerProcesses());
+            AssertNoRowWasCleanedUp();
+        }
+
+        [Fact]
+        public async Task SpinUp_ThatDoesNotMatchItsRow_AtTheInstanceLimit_CleansUpNothing()
+        {
+            Process running = StartLongRunningProcess();
+            _processes.AddZoneServerProcess(TrackedAs(1, running, ProcessStartStamp.Read(running)));
+
+            await Listener(maxNumberOfInstances: 1).HandleServerSpinUpMessage(CustomerGuid, WorldServerId, 2, "Map", FreeUdpPort());
+
+            AssertNoRowWasCleanedUp();
+        }
+
+        [Fact]
+        public async Task SpinUp_WhenTheRowCannotBeLookedUp_StartsNothingAndThrowsSoItIsRetried()
+        {
+            ServerLauncherMQListener listener = Listener();
+            _http.FailPathsEndingWith = "GetZoneInstanceForSpinUp";
+
+            await Assert.ThrowsAsync<HttpRequestException>(() => listener.HandleServerSpinUpMessage(CustomerGuid, WorldServerId, 1, "Map", FreeUdpPort()));
+
+            Assert.Empty(_processes.GetZoneServerProcesses());
+            AssertNoRowWasCleanedUp();
         }
 
         [Fact]
         public async Task SpinUp_AtTheInstanceLimit_StartsNothingAndCleansUpTheRow()
         {
             Process running = StartLongRunningProcess();
-            _processes.AddZoneServerProcess(TrackedAs(1, running, running.StartTime.ToUniversalTime()));
+            _processes.AddZoneServerProcess(TrackedAs(1, running, ProcessStartStamp.Read(running)));
 
-            await Listener(maxNumberOfInstances: 1).HandleServerSpinUpMessage(CustomerGuid, WorldServerId, 2, "Map", FreeUdpPort());
+            await SpinUp(Listener(maxNumberOfInstances: 1), 2, FreeUdpPort());
 
             Assert.Equal(1, Assert.Single(_processes.GetZoneServerProcesses()).ZoneInstanceId);
             Assert.Contains(_http.Calls, path => path.EndsWith("CompleteZoneInstanceShutdown"));
@@ -150,7 +217,7 @@ namespace OWSTests.InstanceLauncher
         {
             _processes.AddZoneServerProcess(new ZoneServerProcess { ZoneInstanceId = 1, ProcessId = NotRunningProcessId });
 
-            await Listener(maxNumberOfInstances: 1).HandleServerSpinUpMessage(CustomerGuid, WorldServerId, 2, "Map", FreeUdpPort());
+            await SpinUp(Listener(maxNumberOfInstances: 1), 2, FreeUdpPort());
 
             Assert.Contains(_processes.GetZoneServerProcesses(), process => process.ZoneInstanceId == 2);
         }
@@ -158,8 +225,11 @@ namespace OWSTests.InstanceLauncher
         [Fact]
         public async Task ExitedServer_RemovesItsEntry()
         {
-            await Listener().HandleServerSpinUpMessage(CustomerGuid, WorldServerId, 1, "Map", FreeUdpPort());
+            await SpinUp(Listener(), 1, FreeUdpPort());
             ZoneServerProcess tracked = Assert.Single(_processes.GetZoneServerProcesses());
+
+            //A real spin-up records what later identifies the server.
+            Assert.Equal(TrackedZoneProcessState.Running, TrackedZoneProcess.GetState(tracked));
 
             using (Process server = Process.GetProcessById(tracked.ProcessId))
             {
@@ -170,15 +240,59 @@ namespace OWSTests.InstanceLauncher
         }
 
         [Fact]
-        public void TrackedProcess_StateFollowsTheStartTime()
+        public void TrackedProcess_OnlyAnExactStampIsRunning()
         {
             Process process = StartLongRunningProcess();
-            DateTime startTime = process.StartTime.ToUniversalTime();
+            long stamp = ProcessStartStamp.Read(process);
 
-            Assert.Equal(TrackedZoneProcessState.Running, TrackedZoneProcess.GetState(TrackedAs(1, process, startTime)));
-            Assert.Equal(TrackedZoneProcessState.Running, TrackedZoneProcess.GetState(TrackedAs(1, process, null)));
-            Assert.Equal(TrackedZoneProcessState.PidReused, TrackedZoneProcess.GetState(TrackedAs(1, process, startTime.AddSeconds(30))));
+            Assert.Equal(TrackedZoneProcessState.Running, TrackedZoneProcess.GetState(TrackedAs(1, process, stamp)));
+            Assert.Equal(TrackedZoneProcessState.Unverified, TrackedZoneProcess.GetState(TrackedAs(1, process, null)));
+            Assert.Equal(TrackedZoneProcessState.Unverified, TrackedZoneProcess.GetState(TrackedAs(1, process, stamp + 1)));
+            Assert.Equal(TrackedZoneProcessState.Unverified, TrackedZoneProcess.GetState(TrackedAs(1, process, stamp - 1)));
             Assert.Equal(TrackedZoneProcessState.Gone, TrackedZoneProcess.GetState(new ZoneServerProcess { ProcessId = NotRunningProcessId }));
+        }
+
+        [Fact]
+        public void ProcessStartStamp_ReadsTheSameValueEachTime()
+        {
+            Process process = StartLongRunningProcess();
+
+            using Process sameProcess = Process.GetProcessById(process.Id);
+
+            Assert.Equal(ProcessStartStamp.Read(process), ProcessStartStamp.Read(sameProcess));
+        }
+
+        [Theory]
+        [InlineData("1234 (sleep) S 1 1234 1234 0 -1 4194304 75 0 0 0 0 0 0 0 20 0 1 0 987654 5586944 188 18446744073709551615")]
+        [InlineData("1234 (zone (server) x) S 1 1234 1234 0 -1 4194304 75 0 0 0 0 0 0 0 20 0 1 0 987654 5586944 188 18446744073709551615")]
+        public void ProcessStartStamp_ParsesLinuxStartTime_WhateverTheCommandNameContains(string stat)
+        {
+            Assert.Equal(987654, ProcessStartStamp.ParseLinuxStat(stat));
+        }
+
+        [Fact]
+        public void PersistentRepository_OnLoad_KeepsOnlyEntriesWhoseStampMatches()
+        {
+            Process process = StartLongRunningProcess();
+            long stamp = ProcessStartStamp.Read(process);
+            string file = Path.Combine(AppContext.BaseDirectory, "zone-server-processes.json");
+            File.WriteAllText(file, JsonSerializer.Serialize(new[]
+            {
+                TrackedAs(1, process, stamp),
+                TrackedAs(2, process, stamp + 1),
+                TrackedAs(3, process, null)
+            }));
+
+            try
+            {
+                var loaded = new PersistentZoneServerProcessesRepository();
+
+                Assert.Equal(1, Assert.Single(loaded.GetZoneServerProcesses()).ZoneInstanceId);
+            }
+            finally
+            {
+                File.Delete(file);
+            }
         }
 
         public static IEnumerable<object[]> Repositories()
@@ -240,6 +354,18 @@ namespace OWSTests.InstanceLauncher
             }
         }
 
+        //A spin-up for a row that exists and matches.
+        private Task SpinUp(ServerLauncherMQListener listener, int zoneInstanceId, int port)
+        {
+            _http.Rows[zoneInstanceId] = new { MapInstanceID = zoneInstanceId, WorldServerID = WorldServerId, MapName = "Map", Port = port };
+            return listener.HandleServerSpinUpMessage(CustomerGuid, WorldServerId, zoneInstanceId, "Map", port);
+        }
+
+        private void AssertNoRowWasCleanedUp()
+        {
+            Assert.DoesNotContain(_http.Calls, path => path.EndsWith("SetZoneInstanceStatus") || path.EndsWith("CompleteZoneInstanceShutdown"));
+        }
+
         private ServerLauncherMQListener Listener(int maxNumberOfInstances = 10)
         {
             var options = new OWSInstanceLauncherOptions
@@ -290,9 +416,9 @@ namespace OWSTests.InstanceLauncher
             return process;
         }
 
-        private static ZoneServerProcess TrackedAs(int zoneInstanceId, Process process, DateTime? startTimeUtc)
+        private static ZoneServerProcess TrackedAs(int zoneInstanceId, Process process, long? startStamp)
         {
-            return new ZoneServerProcess { ZoneInstanceId = zoneInstanceId, MapName = "Map", Port = 7777, ProcessId = process.Id, ProcessStartTimeUtc = startTimeUtc };
+            return new ZoneServerProcess { ZoneInstanceId = zoneInstanceId, MapName = "Map", Port = 7777, ProcessId = process.Id, ProcessStartStamp = startStamp };
         }
 
         private static int FreeUdpPort()
@@ -383,6 +509,9 @@ namespace OWSTests.InstanceLauncher
         {
             private readonly List<string> _calls = new();
 
+            //What GetZoneInstanceForSpinUp returns, by zone instance. Any other instance comes back empty, like the real endpoint.
+            public Dictionary<int, object> Rows { get; } = new();
+
             public string FailPathsEndingWith { get; set; }
 
             public List<string> Calls
@@ -396,7 +525,7 @@ namespace OWSTests.InstanceLauncher
                 }
             }
 
-            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 string path = request.RequestUri.AbsolutePath;
                 lock (_calls)
@@ -409,10 +538,20 @@ namespace OWSTests.InstanceLauncher
                     throw new HttpRequestException("Instance Management is down.");
                 }
 
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                if (path.EndsWith("GetZoneInstanceForSpinUp"))
+                {
+                    Rows.TryGetValue(int.Parse(await request.Content.ReadAsStringAsync(cancellationToken)), out object row);
+
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(JsonSerializer.Serialize(row ?? new { MapInstanceID = 0 }), Encoding.UTF8, "application/json")
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent("{\"Success\":true,\"ErrorMessage\":\"\"}", Encoding.UTF8, "application/json")
-                });
+                };
             }
         }
 

@@ -18,5 +18,15 @@ namespace OWSData.Models.StoredProcs
 		public DateTime? ActiveStartTime { get; set; }
 		public byte ServerStatus { get; set; }
 		public string InternalServerIP { get; set; }
+
+		//Whether a spin-up command describes this row. Read from GetZoneInstanceForSpinUp, the only lookup that returns all of these.
+		public bool MatchesSpinUp(int worldServerID, int zoneInstanceID, string mapName, int port)
+		{
+			return MapInstanceID > 0
+				&& MapInstanceID == zoneInstanceID
+				&& WorldServerID == worldServerID
+				&& Port == port
+				&& string.Equals(MapName, mapName, StringComparison.Ordinal);
+		}
 	}
 }

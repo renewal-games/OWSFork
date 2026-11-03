@@ -51,14 +51,13 @@ namespace OWSInstanceManagement.Requests.Instance
             }
 
             //The launcher starts a process from these values, so they must describe a zone instance this customer already has.
-            //GetZoneInstance also returns an empty row when the lookup fails, which refuses the spin-up too.
-            GetServerInstanceFromPort zoneInstance = await _instanceManagementRepository.GetZoneInstance(CustomerGUID, ZoneInstanceID);
+            //ZoneName carries the map to start, which is what callers get from JoinMapByCharName as MapNameToStart.
+            GetServerInstanceFromPort zoneInstance = await _instanceManagementRepository.GetZoneInstanceForSpinUp(CustomerGUID, ZoneInstanceID);
 
-            if (zoneInstance == null || zoneInstance.MapInstanceID != ZoneInstanceID
-                || zoneInstance.WorldServerID != WorldServerID || zoneInstance.Port != Port)
+            if (zoneInstance == null || !zoneInstance.MatchesSpinUp(WorldServerID, ZoneInstanceID, ZoneName, Port))
             {
-                Log.Warning($"SpinUpServerInstance - Refused: World Server {WorldServerID} and Port {Port} do not match a Zone Instance {ZoneInstanceID} of this customer.");
-                return new BadRequestObjectResult(new SuccessAndErrorMessage { Success = false, ErrorMessage = "WorldServerID, ZoneInstanceID and Port do not match a zone instance." });
+                Log.Warning($"SpinUpServerInstance - Refused: World Server {WorldServerID}, Port {Port} and the given map do not match a Zone Instance {ZoneInstanceID} of this customer.");
+                return new BadRequestObjectResult(new SuccessAndErrorMessage { Success = false, ErrorMessage = "WorldServerID, ZoneInstanceID, ZoneName and Port do not match a zone instance." });
             }
 
             MQSpinUpServerMessage serverSpinUpMessage = new()

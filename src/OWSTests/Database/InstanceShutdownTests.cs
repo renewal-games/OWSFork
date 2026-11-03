@@ -102,6 +102,35 @@ namespace OWSTests.Database
             Assert.Equal(0, otherCustomersView.MapInstanceID);
         }
 
+        //The launcher and SpinUpServerInstance refuse a command this row doesn't match, so a wrong column here would refuse every spin-up.
+        [PostgresTheory]
+        [InlineData(SchemaSource.SetupSql)]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task GetZoneInstanceForSpinUp_MatchesTheRow_ForItsCustomerOnly(SchemaSource source)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            int mapID = await connection.ExecuteScalarAsync<int>(
+                @"INSERT INTO Maps (CustomerGUID, MapName, MapData, Width, Height, ZoneName, WorldCompContainsFilter, WorldCompListFilter, SoftPlayerCap, HardPlayerCap, MapMode, MinutesToShutdownAfterEmpty)
+                  VALUES (@CustomerGUID, '/Game/Maps/L_SpinUp', @MapData, 1, 1, 'SpinUpZone', '', '', 1, 10, 1, 1)
+                  RETURNING MapID",
+                new { CustomerGUID = customerGUID, MapData = new byte[] { 0 } });
+            int zoneInstanceID = await connection.ExecuteScalarAsync<int>(
+                @"INSERT INTO MapInstances (CustomerGUID, WorldServerID, MapID, Port, Status, LastUpdateFromServer)
+                  VALUES (@CustomerGUID, 7, @MapID, 7777, 1, NOW())
+                  RETURNING MapInstanceID",
+                new { CustomerGUID = customerGUID, MapID = mapID });
+
+            var row = await Repository(source).GetZoneInstanceForSpinUp(customerGUID, zoneInstanceID);
+
+            Assert.True(row.MatchesSpinUp(7, zoneInstanceID, "/Game/Maps/L_SpinUp", 7777));
+            Assert.False(row.MatchesSpinUp(8, zoneInstanceID, "/Game/Maps/L_SpinUp", 7777));
+            Assert.False(row.MatchesSpinUp(7, zoneInstanceID + 1, "/Game/Maps/L_SpinUp", 7777));
+            Assert.False(row.MatchesSpinUp(7, zoneInstanceID, "/Game/Maps/L_Other", 7777));
+            Assert.False(row.MatchesSpinUp(7, zoneInstanceID, "/Game/Maps/L_SpinUp", 7778));
+            Assert.Null(await Repository(source).GetZoneInstanceForSpinUp(Guid.NewGuid(), zoneInstanceID));
+        }
+
         private async Task<SuccessAndErrorMessage> Handle(RecordingShutDownRequest request, SchemaSource source, Guid customerGUID)
         {
             request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), Repository(source),

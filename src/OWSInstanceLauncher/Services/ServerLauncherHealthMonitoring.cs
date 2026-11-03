@@ -171,7 +171,7 @@ namespace OWSInstanceLauncher.Services
 
             try
             {
-                //A reused PID is left running and only the stale map entry is dropped.
+                //A process that can't be shown to be the zone server is left running and only the map entry is dropped.
                 if (TrackedZoneProcess.Stop(trackedProcess) == TrackedZoneProcessStopResult.StillRunning)
                 {
                     Log.Error($"Reconciliation: orphaned process for Zone Instance {trackedProcess.ZoneInstanceId} did not exit. Will retry next cycle.");

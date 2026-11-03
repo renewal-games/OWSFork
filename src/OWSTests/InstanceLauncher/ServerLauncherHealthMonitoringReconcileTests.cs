@@ -1,5 +1,6 @@
 using OWSData.Repositories.Interfaces;
 using OWSInstanceLauncher.Services;
+using OWSShared;
 using OWSShared.Options;
 using System;
 using System.Collections.Generic;
@@ -113,8 +114,10 @@ namespace OWSTests.InstanceLauncher
             Assert.Equal(new[] { TrackedZoneInstanceId }, processes.Removed);
         }
 
-        [Fact]
-        public void DoWork_DropsTheEntryButLeavesTheProcess_WhenThePidWasReused()
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void DoWork_DropsTheEntryButLeavesTheProcess_WhenItCannotBeShownToBeTheServer(bool stampRecorded)
         {
             var startInfo = OperatingSystem.IsWindows()
                 ? new ProcessStartInfo("ping", "-n 300 127.0.0.1")
@@ -130,7 +133,8 @@ namespace OWSTests.InstanceLauncher
                 {
                     ZoneInstanceId = TrackedZoneInstanceId,
                     ProcessId = unrelated.Id,
-                    ProcessStartTimeUtc = unrelated.StartTime.ToUniversalTime().AddHours(-1)
+                    ProcessStartTimeUtc = unrelated.StartTime.ToUniversalTime().AddHours(-1),
+                    ProcessStartStamp = stampRecorded ? ProcessStartStamp.Read(unrelated) + 1 : null
                 });
                 var monitor = CreateMonitor(new StubHandler(HttpStatusCode.OK, "[]"), processes);
 

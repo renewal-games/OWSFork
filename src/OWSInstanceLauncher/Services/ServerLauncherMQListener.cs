@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Options;
 using OWSData.Models;
 using OWSData.Models.Composites;
+using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
 using OWSShared;
 using OWSShared.Interfaces;
@@ -283,11 +284,13 @@ namespace OWSInstanceLauncher.Services
                 return;
             }
 
-            //Nothing about this command can be trusted, including which row it names, so the row is left alone. If the row
-            //exists, health monitoring reclaims it once it goes stale.
-            if (zoneInstanceID < 1 || !SpinUpPort.IsValid(port) || worldServerID != _worldServerId)
+            //RabbitMQ access is enough to publish a command, and CustomerGUID is not a secret, so the command must describe a
+            //row this customer really has on this launcher. Until that is shown nothing about it can be trusted, including which
+            //row it names, so no row is cleaned up. If one exists, health monitoring reclaims it once it goes stale.
+            if (zoneInstanceID < 1 || !SpinUpPort.IsValid(port) || worldServerID != _worldServerId
+                || !await SpinUpMatchesZoneInstanceRow(worldServerID, zoneInstanceID, mapName, port))
             {
-                Log.Error($"HandleServerSpinUpMessage - Refusing to start Zone Instance {zoneInstanceID} on port {port} for World Server {worldServerID}: this launcher is World Server {_worldServerId}.");
+                Log.Error($"HandleServerSpinUpMessage - Refusing to start Zone Instance {zoneInstanceID} on port {port} for World Server {worldServerID}: it does not match a zone instance of this launcher, which is World Server {_worldServerId}.");
                 return;
             }
 
@@ -360,13 +363,15 @@ namespace OWSInstanceLauncher.Services
             //proc.WaitForInputIdle();
 
             DateTime? processStartTimeUtc = null;
+            long? processStartStamp = null;
             try
             {
                 processStartTimeUtc = proc.StartTime.ToUniversalTime();
+                processStartStamp = ProcessStartStamp.Read(proc);
             }
             catch
             {
-                //StartTime can throw if the process exited immediately; the PID-reuse guard simply won't apply for this entry.
+                //These can throw if the process exited immediately. Without a stamp this entry's PID will never be killed.
             }
 
             string processName = proc.ProcessName;
@@ -378,7 +383,8 @@ namespace OWSInstanceLauncher.Services
                 Port = port,
                 ProcessId = proc.Id,
                 ProcessName = processName,
-                ProcessStartTimeUtc = processStartTimeUtc
+                ProcessStartTimeUtc = processStartTimeUtc,
+                ProcessStartStamp = processStartStamp
             });
 
             Log.Information($"{customerGUID} : {worldServerID} : {mapName} : {port} has started.  ProcessId: {proc.Id}, ProcessName: {processName}");
@@ -390,6 +396,24 @@ namespace OWSInstanceLauncher.Services
             }
 
             //Readiness (Status = 2) is now reported by the dedicated server itself via UpdateNumberOfPlayers (see AOWSGameMode::StartPlay).
+        }
+
+        //A failed lookup throws, so the command is requeued once: an Instance Management restart must not lose a spin-up.
+        private async Task<bool> SpinUpMatchesZoneInstanceRow(int worldServerID, int zoneInstanceID, string mapName, int port)
+        {
+            var instanceManagementHttpClient = _httpClientFactory.CreateClient("OWSInstanceManagement");
+
+            var zoneInstanceRequest = new StringContent(zoneInstanceID.ToString(), Encoding.UTF8, "application/json");
+            var responseMessage = await instanceManagementHttpClient.PostAsync("api/Instance/GetZoneInstanceForSpinUp", zoneInstanceRequest);
+            responseMessage.EnsureSuccessStatusCode();
+
+            string responseContentString = await responseMessage.Content.ReadAsStringAsync();
+            var zoneInstance = JsonSerializer.Deserialize<GetServerInstanceFromPort>(responseContentString, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+
+            return zoneInstance != null && zoneInstance.MatchesSpinUp(worldServerID, zoneInstanceID, mapName, port);
         }
 
         //Marks a zone instance that never got a running server as shutting down and removes its row.
@@ -423,7 +447,7 @@ namespace OWSInstanceLauncher.Services
 
             if (tracked != null && tracked.ProcessId > 0)
             {
-                //A reused PID means the zone server already exited, so there is nothing to wait for.
+                //A PID that can't be shown to be the zone server's is left alone, and there is nothing more to wait for.
                 completeShutdown = TrackedZoneProcess.Stop(tracked) != TrackedZoneProcessStopResult.StillRunning;
             }
             else
