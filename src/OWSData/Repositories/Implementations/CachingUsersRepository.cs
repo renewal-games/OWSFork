@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
 using OWSData.Models;
@@ -16,7 +17,8 @@ namespace OWSData.Repositories.Implementations
     /// best-effort cache (Valkey/Redis) to remove a database round trip from the hottest
     /// authenticated path. Only <see cref="GetUserSession"/> is cached; the operations that
     /// change what it returns (logout, ending earlier sessions, selected-character change, role change) invalidate it.
-    /// Everything else passes straight through. When caching is disabled the decorator is a no-op
+    /// Everything else passes straight through. Logout reports a cache invalidation failure to its caller.
+    /// When caching is disabled the decorator is a no-op
     /// pass-through, so behaviour is unchanged unless a cache is explicitly provisioned.
     /// </summary>
     public class CachingUsersRepository : IUsersRepository
@@ -73,13 +75,24 @@ namespace OWSData.Repositories.Implementations
 
         public async Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid)
         {
-            // Invalidate after the DB write commits. Invalidation atomically writes a tombstone
-            // and removes the cached value; failures propagate so logout cannot report success
-            // while a cached session remains valid.
+            // Invalidate after the DB write commits. Report cache failure to the caller without
+            // throwing, so login refusal paths can still return their intended result.
             SuccessAndErrorMessage result = await _inner.Logout(customerGuid, userSessionGuid);
-            if (_options.Enabled)
+            if (_options.Enabled && result.Success)
             {
-                await _cache.RemoveUserSession(customerGuid, userSessionGuid);
+                try
+                {
+                    await _cache.RemoveUserSession(customerGuid, userSessionGuid);
+                }
+                catch (Exception ex)
+                {
+                    Trace.TraceError("Could not invalidate cached session {0} after logout: {1}", userSessionGuid, ex);
+                    return new SuccessAndErrorMessage
+                    {
+                        Success = false,
+                        ErrorMessage = "Logout could not be confirmed because session cache invalidation failed."
+                    };
+                }
             }
             return result;
         }
@@ -92,7 +105,16 @@ namespace OWSData.Repositories.Implementations
             {
                 foreach (Guid session in ended)
                 {
-                    await _cache.RemoveUserSession(customerGUID, session);
+                    try
+                    {
+                        await _cache.RemoveUserSession(customerGUID, session);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Keep trying the remaining sessions. A cache outage must not turn
+                        // an admitted login into an unavailable response.
+                        Trace.TraceError("Could not invalidate earlier cached session {0}: {1}", session, ex);
+                    }
                 }
             }
             return ended;
@@ -103,7 +125,14 @@ namespace OWSData.Repositories.Implementations
             SuccessAndErrorMessage result = await _inner.UserSessionSetSelectedCharacter(customerGUID, userSessionGUID, selectedCharacterName);
             if (_options.Enabled)
             {
-                await _cache.RemoveUserSession(customerGUID, userSessionGUID);
+                try
+                {
+                    await _cache.RemoveUserSession(customerGUID, userSessionGUID);
+                }
+                catch (Exception ex)
+                {
+                    Trace.TraceError("Could not invalidate cached session {0} after character selection: {1}", userSessionGUID, ex);
+                }
             }
             return result;
         }

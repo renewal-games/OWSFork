@@ -3,12 +3,14 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
+using OWSData.Models;
 using OWSData.Models.Composites;
 using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Implementations;
 using OWSData.Repositories.Implementations.ValKey;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Options;
+using OWSPublicAPI.Services;
 using StackExchange.Redis;
 using Xunit;
 
@@ -26,7 +28,7 @@ namespace OWSTests.Cache
                 database.FailNextGet = true;
                 Assert.Null(await cache.TryGetUserSession(customer, session)); // opens the circuit
 
-                await users.Logout(customer, session);
+                Assert.True((await users.Logout(customer, session)).Success);
                 UserSessionRepository.CircuitReset(); // simulate the circuit cooldown ending
 
                 Assert.Null(await users.GetUserSession(customer, session));
@@ -68,13 +70,140 @@ namespace OWSTests.Cache
                 Assert.NotNull(await users.GetUserSession(customer, session));
                 database.FailNextInvalidation = true;
 
-                await Assert.ThrowsAsync<InvalidOperationException>(() => users.Logout(customer, session));
+                SuccessAndErrorMessage result = await users.Logout(customer, session);
+                Assert.False(result.Success);
+                Assert.Contains("cache invalidation failed", result.ErrorMessage);
                 Assert.Null(store.Session);
             }
             finally
             {
                 UserSessionRepository.CircuitReset();
             }
+        }
+
+        [Fact]
+        public async Task CharacterSelection_SucceedsWhenCacheInvalidationFails()
+        {
+            var (users, _, database, store, customer, session) = CreateRepositories();
+            try
+            {
+                database.FailNextInvalidation = true;
+
+                SuccessAndErrorMessage result = await users.UserSessionSetSelectedCharacter(customer, session, "Hero");
+
+                Assert.True(result.Success);
+                Assert.Equal("Hero", store.Session.SelectedCharacterName);
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        [Fact]
+        public async Task LoginGate_AdmitsNewSessionAndAttemptsEveryEarlierEvictionOnCacheFailure()
+        {
+            var (users, cache, database, store, customer, session) = CreateRepositories();
+            try
+            {
+                Guid first = Guid.NewGuid();
+                Guid second = Guid.NewGuid();
+                store.EarlierSessions.Add(first);
+                store.EarlierSessions.Add(second);
+                await cache.SetUserSession(customer, first, Session(customer, first, store.Session.UserGuid), TimeSpan.FromSeconds(60));
+                await cache.SetUserSession(customer, second, Session(customer, second, store.Session.UserGuid), TimeSpan.FromSeconds(60));
+                database.FailNextInvalidation = true;
+
+                (string result, _) = await CreateLoginGate(users).AdmitNewSession(customer, session);
+
+                Assert.Null(result);
+                Assert.Equal(2, database.InvalidationAttempts);
+                Assert.Equal(2, store.EndedCount);
+                Assert.NotNull(store.Session);
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        [Fact]
+        public async Task LoginGate_RefusalKeepsItsMessageWhenLogoutCacheFails()
+        {
+            var (users, _, database, store, customer, session) = CreateRepositories();
+            try
+            {
+                database.FailNextInvalidation = true;
+
+                (string result, string message) = await CreateLoginGate(users, closed: true).AdmitNewSession(customer, session);
+
+                Assert.Equal("maintenance", result);
+                Assert.Equal(LoginGate.MaintenanceMessage, message);
+                Assert.Null(store.Session);
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        [Fact]
+        public async Task UserTombstoneBlocksSetAndUserIndexEnablesRoleEviction()
+        {
+            var (users, cache, database, store, customer, session) = CreateRepositories();
+            try
+            {
+                Guid second = Guid.NewGuid();
+                Assert.NotNull(await users.GetUserSession(customer, session));
+                await cache.SetUserSession(customer, second,
+                    Session(customer, second, store.Session.UserGuid), TimeSpan.FromSeconds(60));
+                Assert.Equal(2, database.IndexedSessionCount);
+
+                await users.UpdateUserRole(customer, store.Session.UserGuid.Value, UserRoles.Player);
+                Assert.Null(await cache.TryGetUserSession(customer, session));
+                Assert.Null(await cache.TryGetUserSession(customer, second));
+
+                await cache.SetUserSession(customer, session, store.Session, TimeSpan.FromSeconds(60));
+                Assert.Null(await cache.TryGetUserSession(customer, session));
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        [Fact]
+        public async Task SessionWithoutUserGuid_CanBeCachedWithoutUserIndex()
+        {
+            var (_, cache, database, _, customer, session) = CreateRepositories();
+            try
+            {
+                await cache.SetUserSession(customer, session,
+                    Session(customer, session, null), TimeSpan.FromSeconds(60));
+
+                Assert.NotNull(await cache.TryGetUserSession(customer, session));
+                Assert.Equal(0, database.IndexedSessionCount);
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        private static GetUserSession Session(Guid customer, Guid session, Guid? user) => new GetUserSession
+        {
+            CustomerGuid = customer,
+            UserSessionGUID = session,
+            UserGuid = user,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(5)
+        };
+
+        private static LoginGate CreateLoginGate(IUsersRepository users, bool closed = false)
+        {
+            var sanctions = DispatchProxy.Create<ISanctionsRepository, SanctionsProxy>();
+            var settings = DispatchProxy.Create<IConsoleSettingsRepository, SettingsProxy>();
+            ((SettingsProxy)settings).Closed = closed;
+            return new LoginGate(sanctions, settings, users);
         }
 
         private static (CachingUsersRepository users, UserSessionRepository cache,
@@ -90,9 +219,7 @@ namespace OWSTests.Cache
             var cache = new UserSessionRepository(options, databaseInterface);
             IUsersRepository storeInterface = DispatchProxy.Create<IUsersRepository, SessionStoreProxy>();
             var store = (SessionStoreProxy)storeInterface;
-            store.Session = new GetUserSession { CustomerGuid = customer, UserSessionGUID = session, UserGuid = Guid.NewGuid() };
-            // Newer session models carry an expiration used by the cache decorator.
-            typeof(GetUserSession).GetProperty("ExpiresAt")?.SetValue(store.Session, DateTime.UtcNow.AddMinutes(5));
+            store.Session = Session(customer, session, Guid.NewGuid());
             return (new CachingUsersRepository(storeInterface, cache, options), cache, database, store, customer, session);
         }
 
@@ -100,11 +227,22 @@ namespace OWSTests.Cache
         {
             private readonly Dictionary<string, string> _values = new();
             private readonly HashSet<string> _tombstones = new();
+            private readonly Dictionary<string, HashSet<string>> _indexes = new();
 
             public bool FailNextGet { get; set; }
             public bool FailNextInvalidation { get; set; }
             public bool InvalidateBeforeNextSet { get; set; }
             public int SessionCount => _values.Count;
+            public int IndexedSessionCount
+            {
+                get
+                {
+                    int count = 0;
+                    foreach (HashSet<string> members in _indexes.Values) count += members.Count;
+                    return count;
+                }
+            }
+            public int InvalidationAttempts { get; private set; }
 
             protected override object Invoke(MethodInfo targetMethod, object[] args)
             {
@@ -126,9 +264,23 @@ namespace OWSTests.Cache
                             && ((string)args[0]).Contains("EXISTS"))
                         {
                             InvalidateBeforeSet(sessionKey, tombstoneKey);
-                            if (!_tombstones.Contains(tombstoneKey))
+                            RedisValue[] scriptArgs = (RedisValue[])args[2];
+                            bool hasUser = scriptArgs[3].ToString() == "1";
+                            string userTombstoneKey = keys[2].ToString();
+                            if (!_tombstones.Contains(tombstoneKey)
+                                && (!hasUser || !_tombstones.Contains(userTombstoneKey)))
                             {
-                                _values[sessionKey] = ((RedisValue[])args[2])[0].ToString();
+                                _values[sessionKey] = scriptArgs[0].ToString();
+                                if (hasUser)
+                                {
+                                    string indexKey = keys[3].ToString();
+                                    if (!_indexes.TryGetValue(indexKey, out HashSet<string> members))
+                                    {
+                                        members = new HashSet<string>();
+                                        _indexes[indexKey] = members;
+                                    }
+                                    members.Add(scriptArgs[2].ToString());
+                                }
                             }
                         }
                         else
@@ -157,7 +309,16 @@ namespace OWSTests.Cache
                             FailNextInvalidation = false;
                             throw new RedisException("Simulated invalidation failure");
                         }
-                        return Task.FromResult(_values.Remove(key));
+                        return Task.FromResult(_values.Remove(key) || _indexes.Remove(key));
+                    case "SetMembersAsync":
+                        if (!_indexes.TryGetValue(key, out HashSet<string> indexed))
+                        {
+                            return Task.FromResult(Array.Empty<RedisValue>());
+                        }
+                        var membersResult = new RedisValue[indexed.Count];
+                        int memberIndex = 0;
+                        foreach (string member in indexed) membersResult[memberIndex++] = member;
+                        return Task.FromResult(membersResult);
                     default:
                         throw new NotSupportedException(targetMethod.Name);
                 }
@@ -173,6 +334,7 @@ namespace OWSTests.Cache
 
             private void Invalidate(string sessionKey, string tombstoneKey)
             {
+                InvalidationAttempts++;
                 if (FailNextInvalidation)
                 {
                     FailNextInvalidation = false;
@@ -186,6 +348,8 @@ namespace OWSTests.Cache
         public class SessionStoreProxy : DispatchProxy
         {
             public GetUserSession Session { get; set; }
+            public List<Guid> EarlierSessions { get; } = new();
+            public int EndedCount { get; private set; }
 
             protected override object Invoke(MethodInfo targetMethod, object[] args)
             {
@@ -196,9 +360,40 @@ namespace OWSTests.Cache
                     case "Logout":
                         Session = null;
                         return Task.FromResult(new SuccessAndErrorMessage { Success = true });
+                    case "UserSessionSetSelectedCharacter":
+                        Session.SelectedCharacterName = (string)args[2];
+                        return Task.FromResult(new SuccessAndErrorMessage { Success = true });
+                    case "EndEarlierSessions":
+                        EndedCount = EarlierSessions.Count;
+                        return Task.FromResult<IReadOnlyList<Guid>>(EarlierSessions.ToArray());
+                    case "UpdateUserRole":
+                        Session.Role = (string)args[2];
+                        return Task.FromResult(new SuccessAndErrorMessage { Success = true });
                     default:
                         throw new NotSupportedException(targetMethod.Name);
                 }
+            }
+        }
+
+        public class SanctionsProxy : DispatchProxy
+        {
+            protected override object Invoke(MethodInfo targetMethod, object[] args)
+                => targetMethod.Name == "GetActive"
+                    ? Task.FromResult(new ActiveSanctions())
+                    : throw new NotSupportedException(targetMethod.Name);
+        }
+
+        public class SettingsProxy : DispatchProxy
+        {
+            public bool Closed { get; set; }
+
+            protected override object Invoke(MethodInfo targetMethod, object[] args)
+            {
+                if (targetMethod.Name != "GetAll") throw new NotSupportedException(targetMethod.Name);
+                IReadOnlyDictionary<string, string> settings = Closed
+                    ? new Dictionary<string, string> { [ConsoleSettingKeys.LoginsOpen] = "false" }
+                    : new Dictionary<string, string>();
+                return Task.FromResult(settings);
             }
         }
     }

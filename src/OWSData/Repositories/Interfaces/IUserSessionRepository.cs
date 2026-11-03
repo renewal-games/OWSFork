@@ -6,7 +6,8 @@ namespace OWSData.Repositories.Interfaces
 {
     /// <summary>
     /// Session cache for Valkey/Redis. Reads and writes degrade to the database on cache
-    /// failure. Invalidation throws if it cannot revoke a cached session.
+    /// failure. Per-session invalidation throws if it cannot revoke a cached session;
+    /// callers decide whether that makes their operation fail.
     /// </summary>
     public interface IUserSessionRepository
     {
