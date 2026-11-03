@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
 using OWSData.Models;
@@ -9,6 +8,7 @@ using OWSData.Models.StoredProcs;
 using OWSData.Models.Tables;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Options;
+using Serilog;
 
 namespace OWSData.Repositories.Implementations
 {
@@ -75,10 +75,12 @@ namespace OWSData.Repositories.Implementations
 
         public async Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid)
         {
-            // Invalidate after the DB write commits. Report cache failure to the caller without
-            // throwing, so login refusal paths can still return their intended result.
+            // Invalidate after the DB write, even a failed one: the write may have committed, and
+            // evicting a live session only costs its next read a DB round trip. Report a cache
+            // failure without throwing, so login refusal paths can still return their intended
+            // result. Logging out again retries the eviction.
             SuccessAndErrorMessage result = await _inner.Logout(customerGuid, userSessionGuid);
-            if (_options.Enabled && result.Success)
+            if (_options.Enabled)
             {
                 try
                 {
@@ -86,12 +88,15 @@ namespace OWSData.Repositories.Implementations
                 }
                 catch (Exception ex)
                 {
-                    Trace.TraceError("Could not invalidate cached session {0} after logout: {1}", userSessionGuid, ex);
-                    return new SuccessAndErrorMessage
+                    Log.Error(ex, "user_logout could not invalidate cached session {UserSessionGuid}", userSessionGuid);
+                    if (result.Success)
                     {
-                        Success = false,
-                        ErrorMessage = "Logout could not be confirmed because session cache invalidation failed."
-                    };
+                        return new SuccessAndErrorMessage
+                        {
+                            Success = false,
+                            ErrorMessage = "Logout could not be confirmed because session cache invalidation failed."
+                        };
+                    }
                 }
             }
             return result;
@@ -113,7 +118,7 @@ namespace OWSData.Repositories.Implementations
                     {
                         // Keep trying the remaining sessions. A cache outage must not turn
                         // an admitted login into an unavailable response.
-                        Trace.TraceError("Could not invalidate earlier cached session {0}: {1}", session, ex);
+                        Log.Error(ex, "user_login could not invalidate earlier cached session {UserSessionGuid}", session);
                     }
                 }
             }
@@ -131,7 +136,7 @@ namespace OWSData.Repositories.Implementations
                 }
                 catch (Exception ex)
                 {
-                    Trace.TraceError("Could not invalidate cached session {0} after character selection: {1}", userSessionGUID, ex);
+                    Log.Error(ex, "set_selected_character could not invalidate cached session {UserSessionGuid}", userSessionGUID);
                 }
             }
             return result;

@@ -14,7 +14,7 @@ using OWSPublicAPI.Services;
 using StackExchange.Redis;
 using Xunit;
 
-namespace OWSTests.Cache
+namespace OWSTests.SessionCache
 {
     public class UserSessionInvalidationTests
     {
@@ -74,6 +74,70 @@ namespace OWSTests.Cache
                 Assert.False(result.Success);
                 Assert.Contains("cache invalidation failed", result.ErrorMessage);
                 Assert.Null(store.Session);
+                Assert.Equal(1, database.SessionCount);
+
+                // The row is already gone, so logging out again only has the eviction left to do.
+                Assert.True((await users.Logout(customer, session)).Success);
+                Assert.Equal(0, database.SessionCount);
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        [Fact]
+        public async Task LogoutWhoseDatabaseWriteFailed_StillEvictsAndReportsTheDatabaseError()
+        {
+            var (users, _, database, store, customer, session) = CreateRepositories();
+            try
+            {
+                Assert.NotNull(await users.GetUserSession(customer, session));
+                store.FailLogout = true;
+
+                SuccessAndErrorMessage result = await users.Logout(customer, session);
+
+                Assert.False(result.Success);
+                Assert.Equal(SessionStoreProxy.LogoutError, result.ErrorMessage);
+                Assert.Equal(0, database.SessionCount);
+            }
+            finally
+            {
+                UserSessionRepository.CircuitReset();
+            }
+        }
+
+        /// <summary>
+        /// The Lua scripts themselves, which the proxy above only models. Runs only when OWS_TEST_VALKEY
+        /// names a server; CI has no Valkey, so it is skipped there.
+        /// </summary>
+        [ValkeyFact]
+        public async Task Valkey_invalidation_removes_the_session_and_blocks_a_stale_repopulate()
+        {
+            var cache = new UserSessionRepository(Microsoft.Extensions.Options.Options.Create(new UserSessionCacheOptions
+            {
+                Enabled = true,
+                ConnectionString = ValkeyFactAttribute.ConnectionString,
+                KeyPrefix = $"test:{Guid.NewGuid():N}:",
+            }));
+            Guid customer = Guid.NewGuid();
+            Guid session = Guid.NewGuid();
+            Guid noUser = Guid.NewGuid();
+            GetUserSession cached = Session(customer, session, Guid.NewGuid());
+            TimeSpan ttl = TimeSpan.FromSeconds(60);
+            try
+            {
+                await cache.SetUserSession(customer, session, cached, ttl);
+                Assert.NotNull(await cache.TryGetUserSession(customer, session));
+                await cache.SetUserSession(customer, noUser, Session(customer, noUser, null), ttl);
+                Assert.NotNull(await cache.TryGetUserSession(customer, noUser));
+
+                await cache.RemoveUserSession(customer, session);
+                Assert.Null(await cache.TryGetUserSession(customer, session));
+
+                // A reader that loaded the row before the logout must not re-cache it.
+                await cache.SetUserSession(customer, session, cached, ttl);
+                Assert.Null(await cache.TryGetUserSession(customer, session));
             }
             finally
             {
@@ -347,7 +411,10 @@ namespace OWSTests.Cache
 
         public class SessionStoreProxy : DispatchProxy
         {
+            public const string LogoutError = "Simulated database failure";
+
             public GetUserSession Session { get; set; }
+            public bool FailLogout { get; set; }
             public List<Guid> EarlierSessions { get; } = new();
             public int EndedCount { get; private set; }
 
@@ -358,6 +425,10 @@ namespace OWSTests.Cache
                     case "GetUserSession":
                         return Task.FromResult(Session);
                     case "Logout":
+                        if (FailLogout)
+                        {
+                            return Task.FromResult(new SuccessAndErrorMessage { Success = false, ErrorMessage = LogoutError });
+                        }
                         Session = null;
                         return Task.FromResult(new SuccessAndErrorMessage { Success = true });
                     case "UserSessionSetSelectedCharacter":
