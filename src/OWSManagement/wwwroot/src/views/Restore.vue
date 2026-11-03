@@ -151,7 +151,7 @@ onUnmounted(() => window.clearInterval(timer));
 				<p v-if="!backup" class="notice bad">The backup has no character named {{ name }}.</p>
 				<template v-else>
 					<p v-if="live.shopsHoldingEscrow.length" class="notice bad">
-						Restore is blocked while these shops have open listings or unclaimed escrow:
+						Restore is blocked because these shops were created after the backup and still have open listings or unclaimed escrow:
 						<span v-for="(shop, index) in live.shopsHoldingEscrow" :key="shop.playerShopID">
 							{{ index ? ', ' : ' ' }}{{ shop.shopName }} (#{{ shop.playerShopID }}, {{ shop.saleStatus }}, {{ shop.settlementStatus }})
 						</span>

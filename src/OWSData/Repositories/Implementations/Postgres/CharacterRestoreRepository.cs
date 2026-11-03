@@ -30,8 +30,9 @@ namespace OWSData.Repositories.Implementations.Postgres
             public List<SnapshotItem> Items { get; set; } = new();
             public List<SnapshotRow> Abilities { get; set; } = new();
             public List<SnapshotRow> Quests { get; set; } = new();
-            /// <summary>Live only: shops whose listings or proceeds may still be in escrow.</summary>
+            /// <summary>Live only: shops with active escrow; Compare excludes shops already in the backup.</summary>
             public List<ShopEscrow> ShopsHoldingEscrow { get; set; } = new();
+            internal HashSet<long> BackupShopIDs { get; set; } = new();
             /// <summary>Staging only: the backup it was loaded from, or null while a load is not complete.</summary>
             public string Dump { get; set; }
         }
@@ -100,8 +101,22 @@ namespace OWSData.Repositories.Implementations.Postgres
                 FROM CharQuests WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID ORDER BY QuestIDTag", idArgs)).ToList();
             if (!fromStaging)
                 snapshot.ShopsHoldingEscrow = (await connection.QueryAsync<ShopEscrow>(ShopsHoldingEscrowSql, idArgs)).ToList();
-            if (fromStaging) snapshot.Dump = await StagingDump(connection, null);
+            if (fromStaging)
+            {
+                snapshot.BackupShopIDs = (await connection.QueryAsync<long>(@"SELECT PlayerShopID FROM PlayerShops
+                    WHERE CustomerGUID = @CustomerGUID AND OwnerCharacterID = @CharacterID", idArgs)).ToHashSet();
+                snapshot.Dump = await StagingDump(connection, null);
+            }
             return snapshot;
+        }
+
+        public async Task<(Snapshot Live, Snapshot Backup)> GetComparison(Guid customerGUID, string characterName)
+        {
+            Snapshot backup = await GetSnapshot(true, customerGUID, characterName);
+            Snapshot live = await GetSnapshot(false, customerGUID, characterName);
+            if (live != null && backup != null)
+                live.ShopsHoldingEscrow.RemoveAll(s => backup.BackupShopIDs.Contains(s.PlayerShopID));
+            return (live, backup);
         }
 
         /// <summary>The backup the loader finished loading (staging_meta, written after pg_restore); null while loading.</summary>
@@ -120,7 +135,7 @@ namespace OWSData.Repositories.Implementations.Postgres
         /// <summary>
         /// Null on success, else why not: "not_in_backup", "not_live", "different_character" (the name now belongs to
         /// another character ID), "online" (in the world, or sent a position in the last minute), "shop_escrow:..."
-        /// (open shops or unclaimed escrow, with shop names), or "staging_changed"
+        /// (open shops or unclaimed escrow absent from the backup, with shop names), or "staging_changed"
         /// (staging no longer holds the backup that was compared, or is still loading).
         /// </summary>
         public async Task<string> Restore(Guid customerGUID, string characterName, string comparedDump)
@@ -138,6 +153,8 @@ namespace OWSData.Repositories.Implementations.Postgres
             if (!stagingID.HasValue) return "not_in_backup";
 
             var stagingArgs = new { CustomerGUID = customerGUID, CharacterID = stagingID.Value };
+            HashSet<long> backupShopIDs = (await staging.QueryAsync<long>(@"SELECT PlayerShopID FROM PlayerShops
+                WHERE CustomerGUID = @CustomerGUID AND OwnerCharacterID = @CharacterID", stagingArgs, read)).ToHashSet();
             IDictionary<string, object> character = (IDictionary<string, object>)await staging.QueryFirstAsync(
                 "SELECT * FROM Characters WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID", stagingArgs, read);
             List<IDictionary<string, object>> stats = await Rows(staging, read, "CharStats", stagingArgs);
@@ -171,7 +188,8 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             // CreateShop takes this same character row lock before moving inventory into a listing.
             // Check inside the transaction so a concurrent shop cannot appear after the check.
-            List<ShopEscrow> shops = (await live.QueryAsync<ShopEscrow>(ShopsHoldingEscrowSql, ids, transaction)).ToList();
+            List<ShopEscrow> shops = (await live.QueryAsync<ShopEscrow>(ShopsHoldingEscrowSql, ids, transaction))
+                .Where(s => !backupShopIDs.Contains(s.PlayerShopID)).ToList();
             if (shops.Count > 0)
                 return "shop_escrow:" + string.Join(", ", shops.Select(s => $"{s.ShopName} (#{s.PlayerShopID})"));
 
