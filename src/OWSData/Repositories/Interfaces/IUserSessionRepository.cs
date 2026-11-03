@@ -5,10 +5,8 @@ using OWSData.Models.StoredProcs;
 namespace OWSData.Repositories.Interfaces
 {
     /// <summary>
-    /// Best-effort cache for user sessions (Valkey/Redis). All members degrade gracefully:
-    /// a cache miss or backend outage returns null / completes silently rather than throwing,
-    /// so the caller always falls back to the database and session validation never depends
-    /// on the cache being reachable.
+    /// Session cache for Valkey/Redis. Reads and writes degrade to the database on cache
+    /// failure. Invalidation throws if it cannot revoke a cached session.
     /// </summary>
     public interface IUserSessionRepository
     {

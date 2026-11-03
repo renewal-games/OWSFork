@@ -4,6 +4,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="OWSTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Remove="Protos\chat.proto" />
     <None Remove="Protos\Guild.proto" />
   </ItemGroup>

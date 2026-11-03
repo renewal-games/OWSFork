@@ -73,10 +73,9 @@ namespace OWSData.Repositories.Implementations
 
         public async Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid)
         {
-            // Invalidate after the DB write commits. Note this ordering alone does NOT defeat the
-            // read-repopulate race (a reader that already read the still-valid row can re-cache it
-            // after this delete); RemoveUserSession writes a short-lived tombstone that blocks that
-            // repopulate. Any residual staleness is bounded by the tombstone TTL.
+            // Invalidate after the DB write commits. Invalidation atomically writes a tombstone
+            // and removes the cached value; failures propagate so logout cannot report success
+            // while a cached session remains valid.
             SuccessAndErrorMessage result = await _inner.Logout(customerGuid, userSessionGuid);
             if (_options.Enabled)
             {
