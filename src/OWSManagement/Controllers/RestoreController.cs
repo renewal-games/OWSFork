@@ -112,6 +112,8 @@ namespace OWSManagement.Controllers
             {
                 string message = error switch
                 {
+                    var e when e.StartsWith("shop_escrow:", StringComparison.Ordinal) =>
+                        "Restore refused while these shops have open listings or unclaimed escrow: " + e.Substring("shop_escrow:".Length) + ". Close and claim them, then compare again.",
                     "online" => "The character is in the world. Kick them, wait a minute, then restore.",
                     "not_in_backup" => "The backup has no character with this name.",
                     "different_character" => "This name belongs to a different character than in the backup.",

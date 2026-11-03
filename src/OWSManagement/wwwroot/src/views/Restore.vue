@@ -150,6 +150,13 @@ onUnmounted(() => window.clearInterval(timer));
 				<h2>2 · What changes</h2>
 				<p v-if="!backup" class="notice bad">The backup has no character named {{ name }}.</p>
 				<template v-else>
+					<p v-if="live.shopsHoldingEscrow.length" class="notice bad">
+						Restore is blocked while these shops have open listings or unclaimed escrow:
+						<span v-for="(shop, index) in live.shopsHoldingEscrow" :key="shop.playerShopID">
+							{{ index ? ', ' : ' ' }}{{ shop.shopName }} (#{{ shop.playerShopID }}, {{ shop.saleStatus }}, {{ shop.settlementStatus }})
+						</span>
+						Close and claim them, then compare again.
+					</p>
 					<div class="table-wrap">
 						<table>
 							<thead><tr><th></th><th>Now</th><th>In the backup</th></tr></thead>
@@ -206,7 +213,7 @@ onUnmounted(() => window.clearInterval(timer));
 					</p>
 					<form class="toolbar" @submit.prevent="restore">
 						<input v-model="confirm" type="text" :placeholder="`Type ${name} to confirm`" aria-label="Character name to confirm" autocomplete="off" />
-						<button type="submit" class="danger" :disabled="busy || confirm.trim().toLowerCase() !== name.toLowerCase()">Restore {{ name }}</button>
+						<button type="submit" class="danger" :disabled="busy || live.shopsHoldingEscrow.length > 0 || confirm.trim().toLowerCase() !== name.toLowerCase()">Restore {{ name }}</button>
 					</form>
 				</template>
 			</template>
