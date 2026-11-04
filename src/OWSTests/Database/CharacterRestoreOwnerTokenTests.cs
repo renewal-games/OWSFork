@@ -401,7 +401,7 @@ namespace OWSTests.Database
         }
 
         private Task<string> Restore(Restored restored) =>
-            new CharacterRestoreRepository(LiveConnectionString, restored.StagingConnectionString).Restore(restored.CustomerGUID, restored.Name, Dump);
+            new CharacterRestoreRepository(LiveConnectionString, restored.StagingConnectionString).Restore(restored.CustomerGUID, restored.Name, Dump, "admin");
 
         private async Task<long> Revision(Restored restored)
         {
