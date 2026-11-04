@@ -52,7 +52,8 @@ BEGIN
         RAISE EXCEPTION 'PurgeStressBots: refusing; stress accounts own characters not named SSBot<N>: %', _Bad;
     END IF;
 
-    -- The bots' sessions: the live ones, plus every one their password logins recorded in the audit log.
+    -- The bots' sessions: the live ones, plus every one their password logins recorded in the audit log. A refused
+    -- login records the empty GUID, which other accounts' logouts share.
     CREATE TEMP TABLE StressSessions ON COMMIT DROP AS
     SELECT S.CustomerGUID, S.UserSessionGUID::TEXT AS SessionGUID
     FROM UserSessions S
@@ -62,7 +63,7 @@ BEGIN
     FROM AuditLog A
     WHERE A.Action = 'user_login'
       AND (A.CustomerGUID, LOWER(TRIM(A.Actor))) IN (SELECT CustomerGUID, Email FROM StressUsers)
-      AND SamsaraTryJsonb(A.Detail) ->> 'userSessionGuid' IS NOT NULL;
+      AND SamsaraTryJsonb(A.Detail) ->> 'userSessionGuid' NOT IN ('', '00000000-0000-0000-0000-000000000000');
 
     CREATE TEMP TABLE StressShops ON COMMIT DROP AS
     SELECT S.PlayerShopID
