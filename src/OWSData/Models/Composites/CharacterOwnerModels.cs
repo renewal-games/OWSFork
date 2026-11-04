@@ -45,10 +45,14 @@ namespace OWSData.Models.Composites
     }
 
     // The reply to a save whose OwnerToken is not the character's current owner.
-    public class StaleOwnerResult
+    public class StaleOwnerResult : SuccessAndErrorMessage
     {
-        public bool Success => false;
-        public string ErrorMessage => "stale_owner";
+        public StaleOwnerResult()
+        {
+            Success = false;
+            ErrorMessage = "stale_owner";
+        }
+
         public string ReasonCode => "stale_owner";
     }
 

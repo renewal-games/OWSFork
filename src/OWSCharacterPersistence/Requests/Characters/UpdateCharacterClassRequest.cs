@@ -30,7 +30,11 @@ namespace OWSCharacterPersistence.Requests.Characters
 
             try
             {
-                await charactersRepository.UpdateCharacterClass(customerGUID, CharacterName, ClassName);
+                string refusal = await charactersRepository.UpdateCharacterClass(customerGUID, CharacterName, ClassName, OwnerToken);
+                if (refusal == "stale_owner")
+                {
+                    return new StaleOwnerResult();
+                }
             }
             catch (Exception ex)
             {

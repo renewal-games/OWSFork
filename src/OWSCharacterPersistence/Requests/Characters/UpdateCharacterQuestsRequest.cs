@@ -39,7 +39,13 @@ namespace OWSCharacterPersistence.Requests.Characters
 
             try
             {
-                if (!await charactersRepository.UpdateCharacterQuests(customerGUID, CharacterName, CharacterQuests, ZoneInstanceID))
+                string refusal = await charactersRepository.UpdateCharacterQuests(customerGUID, CharacterName, CharacterQuests, OwnerToken, ZoneInstanceID);
+                if (refusal == "stale_owner")
+                {
+                    return new StaleOwnerResult();
+                }
+
+                if (refusal == "stale_zone")
                 {
                     // Success stays true: the caller is fire-and-forget and must not retry a write that
                     // was refused precisely because a newer zone owns the character.

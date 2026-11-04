@@ -219,10 +219,10 @@ namespace OWSTests.CharacterPersistence
                         return Task.FromResult(WriteCharacterData((IEnumerable<UpdateCharacterInventory>)args[3], (long?)args[7], (bool)args[8]));
                     case nameof(ICharactersRepository.UpdateCharacterQuests):
                         QuestSaves++;
-                        return Task.FromResult(true);
+                        return Task.FromResult<string>(null);
                     case nameof(ICharactersRepository.UpdateCharacterStats):
                         StatSaves++;
-                        return Task.FromResult(true);
+                        return Task.FromResult<string>(null);
                     default:
                         throw new NotSupportedException(targetMethod.Name);
                 }

@@ -23,11 +23,12 @@ namespace OWSCharacterPersistence.Requests.Characters
             customerGUID = customerGuid.CustomerGUID;
         }
 
-        public async Task Handle()
+        // Null when written or the character is unknown; "stale_owner" when the owner check refused the write.
+        public async Task<string> Handle()
         {
-            await charactersRepository.AddOrUpdateCustomCharacterData(customerGUID, addOrUpdateCustomCharacterData);
+            string refusal = await charactersRepository.AddOrUpdateOwnedCustomCharacterData(customerGUID, addOrUpdateCustomCharacterData, OwnerToken);
 
-            return;
+            return refusal == "stale_owner" ? refusal : null;
         }
     }
 }

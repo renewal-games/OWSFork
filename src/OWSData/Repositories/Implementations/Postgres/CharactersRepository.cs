@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -335,6 +335,18 @@ namespace OWSData.Repositories.Implementations.Postgres
                 }
             }
         }
+
+        public Task<string> AddOrUpdateOwnedCustomCharacterData(Guid customerGUID, AddOrUpdateCustomCharacterData addOrUpdateCustomCharacterData, Guid? ownerToken) =>
+            WriteAsCharacterOwner(customerGUID, addOrUpdateCustomCharacterData.CharacterName, ownerToken, null, (conn, tx, characterID) =>
+                conn.ExecuteAsync(PostgresQueries.AddOrUpdateCharacterCustomDataField,
+                    new
+                    {
+                        CustomerGUID = customerGUID,
+                        CharacterID = characterID,
+                        addOrUpdateCustomCharacterData.CustomFieldName,
+                        addOrUpdateCustomCharacterData.FieldValue
+                    },
+                    transaction: tx, commandType: CommandType.Text));
 
         public async Task<MapInstances> CheckMapInstanceStatus(Guid customerGUID, int mapInstanceID)
         {
@@ -794,7 +806,7 @@ namespace OWSData.Repositories.Implementations.Postgres
         // CharOnMapInstance row inside AddCharacterToMapInstanceByCharName's transaction, so this flips
         // the moment the destination takes ownership. A character owned by nobody (logout, instance
         // cleanup) is still writable, so a late save from the last zone is not lost.
-        private async Task<bool> IsStaleZoneWrite(Guid customerGUID, string characterName, int? callerZoneInstanceId)
+        private static async Task<bool> IsStaleZoneWriteUnderLock(DbConnection conn, DbTransaction tx, Guid customerGUID, string characterName, int? callerZoneInstanceId)
         {
             if (!callerZoneInstanceId.HasValue || callerZoneInstanceId.Value <= 0)
             {
@@ -806,18 +818,58 @@ namespace OWSData.Repositories.Implementations.Postgres
             p.Add("@CharName", characterName);
             p.Add("@CallerZoneInstanceID", callerZoneInstanceId.Value);
 
-            return await Connection.ExecuteScalarAsync<bool>(PostgresQueries.IsCharacterOwnedByOtherZoneInstance, p);
+            return await conn.ExecuteScalarAsync<bool>(PostgresQueries.IsCharacterOwnedByOtherZoneInstance, p, transaction: tx);
         }
 
-        public async Task<bool> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, int? callerZoneInstanceId = null)
+        // A standalone zone save. The character row stays locked through the write, as in UpdateCharacterInventory, so a
+        // save that passed the controller's check cannot land after a claim or a restore that replaced the owner.
+        // Null when written, else why not: "character_not_found", "stale_owner" or "stale_zone".
+        private async Task<string> WriteAsCharacterOwner(Guid customerGUID, string characterName, Guid? ownerToken, int? callerZoneInstanceId,
+            Func<DbConnection, DbTransaction, int, Task> write)
         {
-            using (Connection)
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+            using DbTransaction tx = await conn.BeginTransactionAsync();
+            try
             {
-                if (await IsStaleZoneWrite(customerGUID, characterName, callerZoneInstanceId))
+                int? characterID = await conn.QuerySingleOrDefaultAsync<int?>(LockCharacterIdByNameSql,
+                    new { CustomerGUID = customerGUID, CharName = characterName },
+                    transaction: tx, commandType: CommandType.Text);
+
+                string refusal = null;
+                if (characterID == null)
                 {
-                    return false;
+                    refusal = "character_not_found";
+                }
+                else if (await IsStaleOwnerUnderLock(conn, tx, customerGUID, characterID.Value, ownerToken))
+                {
+                    refusal = "stale_owner";
+                }
+                else if (await IsStaleZoneWriteUnderLock(conn, tx, customerGUID, characterName, callerZoneInstanceId))
+                {
+                    refusal = "stale_zone";
                 }
 
+                if (refusal != null)
+                {
+                    await tx.RollbackAsync();
+                    return refusal;
+                }
+
+                await write(conn, tx, characterID.Value);
+                await tx.CommitAsync();
+                return null;
+            }
+            catch
+            {
+                try { await tx.RollbackAsync(); } catch { /* connection already gone */ }
+                throw;
+            }
+        }
+
+        public Task<string> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken, int? callerZoneInstanceId = null) =>
+            WriteAsCharacterOwner(customerGUID, characterName, ownerToken, callerZoneInstanceId, (conn, tx, characterID) =>
+            {
                 var statIds = updateCharacterStats.Select(s => s.StatIdentifier).ToArray();
                 var statVals = updateCharacterStats.Select(s => s.Value).ToArray();
 
@@ -827,10 +879,8 @@ namespace OWSData.Repositories.Implementations.Postgres
                 p.Add("@StatIdentifiers", statIds, dbType: DbType.Object, direction: ParameterDirection.Input);
                 p.Add("@StatValues", statVals, dbType: DbType.Object, direction: ParameterDirection.Input);
 
-                await Connection.ExecuteAsync(GenericQueries.UpsertManyCharacterStats, p, commandType: CommandType.Text);
-                return true;
-            }
-        }
+                return conn.ExecuteAsync(GenericQueries.UpsertManyCharacterStats, p, transaction: tx, commandType: CommandType.Text);
+            });
 
         private const string LockCharacterIdByNameSql = @"SELECT CharacterID FROM Characters
                 WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName
@@ -1423,49 +1473,37 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        public async Task UpdateCharacterClass(Guid customerGUID, string characterName, string className)
-        {
-            // No economy-revision locking here: ClassID is not currency and is not read-modify-write,
-            // so a plain parameterized UPDATE is enough.
-            using (Connection)
+        // No economy-revision check here: ClassID is not currency and is not read-modify-write.
+        public Task<string> UpdateCharacterClass(Guid customerGUID, string characterName, string className, Guid? ownerToken) =>
+            WriteAsCharacterOwner(customerGUID, characterName, ownerToken, null, (conn, tx, characterID) =>
             {
                 var parameters = new DynamicParameters();
                 parameters.Add("@CustomerGUID", customerGUID);
                 parameters.Add("@CharName", characterName);
                 parameters.Add("@ClassName", className);
 
-                await Connection.ExecuteAsync(GenericQueries.UpdateCharacterClass,
+                return conn.ExecuteAsync(GenericQueries.UpdateCharacterClass,
                     parameters,
-                    commandType: CommandType.Text);
-            }
-        }
+                    transaction: tx, commandType: CommandType.Text);
+            });
 
-        public async Task<int> UpdateCharacterAbilities(Guid customerGUID, string charName, string abilitiesJson)
-        {
-            using (Connection)
+        public Task<string> UpdateCharacterAbilities(Guid customerGUID, string charName, string abilitiesJson, Guid? ownerToken) =>
+            WriteAsCharacterOwner(customerGUID, charName, ownerToken, null, (conn, tx, characterID) =>
             {
                 var p = new DynamicParameters();
                 p.Add("@CustomerGUID", customerGUID);
                 p.Add("@CharName", charName);
                 p.Add("@AbilitiesJson", abilitiesJson);
 
-                // Inserted plus updated rows. The upsert joins on the character, so an unknown name writes nothing.
-                return await Connection.ExecuteAsync(
+                return conn.ExecuteAsync(
                     PostgresQueries.UpsertCharacterAbilitiesJson,
                     p,
-                    commandType: CommandType.Text);
-            }
-        }
+                    transaction: tx, commandType: CommandType.Text);
+            });
 
-        public async Task<bool> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, int? callerZoneInstanceId = null)
-        {
-            using (Connection)
+        public Task<string> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, Guid? ownerToken, int? callerZoneInstanceId = null) =>
+            WriteAsCharacterOwner(customerGUID, characterName, ownerToken, callerZoneInstanceId, async (conn, tx, characterID) =>
             {
-                if (await IsStaleZoneWrite(customerGUID, characterName, callerZoneInstanceId))
-                {
-                    return false;
-                }
-
                 foreach (UpdateCharacterQuest Quest in updateCharacterQuests)
                 {
                     var p = new DynamicParameters();
@@ -1475,13 +1513,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                     p.Add("@QuestJournalTagContainer", Quest.QuestJournalTagContainer);
                     p.Add("@CustomData", Quest.CustomData);
 
-
-                    await Connection.ExecuteAsync(PostgresQueries.UpdateCharacterQuest, p);
+                    await conn.ExecuteAsync(PostgresQueries.UpdateCharacterQuest, p, transaction: tx);
                 }
-
-                return true;
-            }
-        }
+            });
 
         public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest)
         {

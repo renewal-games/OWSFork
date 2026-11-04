@@ -288,12 +288,12 @@ namespace OWSCharacterPersistence.Controllers
 
         [HttpPost]
         [Route("AddOrUpdateCustomData")]
-        public async Task AddOrUpdateCustomData([FromBody] AddOrUpdateCustomDataRequest request)
+        public async Task<IActionResult> AddOrUpdateCustomData([FromBody] AddOrUpdateCustomDataRequest request)
         {
             request.SetData(_charactersRepository, _customerGuid);
-            await request.Handle();
+            string refusal = await request.Handle();
 
-            return;
+            return refusal == null ? new EmptyResult() : Ok(new StaleOwnerResult());
         }
 
         [HttpPost]
