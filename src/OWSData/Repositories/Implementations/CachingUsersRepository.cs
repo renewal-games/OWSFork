@@ -8,6 +8,7 @@ using OWSData.Models.StoredProcs;
 using OWSData.Models.Tables;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Options;
+using Serilog;
 
 namespace OWSData.Repositories.Implementations
 {
@@ -16,7 +17,8 @@ namespace OWSData.Repositories.Implementations
     /// best-effort cache (Valkey/Redis) to remove a database round trip from the hottest
     /// authenticated path. Only <see cref="GetUserSession"/> is cached; the operations that
     /// change what it returns (logout, ending earlier sessions, selected-character change, role change) invalidate it.
-    /// Everything else passes straight through. When caching is disabled the decorator is a no-op
+    /// Everything else passes straight through. Logout reports a cache invalidation failure to its caller.
+    /// When caching is disabled the decorator is a no-op
     /// pass-through, so behaviour is unchanged unless a cache is explicitly provisioned.
     /// </summary>
     public class CachingUsersRepository : IUsersRepository
@@ -71,16 +73,53 @@ namespace OWSData.Repositories.Implementations
         private static TimeSpan RemainingLifetime(GetUserSession session)
             => session.ExpiresAt.HasValue ? session.ExpiresAt.Value.ToUniversalTime() - DateTime.UtcNow : TimeSpan.Zero;
 
+        // How long a revoked session's cache block must last, read from the database rather than the
+        // cache. Zero for a GUID with no live row: the caller is an open endpoint, so a request with a
+        // made-up GUID must not leave a long-lived key in the cache.
+        private async Task<TimeSpan> RemainingLifetimeInDatabase(Guid customerGuid, Guid userSessionGuid)
+        {
+            try
+            {
+                GetUserSession session = await _inner.GetUserSession(customerGuid, userSessionGuid);
+                return session != null ? RemainingLifetime(session) : TimeSpan.Zero;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "user_session_revoke could not read session {UserSessionGuid}", userSessionGuid);
+                return TimeSpan.Zero;
+            }
+        }
+
         public async Task<SuccessAndErrorMessage> Logout(Guid customerGuid, Guid userSessionGuid)
         {
-            // Invalidate after the DB write commits. Note this ordering alone does NOT defeat the
-            // read-repopulate race (a reader that already read the still-valid row can re-cache it
-            // after this delete); RemoveUserSession writes a short-lived tombstone that blocks that
-            // repopulate. Any residual staleness is bounded by the tombstone TTL.
+            // The lifetime has to be read before the row is deleted.
+            TimeSpan remaining = _options.Enabled
+                ? await RemainingLifetimeInDatabase(customerGuid, userSessionGuid)
+                : TimeSpan.Zero;
+
+            // Invalidate after the DB write, even a failed one: the write may have committed, and
+            // revoking a live session only sends its reads to the DB. Report a cache failure
+            // without throwing, so login refusal paths can still return their intended result.
+            // Logging out again retries the eviction.
             SuccessAndErrorMessage result = await _inner.Logout(customerGuid, userSessionGuid);
             if (_options.Enabled)
             {
-                await _cache.RemoveUserSession(customerGuid, userSessionGuid);
+                try
+                {
+                    await _cache.RevokeUserSession(customerGuid, userSessionGuid, remaining);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "user_logout could not invalidate cached session {UserSessionGuid}", userSessionGuid);
+                    if (result.Success)
+                    {
+                        return new SuccessAndErrorMessage
+                        {
+                            Success = false,
+                            ErrorMessage = "Logout could not be confirmed because session cache invalidation failed."
+                        };
+                    }
+                }
             }
             return result;
         }
@@ -89,11 +128,22 @@ namespace OWSData.Repositories.Implementations
         public async Task<IReadOnlyList<Guid>> EndEarlierSessions(Guid customerGUID, Guid userSessionGUID)
         {
             IReadOnlyList<Guid> ended = await _inner.EndEarlierSessions(customerGUID, userSessionGUID);
-            if (_options.Enabled)
+            if (_options.Enabled && ended.Count > 0)
             {
+                // Every ended session logged in before the kept one, so none outlives it.
+                TimeSpan remaining = await RemainingLifetimeInDatabase(customerGUID, userSessionGUID);
                 foreach (Guid session in ended)
                 {
-                    await _cache.RemoveUserSession(customerGUID, session);
+                    try
+                    {
+                        await _cache.RevokeUserSession(customerGUID, session, remaining);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Keep trying the remaining sessions. A cache outage must not turn
+                        // an admitted login into an unavailable response.
+                        Log.Error(ex, "user_login could not invalidate earlier cached session {UserSessionGuid}", session);
+                    }
                 }
             }
             return ended;
@@ -104,7 +154,14 @@ namespace OWSData.Repositories.Implementations
             SuccessAndErrorMessage result = await _inner.UserSessionSetSelectedCharacter(customerGUID, userSessionGUID, selectedCharacterName);
             if (_options.Enabled)
             {
-                await _cache.RemoveUserSession(customerGUID, userSessionGUID);
+                try
+                {
+                    await _cache.RemoveUserSession(customerGUID, userSessionGUID);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "set_selected_character could not invalidate cached session {UserSessionGuid}", userSessionGUID);
+                }
             }
             return result;
         }

@@ -214,6 +214,9 @@ namespace OWSTests.Database
                 return Task.CompletedTask;
             }
 
+            public Task RevokeUserSession(Guid customerGuid, Guid userSessionGuid, TimeSpan remainingLifetime)
+                => RemoveUserSession(customerGuid, userSessionGuid);
+
             public Task RemoveUserSessionsForUser(Guid customerGuid, Guid userGuid)
             {
                 foreach ((Guid, Guid) key in Entries.Where(e => e.Key.Item1 == customerGuid && e.Value.UserGuid == userGuid).Select(e => e.Key).ToList())

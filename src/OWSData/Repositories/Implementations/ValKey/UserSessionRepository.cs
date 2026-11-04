@@ -12,9 +12,8 @@ using StackExchange.Redis;
 namespace OWSData.Repositories.Implementations.ValKey
 {
     /// <summary>
-    /// Valkey/Redis-backed session cache. Every operation is best-effort: connection or
-    /// serialization failures are swallowed so a cache outage degrades to the database
-    /// instead of breaking authentication.
+    /// Valkey/Redis-backed session cache. Reads and writes are best-effort. Per-session
+    /// invalidation reports failures so callers can decide whether their operation may succeed.
     /// </summary>
     public class UserSessionRepository : IUserSessionRepository
     {
@@ -26,19 +25,55 @@ namespace OWSData.Repositories.Implementations.ValKey
         private static readonly TimeSpan CircuitCooldown = TimeSpan.FromSeconds(10);
         private static long _skipCacheUntilTicks;
 
-        // When a session is invalidated (logout / selected-character change / role change) a short-lived
+        // When a session is invalidated (selected-character change / role change) a short-lived
         // tombstone is written next to the deleted key. A concurrent reader that fetched the
         // DB row just BEFORE the invalidation committed is blocked from re-populating the cache
-        // with the now-stale session while the tombstone is live — closing the read-repopulate
-        // race that a plain delete leaves open.
+        // with the now-stale session while the tombstone is live. A revoked session's tombstone
+        // lasts for its remaining lifetime instead (RevokeUserSession), so no delay lets a reader
+        // re-cache it: past its ExpiresAt a cached copy is no longer served.
         private static readonly TimeSpan InvalidationTombstoneTtl = TimeSpan.FromSeconds(10);
+
+        private const string SetSessionScript = @"
+if redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
+if ARGV[4] == '1' and redis.call('EXISTS', KEYS[3]) == 1 then return 0 end
+if tonumber(ARGV[2]) > 0 then
+    redis.call('PSETEX', KEYS[1], ARGV[2], ARGV[1])
+else
+    redis.call('SET', KEYS[1], ARGV[1])
+end
+if ARGV[4] == '1' then
+    local oldIndexTtl = redis.call('PTTL', KEYS[4])
+    redis.call('SADD', KEYS[4], ARGV[3])
+    if tonumber(ARGV[2]) > 0 then
+        if oldIndexTtl < tonumber(ARGV[2]) then
+            redis.call('PEXPIRE', KEYS[4], ARGV[2])
+        end
+    else
+        redis.call('PERSIST', KEYS[4])
+    end
+end
+return 1";
+
+        // Only ever extends the tombstone: a repeated logout or a late selected-character change
+        // must not cut a revoked session's tombstone back to the short one.
+        private const string InvalidateSessionScript = @"
+if redis.call('PTTL', KEYS[2]) < tonumber(ARGV[1]) then
+    redis.call('PSETEX', KEYS[2], ARGV[1], '1')
+end
+redis.call('DEL', KEYS[1])
+return 1";
 
         private readonly ConfigurationOptions _configurationOptions;
         private readonly string _connectionKey;
         private readonly int _databaseIndex;
         private readonly string _keyPrefix;
+        private readonly IDatabase _databaseOverride;
 
-        public UserSessionRepository(IOptions<UserSessionCacheOptions> options)
+        public UserSessionRepository(IOptions<UserSessionCacheOptions> options) : this(options, null)
+        {
+        }
+
+        internal UserSessionRepository(IOptions<UserSessionCacheOptions> options, IDatabase database)
         {
             UserSessionCacheOptions optionsValue = options?.Value ?? new UserSessionCacheOptions();
             _configurationOptions = BuildConfigurationOptions(optionsValue);
@@ -47,9 +82,10 @@ namespace OWSData.Repositories.Implementations.ValKey
             _keyPrefix = string.IsNullOrWhiteSpace(optionsValue.KeyPrefix)
                 ? UserSessionCacheOptions.DefaultKeyPrefix
                 : optionsValue.KeyPrefix;
+            _databaseOverride = database;
         }
 
-        private IDatabase Database => Connections
+        private IDatabase Database => _databaseOverride ?? Connections
             .GetOrAdd(_connectionKey, _ => new Lazy<ConnectionMultiplexer>(() => ConnectionMultiplexer.Connect(_configurationOptions)))
             .Value
             .GetDatabase(_databaseIndex);
@@ -96,32 +132,22 @@ namespace OWSData.Repositories.Implementations.ValKey
 
             try
             {
-                // Do not re-populate if an invalidation tombstone is live: this caller may have
-                // read the session from the DB just before a concurrent logout/char-change/role
-                // change, so caching it now would serve a stale-but-"valid" session until the TTL.
-                string userIndexKey = userSession.UserGuid.HasValue ? ConstructUserIndexKey(customerGuid, userSession.UserGuid.Value) : null;
-                if (await Database.KeyExistsAsync(TombstoneKey(key))
-                    || (userIndexKey != null && await Database.KeyExistsAsync(TombstoneKey(userIndexKey))))
-                {
-                    CircuitReset();
-                    return;
-                }
-
-                TimeSpan? expiry = timeToLive > TimeSpan.Zero ? timeToLive : null;
                 string userSessionJson = JsonSerializer.Serialize(userSession);
-                await Database.StringSetAsync(key, userSessionJson, expiry);
-
-                // Index the session under its user so a user-level change (role) can find and
-                // evict it (RemoveUserSessionsForUser). Every session shares one TTL, so the index
-                // expiring with its newest member outlives all of them.
-                if (userIndexKey != null)
-                {
-                    await Database.SetAddAsync(userIndexKey, userSessionGuid.ToString());
-                    if (expiry.HasValue)
-                    {
-                        await Database.KeyExpireAsync(userIndexKey, expiry);
-                    }
-                }
+                long ttlMilliseconds = timeToLive > TimeSpan.Zero
+                    ? (long)Math.Max(1, Math.Ceiling(timeToLive.TotalMilliseconds))
+                    : 0;
+                // Session and user tombstone checks, the cache write, and the user-index update
+                // are one operation: a logout or role change can run between separate calls.
+                // The index lets a user-level change find this session (RemoveUserSessionsForUser).
+                string userIndexKey = userSession.UserGuid.HasValue
+                    ? ConstructUserIndexKey(customerGuid, userSession.UserGuid.Value)
+                    : null;
+                await Database.ScriptEvaluateAsync(SetSessionScript,
+                    new RedisKey[] { key, TombstoneKey(key),
+                        userIndexKey == null ? key : TombstoneKey(userIndexKey),
+                        userIndexKey ?? key },
+                    new RedisValue[] { userSessionJson, ttlMilliseconds, userSessionGuid.ToString(),
+                        userIndexKey == null ? 0 : 1 });
                 CircuitReset();
             }
             catch (Exception)
@@ -131,26 +157,34 @@ namespace OWSData.Repositories.Implementations.ValKey
             }
         }
 
-        public async Task RemoveUserSession(Guid customerGuid, Guid userSessionGuid)
+        public Task RemoveUserSession(Guid customerGuid, Guid userSessionGuid)
+            => InvalidateUserSession(customerGuid, userSessionGuid, InvalidationTombstoneTtl);
+
+        public Task RevokeUserSession(Guid customerGuid, Guid userSessionGuid, TimeSpan remainingLifetime)
+            => InvalidateUserSession(customerGuid, userSessionGuid,
+                remainingLifetime > InvalidationTombstoneTtl ? remainingLifetime : InvalidationTombstoneTtl);
+
+        private async Task InvalidateUserSession(Guid customerGuid, Guid userSessionGuid, TimeSpan tombstoneTtl)
         {
             string key = ConstructUserSessionKey(customerGuid, userSessionGuid);
-            if (key == null || CircuitOpen)
+            if (key == null)
             {
                 return;
             }
 
             try
             {
-                await Database.KeyDeleteAsync(key);
-                // Tombstone blocks a straddling reader from re-caching the stale session (see
-                // InvalidationTombstoneTtl). Written after the delete so it always outlives it.
-                await Database.StringSetAsync(TombstoneKey(key), "1", InvalidationTombstoneTtl);
+                // Invalidation is attempted even while the read/write circuit is open. A
+                // successful script makes the tombstone and deletion indivisible to readers.
+                await Database.ScriptEvaluateAsync(InvalidateSessionScript,
+                    new RedisKey[] { key, TombstoneKey(key) },
+                    new RedisValue[] { (long)Math.Ceiling(tombstoneTtl.TotalMilliseconds) });
                 CircuitReset();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // Best-effort invalidation; the short TTL bounds staleness if this fails.
                 CircuitTrip();
+                throw new InvalidOperationException("Could not invalidate the cached user session.", ex);
             }
         }
 
@@ -192,7 +226,7 @@ namespace OWSData.Repositories.Implementations.ValKey
 
         private static void CircuitTrip() => Interlocked.Exchange(ref _skipCacheUntilTicks, DateTime.UtcNow.Add(CircuitCooldown).Ticks);
 
-        private static void CircuitReset() => Interlocked.Exchange(ref _skipCacheUntilTicks, 0);
+        internal static void CircuitReset() => Interlocked.Exchange(ref _skipCacheUntilTicks, 0);
 
         private string ConstructUserSessionKey(Guid customerGuid, Guid userSessionGuid)
         {
