@@ -11,7 +11,8 @@ namespace OWSData.Repositories.Implementations.Postgres
     /// <summary>
     /// Restores one character from a backup loaded into a staging database. Snapshot reads either side; Restore copies
     /// the character's rows from staging to live in one transaction: Characters (juri, class and position), CharStats,
-    /// CharAbilities, CharQuests, its inventories and items, and CustomCharacterData. Other characters, the account,
+    /// CharAbilities, CharQuests, its inventories and items, and CustomCharacterData. It also revokes the owner token, so
+    /// a save still on its way from the session that last owned the character is refused. Other characters, the account,
     /// shops and escrow are not touched.
     /// </summary>
     public class CharacterRestoreRepository
@@ -200,9 +201,12 @@ namespace OWSData.Repositories.Implementations.Postgres
                 characterValues.Add("v_" + column, character[column]);
                 sets.Add($"{column} = @v_{column}");
             }
-            // A save the old copy still sends carries the old revision and is refused.
+            // The bump refuses only a late save that sends ExpectedRevision, which the zone server's bag and wallet saves
+            // don't yet. Logout keeps the owner's token valid, so without revoking it those saves land on the restored state.
             await live.ExecuteAsync($@"UPDATE Characters SET {string.Join(", ", sets)}, EconomyRevision = EconomyRevision + 1
                 WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID", characterValues, transaction);
+            await live.ExecuteAsync(CharacterOwnersRepository.RevokeOwnerSql,
+                new { ids.CustomerGUID, ids.CharacterID, UnheldToken = Guid.NewGuid() }, transaction);
 
             foreach (string table in new[] { "CharStats", "CharAbilities", "CharQuests", "CustomCharacterData" })
             {

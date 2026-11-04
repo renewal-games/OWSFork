@@ -33,13 +33,18 @@ namespace OWSCharacterPersistence.Requests.Characters
                             CharacterAbilities,
                             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
-            int rowsWritten = await _repo.UpdateCharacterAbilities(
+            string refusal = await _repo.UpdateCharacterAbilities(
                     _cust.CustomerGUID,
                     CharacterName,
-                    json);
+                    json,
+                    OwnerToken);
 
-            // The upsert joins on the character, so nothing is written for an unknown name.
-            if (rowsWritten == 0 && CharacterAbilities.Count > 0)
+            if (refusal == "stale_owner")
+            {
+                return new StaleOwnerResult();
+            }
+
+            if (refusal == "character_not_found" && CharacterAbilities.Count > 0)
             {
                 return new SuccessAndErrorMessage
                 {

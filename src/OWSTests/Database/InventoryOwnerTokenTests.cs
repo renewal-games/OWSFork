@@ -13,9 +13,9 @@ using Xunit;
 namespace OWSTests.Database
 {
     /// <summary>
-    /// The inventory save re-checks the owner token inside its own transaction, after locking the character row. The
-    /// controller's check runs earlier on another connection, so a claim that commits between the two used to let the
-    /// replaced zone server overwrite the new owner's bag. CharacterOwners exists only in the migrated schema.
+    /// The inventory and currency saves re-check the owner token inside their own transaction, after locking the character
+    /// row. The controller's check runs earlier on another connection, so a claim that commits between the two used to let
+    /// the replaced zone server overwrite the new owner's bag. CharacterOwners exists only in the migrated schema.
     /// </summary>
     public class InventoryOwnerTokenTests : IClassFixture<PostgresTestDatabases>
     {
@@ -145,6 +145,70 @@ namespace OWSTests.Database
 
             Assert.True(result.Success, result.ReasonCode);
             Assert.Equal(new[] { "Shield" }, await BagItems(source, customerGUID, "Legacy"));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task OldOwnerCurrencySave_AfterClaimPastHandover_IsRefusedAndGoldKept(SchemaSource source)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            await SeedCharacterWithItem(source, customerGUID, "OldPurse", "Sword");
+            Guid oldToken = (await Owners(source).ClaimByName(customerGUID, "OldPurse", MapInstanceID)).OwnerToken;
+
+            // The controller's check passes for the old zone server...
+            Assert.False(await Owners(source).IsStaleOwnerWrite(customerGUID, "OldPurse", oldToken));
+
+            // ...then the character moves on and the handover window runs out before the save reaches the database.
+            ClaimCharacterResult claim = await Owners(source).ClaimByName(customerGUID, "OldPurse", MapInstanceID + 1);
+            Assert.True(claim.Success);
+            await Execute(source, @"UPDATE CharacterOwners SET PreviousOwnerUntil = NOW() - INTERVAL '1 second'
+                WHERE CustomerGUID = @CustomerGUID", new { CustomerGUID = customerGUID });
+
+            UpdateCharacterCurrencyResponse result = await Characters(source).UpdateCharacterCurrency(customerGUID, "OldPurse", 500, oldToken);
+
+            Assert.False(result.Success);
+            Assert.Equal("stale_owner", result.ReasonCode);
+            Assert.Equal(0, await StoredGold(source, customerGUID, "OldPurse"));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task CurrencySave_FromReplacedOwnerDuringHandoverAndFromCurrentOwner_Lands(SchemaSource source)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            await SeedCharacterWithItem(source, customerGUID, "Purse", "Sword");
+            Guid oldToken = (await Owners(source).ClaimByName(customerGUID, "Purse", MapInstanceID)).OwnerToken;
+            ClaimCharacterResult claim = await Owners(source).ClaimByName(customerGUID, "Purse", MapInstanceID + 1);
+            Assert.True(claim.HandoverSeconds > 0);
+
+            UpdateCharacterCurrencyResponse oldSave = await Characters(source).UpdateCharacterCurrency(customerGUID, "Purse", 100, oldToken);
+            Assert.True(oldSave.Success, oldSave.ReasonCode);
+            Assert.Equal(100, await StoredGold(source, customerGUID, "Purse"));
+
+            UpdateCharacterCurrencyResponse newSave = await Characters(source).UpdateCharacterCurrency(customerGUID, "Purse", 200, claim.OwnerToken);
+            Assert.True(newSave.Success, newSave.ReasonCode);
+            Assert.Equal(200, await StoredGold(source, customerGUID, "Purse"));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task UnclaimedCharacter_TokenlessCurrencySaveStillLands(SchemaSource source)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            await SeedCharacterWithItem(source, customerGUID, "LegacyPurse", "Sword");
+
+            UpdateCharacterCurrencyResponse result = await Characters(source).UpdateCharacterCurrency(customerGUID, "LegacyPurse", 300, null);
+
+            Assert.True(result.Success, result.ReasonCode);
+            Assert.Equal(300, await StoredGold(source, customerGUID, "LegacyPurse"));
+        }
+
+        private async Task<int> StoredGold(SchemaSource source, Guid customerGUID, string charName)
+        {
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            return await connection.QuerySingleAsync<int>(
+                "SELECT Gold FROM Characters WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName",
+                new { CustomerGUID = customerGUID, CharName = charName });
         }
 
         private static List<UpdateCharacterInventory> Bag(string item) =>

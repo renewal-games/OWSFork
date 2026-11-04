@@ -119,6 +119,13 @@ namespace OWSData.Repositories.Implementations.MSSQL
             return outputCustomCharacterDataRows;
         }
 
+        // Character ownership is Postgres only, so ownerToken is not checked here.
+        public async Task<string> AddOrUpdateOwnedCustomCharacterData(Guid customerGUID, AddOrUpdateCustomCharacterData addOrUpdateCustomCharacterData, Guid? ownerToken)
+        {
+            await AddOrUpdateCustomCharacterData(customerGUID, addOrUpdateCustomCharacterData);
+            return null;
+        }
+
         public async Task AddOrUpdateCustomCharacterData(Guid customerGUID, AddOrUpdateCustomCharacterData addOrUpdateCustomCharacterData)
         {
             using (Connection)
@@ -560,7 +567,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
         // MSSQL is not a deployment target (Postgres only), so the zone-ownership guard is not
         // implemented here. The parameter is accepted and ignored rather than refused: refusing would
         // block every save instead of only the stale ones.
-        public async Task<bool> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, int? callerZoneInstanceId = null)
+        public async Task<string> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken, int? callerZoneInstanceId = null)
         {
             using (Connection)
             {
@@ -574,10 +581,10 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 p.Add("@StatValues", statVals);
 
                 await Connection.ExecuteAsync(GenericQueries.UpsertManyCharacterStats, p, commandType: CommandType.Text);
-                return true;
+                return null;
             }
         }
-        public async Task<bool> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, int? callerZoneInstanceId = null)
+        public async Task<string> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, Guid? ownerToken, int? callerZoneInstanceId = null)
         {
             using (Connection)
             {
@@ -594,7 +601,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     await Connection.ExecuteAsync(GenericQueries.UpdateCharacterQuest, p);
                 }
 
-                return true;
+                return null;
             }
         }
         public Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
@@ -680,7 +687,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 throw;
             }
         }
-        public async Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, long? expectedRevision = null)
+        public async Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, Guid? ownerToken, long? expectedRevision = null)
         {
             using (Connection)
             {
@@ -698,7 +705,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 return new UpdateCharacterCurrencyResponse { Success = true, NewEconomyRevision = 0 };
             }
         }
-        public async Task UpdateCharacterClass(Guid customerGUID, string characterName, string className)
+        public async Task<string> UpdateCharacterClass(Guid customerGUID, string characterName, string className, Guid? ownerToken)
         {
             using (Connection)
             {
@@ -710,6 +717,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 await Connection.ExecuteAsync(GenericQueries.UpdateCharacterClass,
                     parameters,
                     commandType: CommandType.Text);
+                return null;
             }
         }
         // Character ownership is Postgres only, so ownerToken is not checked here.
@@ -1136,7 +1144,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
             return guildInfo;
         }
 
-        public Task<int> UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities)
+        public Task<string> UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities, Guid? ownerToken)
         {
             throw new NotImplementedException();
         }

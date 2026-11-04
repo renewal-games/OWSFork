@@ -62,7 +62,7 @@ namespace OWSCharacterPersistence.Requests.Characters
 
             try
             {
-                response = await charactersRepository.UpdateCharacterCurrency(customerGUID, CharacterName, Gold, ExpectedRevision);
+                response = await charactersRepository.UpdateCharacterCurrency(customerGUID, CharacterName, Gold, OwnerToken, ExpectedRevision);
             }
             catch (Exception ex)
             {

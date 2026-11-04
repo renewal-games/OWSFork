@@ -14,7 +14,13 @@ namespace OWSData.Repositories.Interfaces
     {
         Task AddCharacterToMapInstanceByCharName(Guid customerGUID, string characterName, int mapInstanceID);
         Task ReleaseCharacterMapReservation(Guid customerGUID, string characterName, int mapInstanceID);
+        // For a write the caller has already tied to the player's own session (the public API). A zone save uses
+        // AddOrUpdateOwnedCustomCharacterData.
         Task AddOrUpdateCustomCharacterData(Guid customerGUID, AddOrUpdateCustomCharacterData addOrUpdateCustomCharacterData);
+        // The standalone zone saves below return null when written, else why not: "character_not_found", "stale_owner"
+        // (Postgres: the character has an owner and ownerToken is neither that owner nor the one a running handover
+        // replaced) or, where a zone instance is passed, "stale_zone".
+        Task<string> AddOrUpdateOwnedCustomCharacterData(Guid customerGUID, AddOrUpdateCustomCharacterData addOrUpdateCustomCharacterData, Guid? ownerToken);
         Task<MapInstances> CheckMapInstanceStatus(Guid customerGUID, int mapInstanceID);
         Task CleanUpInstances(Guid customerGUID);
         Task<CharacterSaveData> GetSaveDataByCharName(Guid customerGUID, string characterName);
@@ -27,8 +33,8 @@ namespace OWSData.Repositories.Interfaces
         // callerZoneInstanceId is the MapInstanceID of the zone server issuing the save. When supplied,
         // the write is refused if the character has since been handed to a different instance. Returns
         // false when refused. Null keeps the legacy last-write-wins behaviour.
-        Task<bool> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, int? callerZoneInstanceId = null);
-        Task<bool> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, int? callerZoneInstanceId = null);
+        Task<string> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken, int? callerZoneInstanceId = null);
+        Task<string> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, Guid? ownerToken, int? callerZoneInstanceId = null);
         // Whole-bag rewrite. expectedRevision is opt-in: pass the Characters.EconomyRevision the bag
         // was computed from to have a stale snapshot rejected instead of clobbering a shop
         // transaction that committed in the meantime; pass null for legacy last-write-wins.
@@ -51,10 +57,12 @@ namespace OWSData.Repositories.Interfaces
         // Characters.EconomyRevision the wallet was computed from to have a stale copy rejected instead of
         // undoing a shop transaction that committed in the meantime; pass null for legacy last-write-wins.
         // Response carries the post-write EconomyRevision (0 when unsupported) so callers can resync.
-        Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, long? expectedRevision = null);
-        Task UpdateCharacterClass(Guid customerGUID, string characterName, string className);
-        /// <summary>Upserts the abilities in <paramref name="characterAbilities"/> (a camelCase JSON array) and returns the rows written: 0 when no such character exists.</summary>
-        Task<int> UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities);
+        // Postgres refuses the write with ReasonCode "stale_owner" when the character has an owner and ownerToken is
+        // neither that owner nor the one a running handover replaced.
+        Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, Guid? ownerToken, long? expectedRevision = null);
+        Task<string> UpdateCharacterClass(Guid customerGUID, string characterName, string className, Guid? ownerToken);
+        /// <summary>Upserts the abilities in <paramref name="characterAbilities"/> (a camelCase JSON array).</summary>
+        Task<string> UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities, Guid? ownerToken);
         // False when nothing was written: the character is unknown, or (Postgres) it has an owner and ownerToken is
         // neither that owner nor the one a running handover replaced. The ownership check is part of the write.
         Task<bool> UpdatePosition(Guid customerGUID, string characterName, string mapName, float X, float Y, float Z, float RX, float RY, float RZ, Guid? ownerToken = null);
