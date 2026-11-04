@@ -91,6 +91,12 @@ namespace OWSData.Repositories.Implementations.Postgres
                 WHERE C.CustomerGUID = @CustomerGUID AND C.CharName = @CharacterName
                   AND CO.CustomerGUID = C.CustomerGUID AND CO.CharacterID = C.CharacterID AND CO.OwnerToken = @OwnerToken::uuid";
 
+        // Restore runs this under the character row lock, as a claim does. The row must stay: with none, the owner check
+        // passes any token. The next claim replaces the unheld token at once, since nothing is left live to hand over from.
+        internal const string RevokeOwnerSql = @"UPDATE CharacterOwners SET OwnerToken = @UnheldToken, LastConfirmedAt = NULL,
+                    PreviousOwnerToken = NULL, PreviousOwnerUntil = NULL
+                WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID";
+
         private sealed class ClaimedTicketRow
         {
             public int CharacterID { get; set; }

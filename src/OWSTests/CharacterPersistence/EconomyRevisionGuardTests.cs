@@ -212,7 +212,8 @@ namespace OWSTests.CharacterPersistence
                         // args[3] is the owner token; the stale-owner check is covered by InventoryOwnerTokenTests.
                         return Task.FromResult(WriteInventory((IEnumerable<UpdateCharacterInventory>)args[2], (long?)args[4]));
                     case nameof(ICharactersRepository.UpdateCharacterCurrency):
-                        return Task.FromResult(WriteCurrency((int)args[2], (long?)args[3]));
+                        // args[3] is the owner token, covered by the same tests.
+                        return Task.FromResult(WriteCurrency((int)args[2], (long?)args[4]));
                     case nameof(ICharactersRepository.UpdateCharacterData):
                         // args[5] is the owner token, args[6] the zone instance; both checks are covered by the database tests.
                         return Task.FromResult(WriteCharacterData((IEnumerable<UpdateCharacterInventory>)args[3], (long?)args[7], (bool)args[8]));

@@ -1344,7 +1344,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 NewEconomyRevision = revision
             };
 
-        public async Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, long? expectedRevision = null)
+        public async Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, Guid? ownerToken, long? expectedRevision = null)
         {
             // Participate in the economy-revision protocol instead of a blind overwrite: lock the
             // character row (serializing with shop Purchase/ClaimEscrow, which also FOR UPDATE the
@@ -1352,9 +1352,9 @@ namespace OWSData.Repositories.Implementations.Postgres
             // out-of-band gold write via its optimistic guard rather than silently reading a
             // clobbered wallet. The new revision is returned to the zone server, which resyncs its
             // cached revision from it — without that resync every later shop op is stale_revision.
-            using IDbConnection conn = CreateConnection();
+            using DbConnection conn = CreateConnection();
             conn.Open();
-            using IDbTransaction transaction = conn.BeginTransaction();
+            using DbTransaction transaction = conn.BeginTransaction();
             try
             {
                 var parameters = new DynamicParameters();
@@ -1375,6 +1375,18 @@ namespace OWSData.Repositories.Implementations.Postgres
                         Success = false,
                         ErrorMessage = "Character not found.",
                         ReasonCode = "bad_request"
+                    };
+                }
+
+                // Same owner re-check as UpdateCharacterInventory, and the same reply as the controller's check.
+                if (await IsStaleOwnerUnderLock(conn, transaction, customerGUID, character.CharacterID, ownerToken))
+                {
+                    transaction.Rollback();
+                    return new UpdateCharacterCurrencyResponse
+                    {
+                        Success = false,
+                        ErrorMessage = "stale_owner",
+                        ReasonCode = "stale_owner"
                     };
                 }
 

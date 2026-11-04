@@ -51,7 +51,9 @@ namespace OWSData.Repositories.Interfaces
         // Characters.EconomyRevision the wallet was computed from to have a stale copy rejected instead of
         // undoing a shop transaction that committed in the meantime; pass null for legacy last-write-wins.
         // Response carries the post-write EconomyRevision (0 when unsupported) so callers can resync.
-        Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, long? expectedRevision = null);
+        // Postgres refuses the write with ReasonCode "stale_owner" when the character has an owner and ownerToken is
+        // neither that owner nor the one a running handover replaced.
+        Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, Guid? ownerToken, long? expectedRevision = null);
         Task UpdateCharacterClass(Guid customerGUID, string characterName, string className);
         /// <summary>Upserts the abilities in <paramref name="characterAbilities"/> (a camelCase JSON array) and returns the rows written: 0 when no such character exists.</summary>
         Task<int> UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities);

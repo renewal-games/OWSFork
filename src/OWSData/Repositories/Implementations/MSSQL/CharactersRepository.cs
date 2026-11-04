@@ -680,7 +680,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
                 throw;
             }
         }
-        public async Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, long? expectedRevision = null)
+        public async Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, Guid? ownerToken, long? expectedRevision = null)
         {
             using (Connection)
             {
