@@ -10,7 +10,6 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using OWSData.Models.Composites;
 using OWSData.Repositories.Implementations.Postgres;
-using OWSData.Repositories.Interfaces;
 using OWSManagement.Auth;
 using OWSShared.Options;
 
@@ -29,10 +28,9 @@ namespace OWSManagement.Controllers
 
         private readonly ManagementOptions _options;
         private readonly CharacterRestoreRepository _restore;
-        private readonly IZoneOpsRepository _zoneOps;
         private readonly ConsoleCustomer _customer;
 
-        public RestoreController(IOptions<ManagementOptions> options, IOptions<StorageOptions> storage, IZoneOpsRepository zoneOps, ConsoleCustomer customer)
+        public RestoreController(IOptions<ManagementOptions> options, IOptions<StorageOptions> storage, ConsoleCustomer customer)
         {
             _options = options.Value;
             // The compose file always passes a connection string; without the installer's password restore stays off.
@@ -40,7 +38,6 @@ namespace OWSManagement.Controllers
                 || string.IsNullOrEmpty(new Npgsql.NpgsqlConnectionStringBuilder(_options.StagingConnectionString).Password)
                 ? null
                 : new CharacterRestoreRepository(storage.Value.OWSDBConnectionString, _options.StagingConnectionString);
-            _zoneOps = zoneOps;
             _customer = customer;
         }
 
@@ -107,7 +104,7 @@ namespace OWSManagement.Controllers
                 return BadRequest(new SuccessAndErrorMessage { Success = false, ErrorMessage = "Type the character's name to confirm." });
             }
 
-            string error = await _restore.Restore(_customer.CustomerGUID, name, input.Dump);
+            string error = await _restore.Restore(_customer.CustomerGUID, name, input.Dump, ConsoleAuth.Actor(User));
             if (error != null)
             {
                 string message = error switch
@@ -123,17 +120,6 @@ namespace OWSManagement.Controllers
                 return Ok(new SuccessAndErrorMessage { Success = false, ErrorMessage = message });
             }
 
-            await _zoneOps.AddEvents(_customer.CustomerGUID, 0, new[]
-            {
-                new GameEventIn
-                {
-                    EventGUID = Guid.NewGuid(),
-                    EventTime = DateTime.UtcNow,
-                    Event = "restored",
-                    CharacterName = name.Trim(),
-                    Fields = JsonSerializer.Serialize(new { backup = input.Dump, by = ConsoleAuth.Actor(User) })
-                }
-            });
             return Ok(new SuccessAndErrorMessage { Success = true, ErrorMessage = "" });
         }
 
