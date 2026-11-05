@@ -76,6 +76,14 @@ services:
       - "work_mem=4MB"
       - "-c"
       - "maintenance_work_mem=64MB"
+      # Query statistics for the stress test report and staff diagnostics; the extension is created by
+      # SamsaraUpdates/AddPgStatStatements_2026-11-05.sql.
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "pg_stat_statements.track=top"
+      - "-c"
+      - "track_io_timing=on"
     volumes:
       - hetzner-postgres-data:/var/lib/postgresql/data
     ports:
