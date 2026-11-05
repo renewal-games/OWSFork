@@ -176,13 +176,13 @@ namespace OWSData.Repositories.Implementations.Postgres
             var liveArgs = new { CustomerGUID = customerGUID, Name = name };
             await live.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtext('restore:' || LOWER(@Name)))", liveArgs, transaction);
 
-            int? liveID = await live.ExecuteScalarAsync<int?>(
-                "SELECT CharacterID FROM Characters WHERE CustomerGUID = @CustomerGUID AND LOWER(CharName) = LOWER(@Name) FOR UPDATE",
+            Snapshot liveCharacter = await live.QueryFirstOrDefaultAsync<Snapshot>(
+                "SELECT CharacterID, CharName FROM Characters WHERE CustomerGUID = @CustomerGUID AND LOWER(CharName) = LOWER(@Name) FOR UPDATE",
                 liveArgs, transaction);
-            if (!liveID.HasValue) return "not_live";
-            if (liveID.Value != stagingID.Value) return "different_character";
+            if (liveCharacter == null) return "not_live";
+            if (liveCharacter.CharacterID != stagingID.Value) return "different_character";
 
-            var ids = new { CustomerGUID = customerGUID, CharacterID = liveID.Value, Name = name };
+            var ids = new { CustomerGUID = customerGUID, liveCharacter.CharacterID, Name = name };
             bool online = await live.ExecuteScalarAsync<bool>(@"SELECT EXISTS (SELECT 1 FROM CharOnMapInstance
                     WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID)
                 OR EXISTS (SELECT 1 FROM LivePositions WHERE CustomerGUID = @CustomerGUID AND LOWER(CharacterName) = LOWER(@Name)
@@ -247,7 +247,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     CustomerGUID = customerGUID,
                     EventGUID = Guid.NewGuid(),
                     EventTime = DateTime.UtcNow,
-                    Name = name,
+                    Name = liveCharacter.CharName,
                     Fields = JsonSerializer.Serialize(new { backup = comparedDump, by = restoredBy })
                 }, transaction);
 

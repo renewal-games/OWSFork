@@ -140,6 +140,30 @@ namespace OWSTests.Database
                 new { CustomerGUID = customerGUID, Name = name, Dump = dump }));
         }
 
+        [PostgresFact]
+        public async Task Restore_RecordsEventUnderLiveCharacterName_WhenRequestUsesDifferentCase()
+        {
+            string liveConnectionString = await _databases.CreateDatabaseAsync(SchemaSource.Migrated);
+            string stagingConnectionString = await _databases.CreateDatabaseAsync(SchemaSource.Migrated);
+            Guid customerGUID = Guid.NewGuid();
+            Guid userGUID = Guid.NewGuid();
+            const string name = "CaseRestore";
+            const string dump = "openworldserver-20261103T150000Z.dump";
+
+            await using var live = new NpgsqlConnection(liveConnectionString);
+            await using var staging = new NpgsqlConnection(stagingConnectionString);
+            int characterID = await SeedCharacter(live, customerGUID, userGUID, name, null);
+            await SeedCharacter(staging, customerGUID, userGUID, name, characterID);
+            await staging.ExecuteAsync("CREATE TABLE staging_meta (dump TEXT NOT NULL); INSERT INTO staging_meta VALUES (@Dump)",
+                new { Dump = dump });
+
+            var restore = new CharacterRestoreRepository(liveConnectionString, stagingConnectionString);
+            Assert.Null(await restore.Restore(customerGUID, "caserestore", dump, "admin"));
+            Assert.Equal(1, await live.ExecuteScalarAsync<int>(@"SELECT COUNT(*)::INT FROM GameEvents
+                WHERE CustomerGUID = @CustomerGUID AND CharacterName = @Name AND Event = 'restored'",
+                new { CustomerGUID = customerGUID, Name = name }));
+        }
+
         private static async Task<PlayerShopResult> CreateShop(string connectionString, Guid customerGUID, int characterID)
         {
             var shops = new PlayerShopsRepository(Microsoft.Extensions.Options.Options.Create(new StorageOptions
