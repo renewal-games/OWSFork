@@ -1,0 +1,122 @@
+name: Deploy
+
+# Ships the images Continuous Integration pushed for a main commit. It runs on workflow_run rather than as jobs
+# in ci.yml: a production deploy can wait days for approval, and as a CI job it would hold CI's main concurrency
+# group, so main CI runs would queue behind it. Staging deploys every successful main build; production then
+# waits for approval in the 'production' environment. Run it by hand to redeploy or roll back to any main SHA
+# whose images exist (production still needs the approval). Setup: docs/hosting/hetzner-dev.md, Continuous Deployment.
+
+on:
+  workflow_run:
+    workflows: [ Continuous Integration ]
+    types: [ completed ]
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy to
+        type: choice
+        options: [ staging, production ]
+        required: true
+      sha:
+        description: Full 40-character commit SHA on main
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Pick the release
+    # workflow_run's branch filter also matches a fork's pull request from a branch named main, so check the event too.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.pick.outputs.sha }}
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Check the SHA is on main
+      id: pick
+      env:
+        SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.event.workflow_run.head_sha }}
+      run: |
+        if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::The SHA is not a full 40-character lowercase commit SHA."
+          exit 1
+        fi
+        if ! git merge-base --is-ancestor "$SHA" origin/main; then
+          echo "::error::$SHA is not on main; only main commits have images."
+          exit 1
+        fi
+        echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+  staging:
+    name: Deploy to staging
+    needs: release
+    if: github.event_name == 'workflow_run' || inputs.environment == 'staging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    # One deploy at a time; a newer release waiting here replaces an older one that has not started.
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+
+    steps:
+    # The default branch, not the release: a rollback to an old SHA still runs today's deploy script.
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Deploy over SSH
+      env:
+        DEPLOY_ENVIRONMENT: staging
+        DEPLOY_SHA: ${{ needs.release.outputs.sha }}
+        DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+        DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT }}
+        DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+        DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      run: bash .github/scripts/deploy-over-ssh.sh
+
+  production:
+    name: Deploy to production
+    needs: [ release, staging ]
+    # After staging passes for a main build, or by hand. Either way the environment's required reviewer approves first.
+    if: >-
+      !cancelled() && needs.release.result == 'success' &&
+      ((github.event_name == 'workflow_run' && needs.staging.result == 'success') ||
+       (github.event_name == 'workflow_dispatch' && inputs.environment == 'production'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Deploy over SSH
+      env:
+        DEPLOY_ENVIRONMENT: production
+        DEPLOY_SHA: ${{ needs.release.outputs.sha }}
+        DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+        DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT }}
+        DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+        DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      run: bash .github/scripts/deploy-over-ssh.sh

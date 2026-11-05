@@ -245,7 +245,8 @@ docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml run
 
 ## Updating The Server
 
-The server should usually follow `origin/main`:
+The Deploy workflow ships the app services' images (Continuous Deployment, below). The checkout, migrations, the
+console and the database-side services still follow `origin/main` by hand:
 
 ```bash
 cd /opt/owsfork/src
@@ -295,6 +296,65 @@ them needs `up -d --no-deps --force-recreate owspublicapi` (no rebuild). See
 >   running container's DB password to `.env.hetzner-dev`). A green `docker compose exec
 >   database psql -U postgres` does NOT prove network creds are valid — that path uses local
 >   trust auth and never checks the password.
+
+## Continuous Deployment
+
+Once the box is set up below, a merge to main reaches the app services without anyone logging in:
+
+1. Continuous Integration (`ci.yml`) builds and tests main, then pushes the six app images to GHCR as
+   `ghcr.io/renewal-games/owsfork/<service>:linux-<full SHA>`.
+2. Deploy (`deploy.yml`, on `workflow_run`) deploys that SHA to the `staging` environment with no approval, then
+   asks for approval in the `production` environment, whose only reviewer is Julian.
+3. Each deploy job connects over SSH with the environment's CI deploy key. The box runs only the key's forced
+   command, `/usr/local/sbin/ows-deploy-release` (`scripts/hetzner/deploy-release.sh`), which accepts
+   `<environment> <sha>` and nothing else.
+4. The box pulls the SHA's images and runs `up -d --no-deps --no-build --pull never` for the six app services,
+   so the database container is never recreated (see the CAUTION above). Then it runs
+   `check-db-password-drift.sh` and asks `/health` in every app service. If either fails, it pulls the last deployed
+   SHA's images and brings those back, with the same checks; nothing is rebuilt.
+
+The pipeline never runs migrations and never moves the checkout. When the range from the last deployed SHA to the
+new one adds migrations, the job summary and a warning annotation list them; a rollback over such a range gets the
+same warning, since it does not revert them. Run them by hand (Database Migrations, above). A deploy also warns when
+the checkout's compose file differs from the release's: compose runs with the checkout's copy, so pull it.
+
+State is in `/var/lib/ows-deploy/<environment>/`: `current` holds the last SHA that passed its checks and `history`
+has one line per run. Before the first pipeline deploy there is no `current`; if that first deploy fails its checks,
+the rollback brings back the images `.env.hetzner-dev` names (`REGISTRY`, `PLATFORM`, `TAG`), the ones built on the box.
+
+Redeploy or roll back by hand: run the Deploy workflow (Actions, Deploy, Run workflow) with an environment and a
+main SHA; production still waits for approval. On the box: `sudo -u ows-deploy ows-deploy-release staging <sha>`
+(never as root, or the state files become root's).
+
+A hand `up -d` without the release's `REGISTRY`/`PLATFORM`/`TAG` starts the env file's local `ows/` images instead.
+To recreate one service at the deployed release:
+
+```bash
+cd /opt/owsfork/src
+REGISTRY=ghcr.io/renewal-games/owsfork PLATFORM=linux TAG="$(cat /var/lib/ows-deploy/staging/current)" \
+  docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml up -d --no-deps --no-build owspublicapi
+```
+
+### Setup, once per box
+
+As root, with the public half of a new ed25519 key made only for CI (never one that opens anything else):
+
+```bash
+ssh-keygen -t ed25519 -N '' -C owsfork-ci-deploy-staging -f owsfork-ci-deploy-staging   # on your PC
+bash /opt/owsfork/scripts/hetzner/install-deploy.sh staging /root/owsfork-ci-deploy-staging.pub
+su - ows-deploy -c 'docker login ghcr.io -u <github user> --password-stdin'
+```
+
+`install-deploy.sh` creates `ows-deploy` (key login only, in the `docker` group), installs the deploy script,
+writes `/etc/default/ows-deploy` (the environment this box serves, the registry, the health timeout), makes
+`src/.env.hetzner-dev` readable by group `ows-deploy` (mode 640), and writes `~ows-deploy/.ssh/authorized_keys`,
+owned by root, as `restrict,command="/usr/local/sbin/ows-deploy-release" <key>`. It refuses a key that is already in
+another account's `authorized_keys`. Run it again after `deploy-release.sh` changes. The GHCR login needs a token with
+`read:packages` only. It prints the host key line for `DEPLOY_KNOWN_HOSTS`.
+
+In GitHub, per environment: secret `DEPLOY_SSH_KEY` (the private key), variables `DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`
+(`<DEPLOY_HOST> ssh-ed25519 AAAA...`, or `[host]:port` off port 22), and optionally `DEPLOY_USER` (default
+`ows-deploy`) and `DEPLOY_SSH_PORT` (default 22).
 
 ## Troubleshooting
 
