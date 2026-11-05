@@ -65,6 +65,22 @@ namespace OWSTests.PublicAPI
         }
 
         [Fact]
+        public async Task ServiceKey_IsNotLimited_WrongKeyIs()
+        {
+            using IHost host = await StartHost(null, "zone-key");
+
+            for (int i = 0; i <= 3 * ClientIpRateLimiting.AuthPermitLimit; i++)
+            {
+                Assert.Equal(HttpStatusCode.Unauthorized, await Login(host, DirectClient, null, "zone-key"));
+            }
+            for (int i = 0; i < ClientIpRateLimiting.AuthPermitLimit; i++)
+            {
+                Assert.Equal(HttpStatusCode.Unauthorized, await Login(host, DirectClient, null, "wrong-key"));
+            }
+            Assert.Equal(HttpStatusCode.TooManyRequests, await Login(host, DirectClient, null, "wrong-key"));
+        }
+
+        [Fact]
         public void ParseTrustedProxies_RejectsNonAddresses()
         {
             Assert.Empty(ClientIpRateLimiting.ParseTrustedProxies(" "));
@@ -72,12 +88,12 @@ namespace OWSTests.PublicAPI
             Assert.Throws<FormatException>(() => ClientIpRateLimiting.ParseTrustedProxies("10.253.253.0/28"));
         }
 
-        private static async Task<IHost> StartHost(string trustedProxies)
+        private static async Task<IHost> StartHost(string trustedProxies, string serviceKey = null)
         {
             IHost host = new HostBuilder()
                 .ConfigureWebHost(web => web
                     .UseTestServer()
-                    .ConfigureServices(services => services.AddClientIpRateLimiter())
+                    .ConfigureServices(services => services.AddClientIpRateLimiter(serviceKey))
                     .Configure(app =>
                     {
                         app.UseClientIpRateLimiter(trustedProxies);
@@ -93,14 +109,15 @@ namespace OWSTests.PublicAPI
             return host;
         }
 
-        private static async Task<HttpStatusCode> Login(IHost host, IPAddress peer, string xForwardedFor)
+        private static async Task<HttpStatusCode> Login(IHost host, IPAddress peer, string xForwardedFor, string serviceKey = null)
         {
             HttpContext context = await host.GetTestServer().SendAsync(c =>
             {
                 c.Connection.RemoteIpAddress = peer;
                 c.Request.Method = HttpMethods.Post;
                 c.Request.Path = LoginPath;
-                c.Request.Headers["X-Forwarded-For"] = xForwardedFor;
+                if (xForwardedFor != null) c.Request.Headers["X-Forwarded-For"] = xForwardedFor;
+                if (serviceKey != null) c.Request.Headers[OWSShared.SamsaraServiceKeyCheck.Header] = serviceKey;
             });
             return (HttpStatusCode)context.Response.StatusCode;
         }

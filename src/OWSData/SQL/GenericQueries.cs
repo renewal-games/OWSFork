@@ -191,7 +191,7 @@ namespace OWSData.SQL
 
         public static readonly string GetCharacterCustomDataByName = @"SELECT *
                 FROM CustomCharacterData CCD
-                INNER JOIN Characters C ON C.CharacterID = CCD.CharacterID
+                INNER JOIN Characters C ON C.CustomerGUID = CCD.CustomerGUID AND C.CharacterID = CCD.CharacterID
                 WHERE CCD.CustomerGUID = @CustomerGUID
                   AND C.CharName = @CharName";
 
