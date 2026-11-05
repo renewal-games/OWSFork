@@ -489,8 +489,8 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
         public static readonly string GetCharInventoryByCharName = @"SELECT CII.ItemIDTag, CII.Quantity, CII.InSlotNumber, CII.CustomData,
                 UPPER(REPLACE(CII.InstanceId::TEXT, '-', '')) AS InstanceId
                 FROM CharInventoryItems CII
-                INNER JOIN Characters C ON C.CharName = @CharName
-                INNER JOIN CharInventory CI ON CI.CharacterID = C.CharacterID
+                INNER JOIN Characters C ON C.CustomerGUID = CII.CustomerGUID AND C.CharName = @CharName
+                INNER JOIN CharInventory CI ON CI.CustomerGUID = C.CustomerGUID AND CI.CharacterID = C.CharacterID
                 WHERE CII.CharInventoryID = CI.CharInventoryID
                 AND CII.CUstomerGUID = @CustomerGUID";
 

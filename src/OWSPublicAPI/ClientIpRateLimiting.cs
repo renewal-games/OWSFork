@@ -19,13 +19,23 @@ namespace OWSPublicAPI
         public const int GeneralPermitLimit = 60;
         public static readonly TimeSpan Window = TimeSpan.FromSeconds(10);
 
-        public static IServiceCollection AddClientIpRateLimiter(this IServiceCollection services)
+        /// <summary>
+        /// A request with the zone servers' service key is not limited: one zone server sends every player's travel and
+        /// join check from its own IP. <paramref name="serviceKey"/> defaults to this process's configured key.
+        /// </summary>
+        public static IServiceCollection AddClientIpRateLimiter(this IServiceCollection services, string serviceKey = null)
         {
+            serviceKey ??= OWSShared.SamsaraServiceKeyCheck.ConfiguredKey;
             return services.AddRateLimiter(options =>
             {
                 options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
                 options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
                 {
+                    if (OWSShared.SamsaraServiceKeyCheck.Matches(
+                            httpContext.Request.Headers[OWSShared.SamsaraServiceKeyCheck.Header].ToString(), serviceKey))
+                    {
+                        return RateLimitPartition.GetNoLimiter("service");
+                    }
                     string clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
                     bool isAuthPath = httpContext.Request.Path.StartsWithSegments("/api/Users");
                     return RateLimitPartition.GetFixedWindowLimiter(
