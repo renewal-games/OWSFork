@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 using OWSData.Models.Composites;
 using OWSData.Models.StoredProcs;
@@ -85,7 +86,7 @@ namespace OWSInstanceManagement.Requests.Instance
                     ErrorMessage = $"Could not send the spin-up of Zone Instance {ZoneInstanceID}: {ex.Message}"
                 };
 
-                return new OkObjectResult(Output);
+                return new ObjectResult(Output) { StatusCode = StatusCodes.Status503ServiceUnavailable };
             }
 
             Output = new SuccessAndErrorMessage() {
