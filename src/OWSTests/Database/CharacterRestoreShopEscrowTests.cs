@@ -39,7 +39,7 @@ namespace OWSTests.Database
             var comparison = await restore.GetComparison(customerGUID, name);
             Assert.Contains(comparison.Live.ShopsHoldingEscrow, s => s.PlayerShopID == created.PlayerShopID && s.ShopName == "Test Shop");
 
-            string refusal = await restore.Restore(customerGUID, name, dump);
+            string refusal = await restore.Restore(customerGUID, name, dump, "admin");
             Assert.StartsWith("shop_escrow:", refusal);
             Assert.Contains("Test Shop", refusal);
             Assert.Equal(0, await BagCount(live, customerGUID, characterID));
@@ -85,11 +85,59 @@ namespace OWSTests.Database
             var restore = new CharacterRestoreRepository(liveConnectionString, stagingConnectionString);
             var comparison = await restore.GetComparison(customerGUID, name);
             Assert.Empty(comparison.Live.ShopsHoldingEscrow);
-            Assert.Null(await restore.Restore(customerGUID, name, dump));
+            Assert.Null(await restore.Restore(customerGUID, name, dump, "admin"));
             Assert.Equal(0, await BagCount(live, customerGUID, characterID));
             Assert.Equal(1, await live.ExecuteScalarAsync<int>(
                 "SELECT QuantityRemainingForSale FROM PlayerShopItems WHERE PlayerShopID = @PlayerShopID",
                 new { created.PlayerShopID }));
+        }
+
+        [PostgresFact]
+        public async Task Restore_RollsBackCharacterWhenRestoredEventInsertFails()
+        {
+            string liveConnectionString = await _databases.CreateDatabaseAsync(SchemaSource.Migrated);
+            string stagingConnectionString = await _databases.CreateDatabaseAsync(SchemaSource.Migrated);
+            Guid customerGUID = Guid.NewGuid();
+            Guid userGUID = Guid.NewGuid();
+            const string name = "AuditOwner";
+            const string dump = "openworldserver-20261103T140000Z.dump";
+
+            await using var live = new NpgsqlConnection(liveConnectionString);
+            await using var staging = new NpgsqlConnection(stagingConnectionString);
+            int characterID = await SeedCharacter(live, customerGUID, userGUID, name, null);
+            await SeedCharacter(staging, customerGUID, userGUID, name, characterID);
+            await staging.ExecuteAsync("UPDATE Characters SET Gold = 77 WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                new { CustomerGUID = customerGUID, CharacterID = characterID });
+            await staging.ExecuteAsync("CREATE TABLE staging_meta (dump TEXT NOT NULL); INSERT INTO staging_meta VALUES (@Dump)",
+                new { Dump = dump });
+            await live.ExecuteAsync(@"CREATE FUNCTION reject_restore_event() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN RAISE EXCEPTION 'event insert failed'; END; $$");
+            await live.ExecuteAsync(@"CREATE TRIGGER reject_restore_event BEFORE INSERT ON GameEvents
+                FOR EACH ROW EXECUTE FUNCTION reject_restore_event()");
+
+            var restore = new CharacterRestoreRepository(liveConnectionString, stagingConnectionString);
+            await Assert.ThrowsAsync<PostgresException>(() => restore.Restore(customerGUID, name, dump, "admin"));
+            Assert.Equal(0, await live.ExecuteScalarAsync<int>(
+                "SELECT Gold FROM Characters WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                new { CustomerGUID = customerGUID, CharacterID = characterID }));
+            Assert.Equal(0, await live.ExecuteScalarAsync<int>(
+                "SELECT EconomyRevision FROM Characters WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                new { CustomerGUID = customerGUID, CharacterID = characterID }));
+            Assert.Equal(0, await live.ExecuteScalarAsync<int>("SELECT COUNT(*)::INT FROM GameEvents WHERE CustomerGUID = @CustomerGUID",
+                new { CustomerGUID = customerGUID }));
+
+            await live.ExecuteAsync("DROP TRIGGER reject_restore_event ON GameEvents");
+            Assert.Null(await restore.Restore(customerGUID, name, dump, "admin"));
+            Assert.Equal(77, await live.ExecuteScalarAsync<int>(
+                "SELECT Gold FROM Characters WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                new { CustomerGUID = customerGUID, CharacterID = characterID }));
+            Assert.Equal(1, await live.ExecuteScalarAsync<int>(
+                "SELECT EconomyRevision FROM Characters WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                new { CustomerGUID = customerGUID, CharacterID = characterID }));
+            Assert.Equal(1, await live.ExecuteScalarAsync<int>(@"SELECT COUNT(*)::INT FROM GameEvents
+                WHERE CustomerGUID = @CustomerGUID AND CharacterName = @Name AND Event = 'restored'
+                  AND Fields ->> 'backup' = @Dump AND Fields ->> 'by' = 'admin'",
+                new { CustomerGUID = customerGUID, Name = name, Dump = dump }));
         }
 
         private static async Task<PlayerShopResult> CreateShop(string connectionString, Guid customerGUID, int characterID)

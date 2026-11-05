@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Dapper;
 using Npgsql;
@@ -137,9 +138,10 @@ namespace OWSData.Repositories.Implementations.Postgres
         /// Null on success, else why not: "not_in_backup", "not_live", "different_character" (the name now belongs to
         /// another character ID), "online" (in the world, or sent a position in the last minute), "shop_escrow:..."
         /// (open shops or unclaimed escrow absent from the backup, with shop names), or "staging_changed"
-        /// (staging no longer holds the backup that was compared, or is still loading).
+        /// (staging no longer holds the backup that was compared, or is still loading). On success, the restored event
+        /// and character changes commit together.
         /// </summary>
-        public async Task<string> Restore(Guid customerGUID, string characterName, string comparedDump)
+        public async Task<string> Restore(Guid customerGUID, string characterName, string comparedDump, string restoredBy)
         {
             string name = characterName?.Trim() ?? "";
             await using NpgsqlConnection staging = new(_staging);
@@ -236,6 +238,18 @@ namespace OWSData.Repositories.Implementations.Postgres
                     .ToList();
                 await Insert(live, transaction, "CharInventoryItems", inventoryItems, new { ids.CustomerGUID }, Array.Empty<string>());
             }
+
+            await live.ExecuteAsync(@"INSERT INTO GameEvents
+                (CustomerGUID, EventGUID, EventTime, MapInstanceID, CharacterName, Event, Fields)
+                VALUES (@CustomerGUID, @EventGUID, @EventTime, 0, @Name, 'restored', @Fields::JSONB)",
+                new
+                {
+                    CustomerGUID = customerGUID,
+                    EventGUID = Guid.NewGuid(),
+                    EventTime = DateTime.UtcNow,
+                    Name = name,
+                    Fields = JsonSerializer.Serialize(new { backup = comparedDump, by = restoredBy })
+                }, transaction);
 
             await transaction.CommitAsync();
             return null;
