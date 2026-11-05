@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using OWSData.Models.Composites;
@@ -90,7 +91,8 @@ namespace OWSTests.InstanceLauncher
             var request = new RecordingSpinUpRequest { WorldServerID = 7, ZoneInstanceID = 42, ZoneName = "Map", Port = 7777, PublishFails = true };
             request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), FakeInstanceManagementRepository.Returning(MatchingRow()), new FixedCustomerGuid());
 
-            var result = Assert.IsType<OkObjectResult>(await request.Handle());
+            var result = Assert.IsType<ObjectResult>(await request.Handle());
+            Assert.Equal(StatusCodes.Status503ServiceUnavailable, result.StatusCode);
 
             var output = Assert.IsType<SuccessAndErrorMessage>(result.Value);
             Assert.False(output.Success);
