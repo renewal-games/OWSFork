@@ -1,0 +1,3 @@
+# Keep explicit hidden-file searches out of other checkouts and transient state.
+/.claude/worktrees/
+/.agent-state/

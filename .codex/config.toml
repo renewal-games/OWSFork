@@ -1,0 +1,13 @@
+# Project-local permissions requested by Julian. Builds still require approval.
+default_permissions = "ows-development"
+approval_policy = "on-request"
+
+[permissions.ows-development]
+description = "OWSFork development: workspace and Git writes, with network access."
+extends = ":workspace"
+
+[permissions.ows-development.filesystem.":workspace_roots"]
+".git" = "write"
+
+[permissions.ows-development.network]
+enabled = true

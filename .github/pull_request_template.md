@@ -10,8 +10,11 @@
 
 <!-- What you ran and what you saw: unit tests, a local compose stack, a client login, a zone spin-up, ... Say what you did NOT test. -->
 
-- [ ] `dotnet build src/OWS.sln -c Release` and `dotnet test src/OWS.sln -c Release` pass locally
-- [ ] CI is green
+- Checks run and results:
+- Not compiled / not validated:
+- CI status or link:
+
+<!-- Agents: local builds, compiles, and long validation require Julian's explicit approval for this task. Report checks honestly; this template does not authorize a build. -->
 
 ## Deploy / migration notes
 
