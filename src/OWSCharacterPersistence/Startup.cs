@@ -13,6 +13,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.OpenApi.Models;
 using OWSData.Health;
 using OWSData.Repositories.Interfaces;
+using OWSShared;
 using OWSShared.Implementations;
 using OWSShared.Interfaces;
 using OWSShared.Middleware;
@@ -101,24 +102,19 @@ namespace OWSCharacterPersistence
         {
             app.UseSimpleInjector(container);
 
-            // These endpoints write gold, inventory and stats keyed by a caller-supplied character
-            // name. Outside Development the only thing standing between them and an arbitrary
-            // caller is network isolation unless the service key is required, so say so loudly
-            // instead of leaving it to whoever remembers to check the env var.
-            var serviceKeyGate = ServiceKeyGateSettings.FromEnvironment();
-            if (!env.IsDevelopment() && Controllers.CharactersController.IsUnauthenticated && !serviceKeyGate.Required)
-            {
-                Serilog.Log.Warning(
-                    "CharacterPersistence write endpoints are UNAUTHENTICATED: X-CustomerGUID is the only gate and it is not a secret. " +
-                    "Set OWS_REQUIRE_CHARACTER_WRITE_KEY=true (with OWS_SAMSARA_SERVICE_KEY) once the UE zone server sends X-Samsara-Service-Key on persistence calls. " +
-                    "See docs/mvp-hardening-spec.md item 4.");
-            }
-
             app.UseHealthChecks("/health");
             app.UseMiddleware<StoreCustomerGUIDMiddleware>(container);
 
-            // X-CustomerGUID only names the tenant and every game client sends it, so these routes also need the
-            // service key, which the zone server sends on every persistence call.
+            // X-CustomerGUID only names the tenant and every game client sends it, and these routes write gold, inventory,
+            // positions and the quest catalog by caller-supplied name, so they also need the service key, which the zone
+            // server sends on its persistence calls. Unlike InstanceManagement there is no off switch: OWS_REQUIRE_SERVICE_KEY
+            // is not read here. A process with no key rejects every caller, except in Development, where it lets them through.
+            var serviceKeyGate = new ServiceKeyGateSettings
+            {
+                Required = true,
+                ConfiguredKey = SamsaraServiceKeyCheck.ConfiguredKey,
+                IsDevelopment = SamsaraServiceKeyCheck.IsDevelopment
+            };
             string serviceKeyWarning = serviceKeyGate.PostureWarning("CharacterPersistence");
             if (serviceKeyWarning != null) Serilog.Log.Warning(serviceKeyWarning);
             app.UseMiddleware<RequireServiceKeyMiddleware>(serviceKeyGate);

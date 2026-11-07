@@ -20,13 +20,11 @@ x-ows-common-env: &ows-common-env
   OWS_GRPC_MSGS_PER_WINDOW: "${OWS_GRPC_MSGS_PER_WINDOW:-20}"
   OWS_GRPC_RATE_WINDOW_SECONDS: "${OWS_GRPC_RATE_WINDOW_SECONDS:-5}"
   OWS_GRPC_REQUIRE_SESSION_AUTH: "${OWS_GRPC_REQUIRE_SESSION_AUTH:-true}"
-  # Require X-Samsara-Service-Key on the CharacterPersistence API (gold/inventory/stats writes).
-  # Keep false until the UE persistence calls send the key, or all persistence traffic is 401'd.
-  OWS_REQUIRE_CHARACTER_WRITE_KEY: "${OWS_REQUIRE_CHARACTER_WRITE_KEY:-false}"
-  # Require X-Samsara-Service-Key on every InstanceManagement and CharacterPersistence /api route
-  # (OWSShared RequireServiceKeyMiddleware). The code defaults to required outside Development; this
-  # profile keeps it off until the UE zone server's InstanceManagementAPI calls send the key
-  # (OWSAPISubsystem/OWSGameMode set it only for CharacterPersistenceAPI). A wrong key is 401'd either way.
+  # Require X-Samsara-Service-Key on every InstanceManagement /api route (OWSShared
+  # RequireServiceKeyMiddleware). The code defaults to required outside Development; this profile keeps
+  # it off until the UE zone server's InstanceManagementAPI calls send the key (OWSAPISubsystem/OWSGameMode
+  # set it only for CharacterPersistenceAPI). A wrong key is 401'd either way. CharacterPersistence doesn't
+  # read this: its /api routes always need the key.
   OWS_REQUIRE_SERVICE_KEY: "${OWS_REQUIRE_SERVICE_KEY:-false}"
   OWSAPIPathConfig__InternalPublicApiURL: "http://owspublicapi/"
   OWSAPIPathConfig__InternalInstanceManagementApiURL: "http://owsinstancemanagement/"
