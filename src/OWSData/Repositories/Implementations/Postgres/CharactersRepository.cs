@@ -1115,6 +1115,14 @@ namespace OWSData.Repositories.Implementations.Postgres
             // most frequent write in the game.
             // The character row is locked for the duration so the save serializes with the shop
             // economy transactions (Purchase/ClaimEscrow/VendorTrade) that rewrite the same table.
+            // A missing bag is refused, not treated as empty: the DELETE below would wipe every item
+            // and report success. An empty list is a real empty bag and still saves. Same rule as
+            // UpdateCharacterData.
+            if (updateCharacterInventory == null)
+            {
+                return InventoryFail("bad_request");
+            }
+
             using DbConnection conn = CreateConnection();
             await conn.OpenAsync();
             using DbTransaction tx = await conn.BeginTransactionAsync();
@@ -1220,10 +1228,11 @@ namespace OWSData.Repositories.Implementations.Postgres
                 AllowPrevious = true
             }, transaction: tx, commandType: CommandType.Text);
 
+        // Callers refuse a null bag before deleting the old one, so there is no "treat null as empty" here.
         private static async Task InsertInventoryItems(DbConnection conn, DbTransaction tx, Guid customerGUID, int charInventoryID,
             IEnumerable<UpdateCharacterInventory> updateCharacterInventory)
         {
-            foreach (UpdateCharacterInventory inventoryItem in updateCharacterInventory ?? Enumerable.Empty<UpdateCharacterInventory>())
+            foreach (UpdateCharacterInventory inventoryItem in updateCharacterInventory)
             {
                 await conn.ExecuteAsync(PostgresQueries.InsertCharacterInventoryItem,
                     new

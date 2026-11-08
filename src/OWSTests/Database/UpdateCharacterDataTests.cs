@@ -72,6 +72,35 @@ namespace OWSTests.Database
             await AssertUnchanged(source, customerGUID);
         }
 
+        // The standalone api/Characters/UpdateCharacterInventory save is the same DELETE-then-INSERT, so a request with
+        // no Inventory field must be refused there too rather than read as "empty bag".
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task StandaloneSaveWithMissingInventoryKeepsBag(SchemaSource source)
+        {
+            Guid customerGUID = await SeedCharacter(source);
+            long revision = await Revision(source, customerGUID);
+
+            UpdateCharacterInventoryResponse result = await InventoryRequest(source, customerGUID, null).Handle();
+
+            Assert.False(result.Success);
+            Assert.Equal("bad_request", result.ReasonCode);
+            Assert.Equal(new[] { "OldShield" }, await Items(source, customerGUID));
+            Assert.Equal(revision, await Revision(source, customerGUID));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task StandaloneSaveWithEmptyInventoryEmptiesBag(SchemaSource source)
+        {
+            Guid customerGUID = await SeedCharacter(source);
+
+            UpdateCharacterInventoryResponse result = await InventoryRequest(source, customerGUID, new List<UpdateCharacterInventory>()).Handle();
+
+            Assert.True(result.Success, result.ReasonCode);
+            Assert.Empty(await Items(source, customerGUID));
+        }
+
         [PostgresTheory]
         [InlineData(SchemaSource.Migrated)]
         public async Task MissingQuestsOrStatsWritesNothing(SchemaSource source)
@@ -332,6 +361,20 @@ namespace OWSTests.Database
                 new CharactersRepository(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) })),
                 new HeaderCustomerGUID { CustomerGUID = customerGUID },
                 economyOptions ?? new EconomyOptions());
+            return request;
+        }
+
+        private UpdateCharacterInventoryRequest InventoryRequest(SchemaSource source, Guid customerGUID, IEnumerable<UpdateCharacterInventory> inventory)
+        {
+            var request = new UpdateCharacterInventoryRequest
+            {
+                CharacterName = CharName,
+                Inventory = inventory
+            };
+            request.SetData(
+                new CharactersRepository(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) })),
+                new HeaderCustomerGUID { CustomerGUID = customerGUID },
+                new EconomyOptions());
             return request;
         }
 
