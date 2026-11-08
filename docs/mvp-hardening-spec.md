@@ -120,28 +120,22 @@ rejected before any DB mutation.
 
 ---
 
-## 4. Persistence API service key is opt-in (P1 — blocked on UE client)
+## 4. Persistence API service key is opt-in (P1 — done)
 
-**Defect.** `CharactersController.RequireServiceKey` reads `OWS_REQUIRE_CHARACTER_WRITE_KEY`,
-default **off**, leaving `X-CustomerGUID` — a non-secret present in every launcher config — as the
-only gate on `UpdateCharacterCurrency`, `UpdateCharacterInventory`, and friends. The sibling
-`PlayerShopsController` fails *closed* in production. Same service, same process, opposite posture.
+**Defect.** `OWS_REQUIRE_CHARACTER_WRITE_KEY` and `OWS_REQUIRE_SERVICE_KEY` could both be switched off,
+leaving `X-CustomerGUID` — a non-secret present in every launcher config — as the only gate on
+`UpdateAllPlayerPositions`, `AddQuestListToDatabase`, and on the other `api/Characters` routes for a
+character with no owner row.
 
-**Blocked.** `src/docker-compose.hetzner-dev.yml:23` says "Keep false until the UE persistence calls
-send the key", and grep over the bundled `plugins/OWSPluginUE5` finds no `X-Samsara-Service-Key`
-sender. The shipping client lives in Perforce and cannot be verified from this repo. Flipping the
-default blind would 401 all persistence traffic.
-
-**Fix (this change).** Do not change the default. Make the gap loud and the flip a one-liner:
-- Align `ServiceKeyOk()` with the PlayerShops implementation (a configured-but-unmatched key must
-  fail regardless of the toggle, so a *wrong* key is never treated as "not required").
-- Emit a startup warning when the API is serving unauthenticated writes outside Development.
+**Fix.** The persistence host's `RequireServiceKeyMiddleware` is always required and ignores
+`OWS_REQUIRE_SERVICE_KEY`, which still applies to InstanceManagement. `OWS_REQUIRE_CHARACTER_WRITE_KEY`
+is gone. A process with no `OWS_SAMSARA_SERVICE_KEY` rejects every caller, except in Development.
 
 **Files.** `src/OWSCharacterPersistence/Controllers/CharactersController.cs`,
 `src/OWSCharacterPersistence/Startup.cs`
 
-**Done when.** An unauthenticated non-Development boot logs a warning naming the env var; setting
-`OWS_REQUIRE_CHARACTER_WRITE_KEY=true` is the only step needed once the client sends the header.
+**Done when.** Every `api/*` route on the service except `System/Status` returns 401 without the key,
+whatever either flag says, and writes nothing.
 
 ---
 

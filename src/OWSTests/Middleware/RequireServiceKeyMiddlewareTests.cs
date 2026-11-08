@@ -102,6 +102,33 @@ namespace OWSTests.Middleware
             Assert.Equal(200, (await Send(development, "/api/Zones/AddZone")).Status);
         }
 
+        // A required gate, as CharacterPersistence always runs it. SamsaraServiceKeyCheck reads the key and the environment
+        // once per process, so these combinations are tested through the settings rather than a host.
+        [Theory]
+        [InlineData(false, ServiceKey, null, 401)]
+        [InlineData(false, ServiceKey, "", 401)]
+        [InlineData(false, ServiceKey, "wrong-key", 401)]
+        [InlineData(false, ServiceKey, ServiceKey, 200)]
+        [InlineData(false, null, null, 401)]
+        [InlineData(false, null, "", 401)]
+        [InlineData(false, null, "wrong-key", 401)]
+        [InlineData(true, ServiceKey, null, 401)]
+        [InlineData(true, ServiceKey, "", 401)]
+        [InlineData(true, ServiceKey, "wrong-key", 401)]
+        [InlineData(true, ServiceKey, ServiceKey, 200)]
+        [InlineData(true, null, null, 200)]
+        [InlineData(true, null, "", 200)]
+        [InlineData(true, null, "wrong-key", 200)]
+        public async Task RequiredGate_OnlyDevelopmentWithNoConfiguredKeyIsOpen(bool isDevelopment, string configuredKey, string presentedKey, int expectedStatus)
+        {
+            var settings = new ServiceKeyGateSettings { Required = true, ConfiguredKey = configuredKey, IsDevelopment = isDevelopment };
+
+            var (status, reached) = await Send(settings, "/api/Characters/AddQuestListToDatabase", presentedKey);
+
+            Assert.Equal(expectedStatus, status);
+            Assert.Equal(expectedStatus == 200, reached);
+        }
+
         [Theory]
         [InlineData("/health")]
         [InlineData("/api/System/Status")]

@@ -79,6 +79,7 @@ namespace OWSTests.InstanceManagement
     /// X-CustomerGUID is not a secret, so the endpoints that spin up, shut down and reap zone instances, and AddZone,
     /// also require X-Samsara-Service-Key. Map names that reach the launcher's command line are allowlisted.
     /// </summary>
+    [Collection(OWSTests.CharacterPersistence.ServiceHostEnvironmentCollection.Name)]
     public class InstanceManagementServiceKeyTests : IClassFixture<InstanceManagementHost>
     {
         private readonly InstanceManagementHost _host;
