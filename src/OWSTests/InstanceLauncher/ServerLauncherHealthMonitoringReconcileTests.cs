@@ -152,6 +152,25 @@ namespace OWSTests.InstanceLauncher
             }
         }
 
+        //An idle shutdown must ask InstanceManagement to recheck idleness at the transition (a player may have been routed
+        //to the instance since the list was read); a dead server's shutdown must not, or a stale reservation would keep it.
+        [Theory]
+        [InlineData("\"Status\":2,\"NumberOfReportedPlayers\":0,\"MinutesToShutdownAfterEmpty\":5,\"LastServerEmptyDate\":\"2026-01-01T00:00:00\",\"MinutesServerHasBeenEmpty\":10,\"MinutesSinceLastUpdate\":0", true)]
+        [InlineData("\"Status\":2,\"NumberOfReportedPlayers\":3,\"MinutesSinceLastUpdate\":10", false)]
+        public void DoWork_AsksForAnIdleOnlyShutdown_OnlyWhenTheInstanceIsIdleRatherThanStale(string instanceFields, bool expectedOnlyIfIdle)
+        {
+            var processes = new FakeZoneServerProcessesRepository();
+            var handler = new StubHandler(HttpStatusCode.OK, $"[{{\"MapInstanceID\":{TrackedZoneInstanceId},{instanceFields}}}]");
+            var monitor = CreateMonitor(handler, processes);
+
+            monitor.DoWork();
+
+            string body = Assert.Single(handler.ShutDownBodies);
+            using var payload = System.Text.Json.JsonDocument.Parse(body);
+            Assert.Equal(TrackedZoneInstanceId, payload.RootElement.GetProperty("ZoneInstanceID").GetInt32());
+            Assert.Equal(expectedOnlyIfIdle, payload.RootElement.GetProperty("OnlyIfIdle").GetBoolean());
+        }
+
         private static ZoneServerProcess TrackedProcessPastGrace()
         {
             //No start time means the grace window and PID-reuse guard don't apply, like a process tracked long ago.
@@ -182,8 +201,15 @@ namespace OWSTests.InstanceLauncher
                 Body = body;
             }
 
+            public List<string> ShutDownBodies { get; } = new List<string>();
+
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
+                if (request.RequestUri.AbsolutePath.EndsWith("ShutDownServerInstance"))
+                {
+                    ShutDownBodies.Add(request.Content.ReadAsStringAsync(cancellationToken).Result);
+                }
+
                 //Only the zone instance list is under test; every other call (CleanUpInstances, ShutDownServerInstance) succeeds.
                 bool isZoneInstanceList = request.RequestUri.AbsolutePath.EndsWith("GetZoneInstancesForWorldServer");
                 var response = new HttpResponseMessage(isZoneInstanceList ? StatusCode : HttpStatusCode.OK)

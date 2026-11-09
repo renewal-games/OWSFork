@@ -153,6 +153,55 @@ namespace OWSData.Repositories.Implementations.Postgres
             return output;
         }
 
+        public async Task<SuccessAndErrorMessage> BeginZoneInstanceShutdown(Guid customerGUID, int zoneInstanceID, bool onlyIfIdle)
+        {
+            const int ZoneInstanceShuttingDownStatus = 3;
+
+            int updatedRows;
+
+            using (DbConnection conn = CreateConnection())
+            {
+                await conn.OpenAsync();
+                using DbTransaction transaction = await conn.BeginTransactionAsync();
+
+                var parameters = new DynamicParameters();
+                parameters.Add("@CustomerGUID", customerGUID);
+                parameters.Add("@MapInstanceID", zoneInstanceID);
+                parameters.Add("@MapInstanceStatus", ZoneInstanceShuttingDownStatus);
+
+                //Joins pick an instance and write its reservation while holding this lock, so after it is taken a join
+                //has either committed its reservation (which the idle check sees) or will see status 3 and go elsewhere.
+                await conn.ExecuteAsync(PostgresQueries.AcquireMapAllocationLock,
+                    parameters,
+                    transaction: transaction,
+                    commandType: CommandType.Text);
+
+                updatedRows = await conn.ExecuteAsync(onlyIfIdle ? PostgresQueries.BeginIdleZoneInstanceShutdown : GenericQueries.UpdateMapInstanceStatus,
+                    parameters,
+                    transaction: transaction,
+                    commandType: CommandType.Text);
+
+                await transaction.CommitAsync();
+            }
+
+            if (updatedRows != 1)
+            {
+                return new SuccessAndErrorMessage()
+                {
+                    Success = false,
+                    ErrorMessage = onlyIfIdle
+                        ? $"Zone Instance {zoneInstanceID} is no longer idle (not found, not ready, has players or a reservation, or its empty timer restarted). Not shutting it down."
+                        : $"Zone Instance {zoneInstanceID} was not found."
+                };
+            }
+
+            return new SuccessAndErrorMessage()
+            {
+                Success = true,
+                ErrorMessage = ""
+            };
+        }
+
         public async Task<SuccessAndErrorMessage> CompleteZoneInstanceShutdown(Guid customerGUID, int zoneInstanceID)
         {
             const int ZoneInstanceShuttingDownStatus = 3;

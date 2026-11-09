@@ -17,6 +17,13 @@ namespace OWSData.Repositories.Interfaces
         Task<GetServerInstanceFromPort> GetServerInstanceFromPort(Guid customerGUID, string serverIP, int port);
         Task<IEnumerable<GetZoneInstancesForWorldServer>> GetZoneInstancesForWorldServer(Guid customerGUID, int worldServerID);
         Task<SuccessAndErrorMessage> SetZoneInstanceStatus(Guid customerGUID, int zoneInstanceID, int instanceStatus);
+
+        //Moves the row to status 3 (shutting down) under the lock that player joins take, so a join either sees status 3 and
+        //goes elsewhere or has its reservation committed before this runs. With onlyIfIdle the move happens only while the
+        //instance is still ready, reports no players, has been empty past its zone's timeout and has no reservations;
+        //Success is false when nothing changed.
+        Task<SuccessAndErrorMessage> BeginZoneInstanceShutdown(Guid customerGUID, int zoneInstanceID, bool onlyIfIdle);
+
         Task<SuccessAndErrorMessage> CompleteZoneInstanceShutdown(Guid customerGUID, int zoneInstanceID);
         Task<SuccessAndErrorMessage> ShutDownWorldServer(Guid customerGUID, int worldServerID);
         Task<int> StartWorldServer(Guid customerGUID, string launcherGuid);
