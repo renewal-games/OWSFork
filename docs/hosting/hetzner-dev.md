@@ -50,6 +50,27 @@ Check the running stack:
 docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml ps
 ```
 
+## Issue #174 deployment is blocked
+
+**BLOCKED on a Perforce caller changelist and rebuilt dedicated server.** The deployed
+Samsara game plugin still omits `X-Samsara-Service-Key` on InstanceManagement requests.
+The plugin edits under this repository's `plugins/` directory do not update that game build.
+Do not deploy this backend change until the caller CL and rebuilt server artifact are named
+in the [issue #174 review handoff](issue-174-review-handoff.md) and its release checks pass.
+That handoff is also the draft PR body; keep the PR blocked until the prerequisite is met.
+
+The required caller changes cover `AOWSGameMode::ProcessOWS2POSTRequest`, both
+`UOWSAPISubsystem` POST/GET helpers, and `AGameStateData::ProcessOWS2POSTRequest`.
+`ASSGameMode` inherits the game-mode helper. Set `OWS_SAMSARA_SERVICE_KEY` in the server
+process environment to the backend's value and restart its launcher/editor so new servers
+inherit it. Never distribute this secret in client config. Existing backend `.env` files
+should explicitly set `OWS_REQUIRE_SERVICE_KEY=true` when deploying the completed change.
+
+An unchanged zone server receives 401s and cannot become ready. Setting
+`OWS_REQUIRE_SERVICE_KEY=false` does **not** restore its heartbeat: endpoint attributes
+require the key independently. If an incompatible backend was deployed, roll back that
+backend or deploy the completed caller build; the global toggle is not a recovery path.
+
 ## Deploy
 
 From `src/`:
@@ -77,20 +98,6 @@ Additional env vars for production hardening (set in `.env.hetzner-dev`):
   `X-Samsara-Service-Key`. Zone-server routes, including `UpdateNumberOfPlayers`, also enforce
   the key independently, so setting this to `false` does not reopen heartbeats.
   CharacterPersistence doesn't read this setting.
-
-**Zone-server rollout (#174):** update and rebuild the deployed game plugin before deploying
-this backend. Both plugin copies in this repository now read `OWS_SAMSARA_SERVICE_KEY` from
-server process environment for InstanceManagement requests. Set it to the backend's value;
-never put this secret in client config. Restart the launcher/editor that spawns zone servers
-so they inherit it. Existing `.env` files should set `OWS_REQUIRE_SERVICE_KEY=true` explicitly.
-The separately maintained Samsara game plugin is not updated by this repository: in its
-`AOWSGameMode::ProcessOWS2POSTRequest`, add the same header in the `InstanceManagementAPI`
-branch that it already adds in the `CharacterPersistenceAPI` branch. The inspected
-`ASSGameMode` inherits this helper; updating only a character-persistence override will not
-fix heartbeats. Include any project-specific `UOWSAPISubsystem` InstanceManagement helpers.
-Verify a keyless heartbeat returns 401 without changing the row, then a zone server with the
-key changes a booting row from status 1 to 2 and advances its heartbeat timestamp. An older
-zone-server binary will receive 401s and will not become ready; deploy the caller first.
 
 - `OWS_PUBLIC_API_DOMAIN` / `OWS_GLOBAL_DATA_DOMAIN` — hostnames for the built-in
   Caddy TLS proxy (e.g. `api.example.com`). Point A records at this host before
