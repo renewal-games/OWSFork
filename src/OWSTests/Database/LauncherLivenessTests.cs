@@ -8,6 +8,7 @@ using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Implementations.Postgres;
 using OWSInstanceManagement.Requests.Instance;
 using OWSShared.Implementations;
+using OWSShared.Messages;
 using OWSShared.Options;
 using OWSShared.RequestPayloads;
 using Xunit;
@@ -111,7 +112,7 @@ namespace OWSTests.Database
             await SeedWorldServer(source, customerGUID, "NOW()");
             int characterID = await SeedCharacter(source, customerGUID, "Joiner");
 
-            // Nothing listens on port 1, so the spin-up command cannot be published.
+            // Nothing listens on port 1: the connection fails before anything is published, so no launcher can get the command.
             var request = new OWSInstanceManagement.Requests.Instance.GetServerToConnectToRequest { CharacterName = "Joiner", ZoneName = ZoneName };
             request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions { RabbitMQHostName = "127.0.0.1", RabbitMQPort = 1, RabbitMQUserName = "guest", RabbitMQPassword = "guest" }),
                 Characters(source), new HeaderCustomerGUID { CustomerGUID = customerGUID });
@@ -123,6 +124,45 @@ namespace OWSTests.Database
             Assert.Equal(0, await Scalar(source, "SELECT COUNT(*) FROM MapInstances WHERE CustomerGUID = @CustomerGUID", new { CustomerGUID = customerGUID }));
             Assert.Equal(0, await Scalar(source, "SELECT COUNT(*) FROM CharOnMapInstance WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
                 new { CustomerGUID = customerGUID, CharacterID = characterID }));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.SetupSql)]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task SpinUpWhoseConfirmWasLost_KeepsTheStartingInstance(SchemaSource source)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            await SeedMap(source, customerGUID, ZoneName);
+            await SeedWorldServer(source, customerGUID, "NOW()");
+            int characterID = await SeedCharacter(source, customerGUID, "Joiner");
+
+            // The broker queued the command (a launcher may already be starting the server) and then the confirm was lost.
+            var request = new ConfirmLostGetServerToConnectToRequest { CharacterName = "Joiner", ZoneName = ZoneName };
+            request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), Characters(source), new HeaderCustomerGUID { CustomerGUID = customerGUID });
+
+            JoinMapByCharName result = Assert.IsType<JoinMapByCharName>(Assert.IsType<OkObjectResult>(await request.Handle()).Value);
+
+            Assert.False(result.Success);
+            Assert.NotNull(request.Published);
+            // The row, and with it the port, stays reserved for that server; only this joiner's reservation goes.
+            Assert.Equal(1, await InstanceRows(source, customerGUID, result.MapInstanceID));
+            Assert.Equal(StartingStatus, await Scalar(source, "SELECT Status FROM MapInstances WHERE CustomerGUID = @CustomerGUID AND MapInstanceID = @MapInstanceID",
+                new { CustomerGUID = customerGUID, MapInstanceID = result.MapInstanceID }));
+            Assert.Equal(request.Published.Port, await Scalar(source, "SELECT Port FROM MapInstances WHERE CustomerGUID = @CustomerGUID AND MapInstanceID = @MapInstanceID",
+                new { CustomerGUID = customerGUID, MapInstanceID = result.MapInstanceID }));
+            Assert.Equal(0, await Scalar(source, "SELECT COUNT(*) FROM CharOnMapInstance WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
+                new { CustomerGUID = customerGUID, CharacterID = characterID }));
+        }
+
+        private sealed class ConfirmLostGetServerToConnectToRequest : OWSInstanceManagement.Requests.Instance.GetServerToConnectToRequest
+        {
+            public MQSpinUpServerMessage Published { get; private set; }
+
+            protected override void PublishSpinUpMessage(MQSpinUpServerMessage serverSpinUpMessage)
+            {
+                Published = serverSpinUpMessage;
+                throw new LauncherCommandNotDeliveredException("RabbitMQ did not confirm the command.", new TimeoutException());
+            }
         }
 
         [PostgresTheory]

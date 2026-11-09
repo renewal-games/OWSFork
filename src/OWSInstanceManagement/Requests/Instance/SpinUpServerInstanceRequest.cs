@@ -76,9 +76,11 @@ namespace OWSInstanceManagement.Requests.Instance
             }
             catch (Exception ex)
             {
-                //No launcher took the command, so no server will start for this instance. Say so instead of
-                //reporting a success the caller would wait on.
-                Log.Error(ex, $"SpinUpServerInstance - Could not send the spin-up of Zone Instance {ZoneInstanceID} to World Server {WorldServerID}.");
+                //Say the spin-up failed instead of reporting a success the caller would wait on. The status tells the caller
+                //whether it may discard the zone instance: 503 means no launcher can receive the command; 504 means
+                //it may still be queued (a confirm that timed out or was lost), so a server may yet start on that row and port.
+                bool certainlyNotQueued = LauncherCommandChannel.CertainlyNotQueued(ex);
+                Log.Error(ex, $"SpinUpServerInstance - Could not confirm the spin-up of Zone Instance {ZoneInstanceID} to World Server {WorldServerID} (certainly not queued: {certainlyNotQueued}).");
 
                 Output = new SuccessAndErrorMessage()
                 {
@@ -86,7 +88,10 @@ namespace OWSInstanceManagement.Requests.Instance
                     ErrorMessage = $"Could not send the spin-up of Zone Instance {ZoneInstanceID}: {ex.Message}"
                 };
 
-                return new ObjectResult(Output) { StatusCode = StatusCodes.Status503ServiceUnavailable };
+                return new ObjectResult(Output)
+                {
+                    StatusCode = certainlyNotQueued ? StatusCodes.Status503ServiceUnavailable : StatusCodes.Status504GatewayTimeout
+                };
             }
 
             Output = new SuccessAndErrorMessage() {
@@ -108,13 +113,7 @@ namespace OWSInstanceManagement.Requests.Instance
                 Password = _rabbitMQOptions.Value.RabbitMQPassword
             };
 
-            using (var connection = factory.CreateConnection())
-            {
-                using (var channel = connection.CreateModel())
-                {
-                    LauncherCommandChannel.Publish(channel, LauncherCommandChannel.SpinUpExchange, serverSpinUpMessage.WorldServerID, serverSpinUpMessage.Serialize());
-                }
-            }
+            LauncherCommandChannel.ConnectAndPublish(factory, LauncherCommandChannel.SpinUpExchange, serverSpinUpMessage.WorldServerID, serverSpinUpMessage.Serialize());
         }
     }
 }

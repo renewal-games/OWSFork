@@ -12,10 +12,18 @@ namespace OWSShared.Messages
     /// </summary>
     public class LauncherCommandNotDeliveredException : Exception
     {
-        public LauncherCommandNotDeliveredException(string message, Exception innerException = null)
+        public LauncherCommandNotDeliveredException(string message, Exception innerException = null, bool certainlyNotQueued = false)
             : base(message, innerException)
         {
+            CertainlyNotQueued = certainlyNotQueued;
         }
+
+        /// <summary>
+        /// True only when no launcher can receive the command: it never reached the broker, or the broker returned it as
+        /// unroutable. False when it may still be queued, such as a confirm that timed out or was lost with the
+        /// connection; a launcher may then start a server for it.
+        /// </summary>
+        public bool CertainlyNotQueued { get; }
     }
 
     /// <summary>
@@ -77,8 +85,19 @@ namespace OWSShared.Messages
         {
             string routingKey = RoutingKey(exchange, worldServerID);
 
-            DeclareExchange(channel, exchange);
-            channel.ConfirmSelect();
+            IBasicProperties properties;
+            try
+            {
+                DeclareExchange(channel, exchange);
+                channel.ConfirmSelect();
+                properties = channel.CreateBasicProperties();
+                properties.Persistent = true;
+            }
+            catch (Exception ex)
+            {
+                //Nothing has been published yet.
+                throw new LauncherCommandNotDeliveredException($"Could not prepare the {exchange} command for World Server {worldServerID}.", ex, certainlyNotQueued: true);
+            }
 
             //For an unroutable mandatory message the broker sends basic.return before basic.ack, and the client handles
             //both on its connection thread in that order, so the flag is set before WaitForConfirmsOrDie returns.
@@ -93,9 +112,7 @@ namespace OWSShared.Messages
             channel.BasicReturn += onReturn;
             try
             {
-                IBasicProperties properties = channel.CreateBasicProperties();
-                properties.Persistent = true;
-
+                //From here on a failure is ambiguous: the broker may already have queued the command.
                 channel.BasicPublish(exchange: exchange,
                                      routingKey: routingKey,
                                      mandatory: true,
@@ -108,7 +125,9 @@ namespace OWSShared.Messages
                 }
                 catch (Exception ex)
                 {
-                    throw new LauncherCommandNotDeliveredException($"RabbitMQ did not confirm the {exchange} command for World Server {worldServerID}.", ex);
+                    //A timed-out, negative or lost confirm does not say the command missed the queue.
+                    throw new LauncherCommandNotDeliveredException($"RabbitMQ did not confirm the {exchange} command for World Server {worldServerID}.", ex,
+                        certainlyNotQueued: Volatile.Read(ref returned) == 1);
                 }
             }
             finally
@@ -118,8 +137,49 @@ namespace OWSShared.Messages
 
             if (Volatile.Read(ref returned) == 1)
             {
-                throw new LauncherCommandNotDeliveredException($"No launcher is listening for World Server {worldServerID} ({routingKey}): {returnReason}.");
+                //basic.return on a mandatory publish means no queue received it.
+                throw new LauncherCommandNotDeliveredException($"No launcher is listening for World Server {worldServerID} ({routingKey}): {returnReason}.",
+                    certainlyNotQueued: true);
             }
         }
+
+        /// <summary>
+        /// Connects to the broker and <see cref="Publish"/>es one command. A failure to connect or open a channel is reported as
+        /// <see cref="LauncherCommandNotDeliveredException.CertainlyNotQueued"/>, since nothing was sent.
+        /// </summary>
+        public static void ConnectAndPublish(IConnectionFactory factory, string exchange, int worldServerID, byte[] body, TimeSpan? confirmTimeout = null)
+        {
+            IConnection connection;
+            try
+            {
+                connection = factory.CreateConnection();
+            }
+            catch (Exception ex)
+            {
+                throw new LauncherCommandNotDeliveredException($"Could not connect to RabbitMQ to send the {exchange} command for World Server {worldServerID}.", ex, certainlyNotQueued: true);
+            }
+
+            using (connection)
+            {
+                IModel channel;
+                try
+                {
+                    channel = connection.CreateModel();
+                }
+                catch (Exception ex)
+                {
+                    throw new LauncherCommandNotDeliveredException($"Could not open a RabbitMQ channel for the {exchange} command for World Server {worldServerID}.", ex, certainlyNotQueued: true);
+                }
+
+                using (channel)
+                {
+                    Publish(channel, exchange, worldServerID, body, confirmTimeout);
+                }
+            }
+        }
+
+        /// <summary>Whether a failed publish certainly left the command unqueued. Any other exception counts as maybe queued.</summary>
+        public static bool CertainlyNotQueued(Exception ex) =>
+            ex is LauncherCommandNotDeliveredException { CertainlyNotQueued: true };
     }
 }

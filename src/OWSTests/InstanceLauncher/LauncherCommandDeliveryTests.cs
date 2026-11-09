@@ -57,6 +57,7 @@ namespace OWSTests.InstanceLauncher
                 () => LauncherCommandChannel.Publish(model.Model, LauncherCommandChannel.ShutDownExchange, 7, Body));
 
             Assert.Contains("World Server 7", ex.Message);
+            Assert.True(ex.CertainlyNotQueued);
             Assert.Empty(model.ReturnHandlers);
         }
 
@@ -66,9 +67,65 @@ namespace OWSTests.InstanceLauncher
             FakeModel model = FakeModel.Create();
             model.ConfirmFailure = new TimeoutException("no confirm");
 
-            Assert.Throws<LauncherCommandNotDeliveredException>(
+            var ex = Assert.Throws<LauncherCommandNotDeliveredException>(
                 () => LauncherCommandChannel.Publish(model.Model, LauncherCommandChannel.SpinUpExchange, 7, Body));
+
+            // The command went out before the confirm was lost, so the broker may have queued it for a launcher.
+            Assert.Single(model.Publishes);
+            Assert.False(ex.CertainlyNotQueued);
+            Assert.False(LauncherCommandChannel.CertainlyNotQueued(ex));
         }
+
+        [Fact]
+        public void Publish_FailingBeforeAnythingIsSent_IsCertainlyNotQueued()
+        {
+            FakeModel model = FakeModel.Create();
+            model.ConfirmSelectFailure = new InvalidOperationException("channel closed");
+
+            var ex = Assert.Throws<LauncherCommandNotDeliveredException>(
+                () => LauncherCommandChannel.Publish(model.Model, LauncherCommandChannel.SpinUpExchange, 7, Body));
+
+            Assert.Empty(model.Publishes);
+            Assert.True(ex.CertainlyNotQueued);
+        }
+
+        [Fact]
+        public void ConnectAndPublish_UnreachableBroker_IsCertainlyNotQueued()
+        {
+            IConnectionFactory factory = OWSTests.PublicAPI.GetServerToConnectToRequestTests.Stub<IConnectionFactory>.Create(new()
+            {
+                [nameof(IConnectionFactory.CreateConnection)] = _ => throw new InvalidOperationException("connection refused")
+            });
+
+            var ex = Assert.Throws<LauncherCommandNotDeliveredException>(
+                () => LauncherCommandChannel.ConnectAndPublish(factory, LauncherCommandChannel.SpinUpExchange, 7, Body));
+
+            Assert.True(ex.CertainlyNotQueued);
+        }
+
+        [Fact]
+        public void ConnectAndPublish_LostConfirm_IsNotCertain()
+        {
+            FakeModel model = FakeModel.Create();
+            // The connection drops while waiting for the confirm.
+            model.ConfirmFailure = new System.IO.IOException("connection lost");
+            IConnection connection = OWSTests.PublicAPI.GetServerToConnectToRequestTests.Stub<IConnection>.Create(new()
+            {
+                [nameof(IConnection.CreateModel)] = _ => model.Model,
+                [nameof(IDisposable.Dispose)] = _ => null
+            });
+            IConnectionFactory factory = OWSTests.PublicAPI.GetServerToConnectToRequestTests.Stub<IConnectionFactory>.Create(new()
+            {
+                [nameof(IConnectionFactory.CreateConnection)] = _ => connection
+            });
+
+            var ex = Assert.Throws<LauncherCommandNotDeliveredException>(
+                () => LauncherCommandChannel.ConnectAndPublish(factory, LauncherCommandChannel.SpinUpExchange, 7, Body));
+
+            Assert.Single(model.Publishes);
+            Assert.False(ex.CertainlyNotQueued);
+        }
+
 
         [Fact]
         public void DeclareLauncherQueue_IsDurableSharedAndBound()
@@ -86,9 +143,10 @@ namespace OWSTests.InstanceLauncher
         }
 
         [Fact]
-        public async Task SpinUpServerInstance_ReportsFailureWhenThePublishIsNotConfirmed()
+        public async Task SpinUpServerInstance_ReportsServiceUnavailableWhenNoLauncherCanReceiveIt()
         {
-            var request = new RecordingSpinUpRequest { WorldServerID = 7, ZoneInstanceID = 42, ZoneName = "Map", Port = 7777, PublishFails = true };
+            var request = new RecordingSpinUpRequest { WorldServerID = 7, ZoneInstanceID = 42, ZoneName = "Map", Port = 7777,
+                PublishFailure = new LauncherCommandNotDeliveredException("No launcher is listening for World Server 7.", certainlyNotQueued: true) };
             request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), FakeInstanceManagementRepository.Returning(MatchingRow()), new FixedCustomerGuid());
 
             var result = Assert.IsType<ObjectResult>(await request.Handle());
@@ -97,6 +155,19 @@ namespace OWSTests.InstanceLauncher
             var output = Assert.IsType<SuccessAndErrorMessage>(result.Value);
             Assert.False(output.Success);
             Assert.Contains("42", output.ErrorMessage);
+        }
+
+        [Fact]
+        public async Task SpinUpServerInstance_ReportsGatewayTimeoutWhenTheCommandMayBeQueued()
+        {
+            // The broker may have queued the command before its confirm was lost: the caller must not discard the instance.
+            var request = new RecordingSpinUpRequest { WorldServerID = 7, ZoneInstanceID = 42, ZoneName = "Map", Port = 7777,
+                PublishFailure = new LauncherCommandNotDeliveredException("RabbitMQ did not confirm.", new TimeoutException()) };
+            request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), FakeInstanceManagementRepository.Returning(MatchingRow()), new FixedCustomerGuid());
+
+            var result = Assert.IsType<ObjectResult>(await request.Handle());
+            Assert.Equal(StatusCodes.Status504GatewayTimeout, result.StatusCode);
+            Assert.False(Assert.IsType<SuccessAndErrorMessage>(result.Value).Success);
         }
 
         [Fact]
@@ -249,15 +320,15 @@ namespace OWSTests.InstanceLauncher
 
         private sealed class RecordingSpinUpRequest : SpinUpServerInstanceRequest
         {
-            public bool PublishFails { get; set; }
+            public Exception PublishFailure { get; set; }
 
             public List<MQSpinUpServerMessage> Published { get; } = new();
 
             protected override void PublishSpinUpMessage(MQSpinUpServerMessage serverSpinUpMessage)
             {
-                if (PublishFails)
+                if (PublishFailure != null)
                 {
-                    throw new LauncherCommandNotDeliveredException("No launcher is listening for World Server 7.");
+                    throw PublishFailure;
                 }
 
                 Published.Add(serverSpinUpMessage);
@@ -319,6 +390,7 @@ namespace OWSTests.InstanceLauncher
             public IModel Model { get; private set; }
             public bool ReturnUnroutable { get; set; }
             public Exception ConfirmFailure { get; set; }
+            public Exception ConfirmSelectFailure { get; set; }
             public bool ConfirmSelected { get; private set; }
             public bool WaitedForConfirms { get; private set; }
             public List<Published> Publishes { get; } = new();
@@ -341,6 +413,10 @@ namespace OWSTests.InstanceLauncher
                 switch (targetMethod.Name)
                 {
                     case "ConfirmSelect":
+                        if (ConfirmSelectFailure != null)
+                        {
+                            throw ConfirmSelectFailure;
+                        }
                         ConfirmSelected = true;
                         return null;
                     case "add_BasicReturn":

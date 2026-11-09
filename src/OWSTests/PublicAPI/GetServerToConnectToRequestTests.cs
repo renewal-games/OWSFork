@@ -59,10 +59,12 @@ namespace OWSTests.PublicAPI
             Assert.Equal(123, calls.TicketStart.X);
         }
 
+        // 503: SpinUpServerInstance found no launcher queue to take the command. 4xx: refused before publishing.
         [Theory]
         [InlineData(HttpStatusCode.ServiceUnavailable)]
         [InlineData(HttpStatusCode.BadRequest)]
-        public async Task FailedSpinUpRequest_RemovesTheUnstartedInstance(HttpStatusCode spinUpStatus)
+        [InlineData(HttpStatusCode.Unauthorized)]
+        public async Task SpinUpCertainlyNotSent_RemovesTheUnstartedInstance(HttpStatusCode spinUpStatus)
         {
             var (request, calls) = CreateRequest("ZoneA", callerIsZoneServer: false, role: "Player", needToStartupMap: true,
                 spinUp: _ => new HttpResponseMessage(spinUpStatus));
@@ -74,11 +76,54 @@ namespace OWSTests.PublicAPI
             Assert.Equal(42, calls.RemovedUnstartedInstance);
         }
 
-        [Fact]
-        public async Task UnreachableInstanceManagement_RemovesTheUnstartedInstance()
+        // 504: the RabbitMQ confirm was lost or timed out after the publish, so the launcher may already be starting the
+        // server. 500 and 502 (a proxy) say nothing about whether the publish happened.
+        [Theory]
+        [InlineData(HttpStatusCode.GatewayTimeout)]
+        [InlineData(HttpStatusCode.InternalServerError)]
+        [InlineData(HttpStatusCode.BadGateway)]
+        public async Task SpinUpMaybeSent_KeepsTheInstanceForTheLauncher(HttpStatusCode spinUpStatus)
         {
             var (request, calls) = CreateRequest("ZoneA", callerIsZoneServer: false, role: "Player", needToStartupMap: true,
-                spinUp: _ => throw new HttpRequestException("Connection refused"));
+                spinUp: _ => new HttpResponseMessage(spinUpStatus));
+
+            JoinMapByCharName result = Assert.IsType<JoinMapByCharName>(Assert.IsType<OkObjectResult>(await request.Handle()).Value);
+
+            Assert.False(result.Success);
+            Assert.Equal(42, calls.ReleasedInstance);
+            Assert.Null(calls.RemovedUnstartedInstance);
+        }
+
+        public static TheoryData<Exception> ResponseLostAfterSending => new()
+        {
+            // HttpClient.Timeout: InstanceManagement may have published and been slow to answer.
+            new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout"),
+            // The connection dropped after the request went out.
+            new HttpRequestException(HttpRequestError.ResponseEnded, "The response ended prematurely."),
+            new HttpRequestException("An error occurred while sending the request.")
+        };
+
+        [Theory]
+        [MemberData(nameof(ResponseLostAfterSending))]
+        public async Task SpinUpResponseLost_KeepsTheInstanceForTheLauncher(Exception failure)
+        {
+            var (request, calls) = CreateRequest("ZoneA", callerIsZoneServer: false, role: "Player", needToStartupMap: true,
+                spinUp: _ => throw failure);
+
+            JoinMapByCharName result = Assert.IsType<JoinMapByCharName>(Assert.IsType<OkObjectResult>(await request.Handle()).Value);
+
+            Assert.False(result.Success);
+            Assert.Equal(42, calls.ReleasedInstance);
+            Assert.Null(calls.RemovedUnstartedInstance);
+        }
+
+        [Theory]
+        [InlineData(HttpRequestError.ConnectionError)]
+        [InlineData(HttpRequestError.NameResolutionError)]
+        public async Task UnreachableInstanceManagement_RemovesTheUnstartedInstance(HttpRequestError error)
+        {
+            var (request, calls) = CreateRequest("ZoneA", callerIsZoneServer: false, role: "Player", needToStartupMap: true,
+                spinUp: _ => throw new HttpRequestException(error, "Connection refused"));
 
             JoinMapByCharName result = Assert.IsType<JoinMapByCharName>(Assert.IsType<OkObjectResult>(await request.Handle()).Value);
 
