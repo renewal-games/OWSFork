@@ -202,10 +202,15 @@ namespace OWSData.SQL
                 SET QuantityRemainingForSale = QuantityRemainingForSale + @Quantity
                 WHERE PlayerShopItemID = @PlayerShopItemID";
 
+        // No clamp on the gold: 0 rows means the refunded proceeds are no longer pending (already in the
+        // owner's wallet), and the refund must not stand. A GREATEST(..., 0) here used to turn that into a
+        // silent no-op, so the buyer got the gold back while the owner kept it. XP still clamps: it is not
+        // currency, and a missing XP credit is no reason to block a gold refund.
         public static readonly string DecreditProceedsAndXp = @"UPDATE PlayerShops
-                SET ProceedsGoldPending = GREATEST(ProceedsGoldPending - @Proceeds, 0),
+                SET ProceedsGoldPending = ProceedsGoldPending - @Proceeds,
                     MerchantXpPending = GREATEST(MerchantXpPending - @Xp, 0)
-                WHERE PlayerShopID = @PlayerShopID AND CustomerGUID = @CustomerGUID";
+                WHERE PlayerShopID = @PlayerShopID AND CustomerGUID = @CustomerGUID
+                  AND ProceedsGoldPending >= @Proceeds";
 
         public static readonly string RevertSoldOutToOpen = @"UPDATE PlayerShops
                 SET SaleStatus = 'open', ClosedAt = NULL
@@ -251,14 +256,25 @@ namespace OWSData.SQL
                   AND QuantityPendingReturn >= @Quantity
                 RETURNING PlayerShopItemID";
 
+        // Proceeds and XP credited by purchases that are still 'paid': the zone has not delivered the item,
+        // so ResolveUndelivered may yet refund the sale and take these back out of the pending columns.
+        // ClaimEscrow holds them back. Run with the shop row locked: Purchase and ResolveUndelivered lock it
+        // too, so the pending columns and this sum cannot move apart while the claim runs.
+        public static readonly string GetUnresolvedProceedsForShop = @"SELECT
+                    COALESCE(SUM(ProceedsCredited), 0)::BIGINT AS Gold,
+                    COALESCE(SUM(XpCredited), 0)::BIGINT AS Xp
+                FROM PlayerShopPurchases
+                WHERE CustomerGUID = @CustomerGUID AND PlayerShopID = @PlayerShopID AND State = 'paid'";
+
+        // Moves @Gold (the claimable part of ProceedsGoldPending) to claimed; the rest stays pending.
         public static readonly string ClaimGold = @"UPDATE PlayerShops
-                SET ProceedsGoldClaimed = ProceedsGoldClaimed + ProceedsGoldPending,
-                    ProceedsGoldPending = 0
+                SET ProceedsGoldClaimed = ProceedsGoldClaimed + @Gold,
+                    ProceedsGoldPending = ProceedsGoldPending - @Gold
                 WHERE PlayerShopID = @PlayerShopID AND CustomerGUID = @CustomerGUID";
 
         public static readonly string ClaimXp = @"UPDATE PlayerShops
-                SET MerchantXpClaimed = MerchantXpClaimed + MerchantXpPending,
-                    MerchantXpPending = 0
+                SET MerchantXpClaimed = MerchantXpClaimed + @Xp,
+                    MerchantXpPending = MerchantXpPending - @Xp
                 WHERE PlayerShopID = @PlayerShopID AND CustomerGUID = @CustomerGUID";
 
         // After moves: fully settled if nothing pending remains.
