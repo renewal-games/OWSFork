@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Net;
+using System.Net.Http;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using OWSData.Models.Composites;
@@ -56,7 +59,49 @@ namespace OWSTests.PublicAPI
             Assert.Equal(123, calls.TicketStart.X);
         }
 
-        private static (GetServerToConnectToRequest Request, Calls Calls) CreateRequest(string zoneName, bool callerIsZoneServer, string role)
+        [Theory]
+        [InlineData(HttpStatusCode.ServiceUnavailable)]
+        [InlineData(HttpStatusCode.BadRequest)]
+        public async Task FailedSpinUpRequest_RemovesTheUnstartedInstance(HttpStatusCode spinUpStatus)
+        {
+            var (request, calls) = CreateRequest("ZoneA", callerIsZoneServer: false, role: "Player", needToStartupMap: true,
+                spinUp: _ => new HttpResponseMessage(spinUpStatus));
+
+            JoinMapByCharName result = Assert.IsType<JoinMapByCharName>(Assert.IsType<OkObjectResult>(await request.Handle()).Value);
+
+            Assert.False(result.Success);
+            Assert.Equal(42, calls.ReleasedInstance);
+            Assert.Equal(42, calls.RemovedUnstartedInstance);
+        }
+
+        [Fact]
+        public async Task UnreachableInstanceManagement_RemovesTheUnstartedInstance()
+        {
+            var (request, calls) = CreateRequest("ZoneA", callerIsZoneServer: false, role: "Player", needToStartupMap: true,
+                spinUp: _ => throw new HttpRequestException("Connection refused"));
+
+            JoinMapByCharName result = Assert.IsType<JoinMapByCharName>(Assert.IsType<OkObjectResult>(await request.Handle()).Value);
+
+            Assert.False(result.Success);
+            Assert.Equal(42, calls.ReleasedInstance);
+            Assert.Equal(42, calls.RemovedUnstartedInstance);
+        }
+
+        [Fact]
+        public async Task StartingInstanceThatTimesOut_IsLeftForTheLauncher()
+        {
+            // Joining an instance someone else is spinning up: the command did reach a launcher, the server may just be slow.
+            var (request, calls) = CreateRequest("ZoneA", callerIsZoneServer: false, role: "Player", mapInstanceStatus: 1);
+
+            JoinMapByCharName result = Assert.IsType<JoinMapByCharName>(Assert.IsType<OkObjectResult>(await request.Handle()).Value);
+
+            Assert.False(result.Success);
+            Assert.Equal(42, calls.ReleasedInstance);
+            Assert.Null(calls.RemovedUnstartedInstance);
+        }
+
+        private static (GetServerToConnectToRequest Request, Calls Calls) CreateRequest(string zoneName, bool callerIsZoneServer, string role,
+            bool needToStartupMap = false, int mapInstanceStatus = 2, Func<HttpRequestMessage, HttpResponseMessage> spinUp = null)
         {
             var calls = new Calls();
             var customerGuid = Guid.NewGuid();
@@ -77,10 +122,26 @@ namespace OWSTests.PublicAPI
                     return Task.FromResult(new JoinMapByCharName
                     {
                         Success = true, ZoneName = calls.JoinedZone, WorldServerID = 1,
-                        MapInstanceID = 42, MapInstanceStatus = 2
+                        MapInstanceID = 42, MapInstanceStatus = needToStartupMap ? 1 : mapInstanceStatus,
+                        NeedToStartupMap = needToStartupMap, MapNameToStart = "ZoneA", Port = 7778
                     });
                 },
-                [nameof(ICharactersRepository.AddCharacterToMapInstanceByCharName)] = _ => Task.CompletedTask
+                [nameof(ICharactersRepository.AddCharacterToMapInstanceByCharName)] = _ => Task.CompletedTask,
+                [nameof(ICharactersRepository.CheckMapInstanceStatus)] = _ => Task.FromResult(new OWSData.Models.Tables.MapInstances { Status = 1 }),
+                [nameof(ICharactersRepository.ReleaseCharacterMapReservation)] = args =>
+                {
+                    calls.ReleasedInstance = (int)args[2];
+                    return Task.CompletedTask;
+                },
+                [nameof(ICharactersRepository.RemoveUnstartedMapInstance)] = args =>
+                {
+                    calls.RemovedUnstartedInstance = (int)args[1];
+                    return Task.FromResult(true);
+                }
+            });
+            IHttpClientFactory httpClientFactory = Stub<IHttpClientFactory>.Create(new()
+            {
+                [nameof(IHttpClientFactory.CreateClient)] = _ => new HttpClient(new Responder(spinUp)) { BaseAddress = new Uri("http://instancemanagement/") }
             });
             ISanctionsRepository sanctions = Stub<ISanctionsRepository>.Create(new()
             {
@@ -112,7 +173,9 @@ namespace OWSTests.PublicAPI
             {
                 UserSessionGUID = sessionGuid, CharacterName = "Hero", ZoneName = zoneName
             };
-            request.SetData(Microsoft.Extensions.Options.Options.Create(new PublicAPIOptions()), users, characters, customer, null, audit,
+            // No waiting: a server that is not ready on the first poll counts as timed out.
+            var options = new PublicAPIOptions { SecondsToWaitBeforeFirstPollForSpinUp = 0, SecondsToWaitForServerSpinUp = 0, SecondsToWaitInBetweenSpinUpPolling = 0 };
+            request.SetData(Microsoft.Extensions.Options.Options.Create(options), users, characters, customer, httpClientFactory, audit,
                 tickets, callerIsZoneServer, new LoginGate(sanctions, settings, users), queue);
             return (request, calls);
         }
@@ -121,6 +184,20 @@ namespace OWSTests.PublicAPI
         {
             public string JoinedZone;
             public JoinTicketStart TicketStart;
+            public int? ReleasedInstance;
+            public int? RemovedUnstartedInstance;
+        }
+
+        private sealed class Responder : HttpMessageHandler
+        {
+            private readonly Func<HttpRequestMessage, HttpResponseMessage> respond;
+
+            public Responder(Func<HttpRequestMessage, HttpResponseMessage> respond) => this.respond = respond;
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+                respond == null
+                    ? throw new NotSupportedException($"No HTTP call expected, got {request.RequestUri}.")
+                    : Task.FromResult(respond(request));
         }
 
         public class Stub<T> : DispatchProxy

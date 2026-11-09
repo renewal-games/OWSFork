@@ -118,6 +118,10 @@ namespace OWSData.Repositories.Implementations.MSSQL
             return output;
         }
 
+        //The MSSQL schema has no heartbeat column and its spin-up query (GenericQueries.GetActiveWorldServersByLoad) does
+        //not filter on one, so there is nothing to record. Not a deployment target.
+        public Task RecordWorldServerHeartbeat(Guid customerGUID, int worldServerID) => Task.CompletedTask;
+
         public async Task<SuccessAndErrorMessage> SetZoneInstanceStatus(Guid customerGUID, int zoneInstanceID, int instanceStatus)
         {
             using (Connection)

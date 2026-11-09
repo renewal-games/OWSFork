@@ -26,6 +26,11 @@ namespace OWSInstanceManagement.Requests.Instance
 
         public async Task<IActionResult> Handle()
         {
+            //Only a launcher asks for its own list, once per health monitoring cycle (service-key gated), so the request
+            //doubles as its heartbeat. Every launcher version already sends it, so liveness needs no launcher redeploy.
+            //Spin-up skips launchers that stop asking (PostgresQueries.GetActiveWorldServersByLoad).
+            await _instanceManagementRepository.RecordWorldServerHeartbeat(_customerGUID, Request.WorldServerID);
+
             _output = await _instanceManagementRepository.GetZoneInstancesForWorldServer(_customerGUID, Request.WorldServerID);
 
             return new OkObjectResult(_output);

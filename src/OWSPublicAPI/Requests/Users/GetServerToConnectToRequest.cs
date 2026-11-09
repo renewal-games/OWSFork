@@ -160,12 +160,12 @@ namespace OWSPublicAPI.Requests.Users
                 }
                 catch
                 {
-                    return await ReleaseReservationAndReturnFailure(joinMapByCharacterName, "GetServerToConnectTo: Failed to request zone server spin-up.");
+                    return await ReleaseReservationAndReturnFailure(joinMapByCharacterName, "GetServerToConnectTo: Failed to request zone server spin-up.", removeUnstartedInstance: true);
                 }
 
                 if (!requestSuccess)
                 {
-                    return await ReleaseReservationAndReturnFailure(joinMapByCharacterName, "GetServerToConnectTo: Failed to request zone server spin-up.");
+                    return await ReleaseReservationAndReturnFailure(joinMapByCharacterName, "GetServerToConnectTo: Failed to request zone server spin-up.", removeUnstartedInstance: true);
                 }
 
                 //Wait OWSGeneralConfig.SecondsToWaitBeforeFirstPollForSpinUp seconds before the first CheckMapInstanceStatus to give it time to spin up
@@ -235,11 +235,27 @@ namespace OWSPublicAPI.Requests.Users
             return false;
         }
 
-        private async Task<IActionResult> ReleaseReservationAndReturnFailure(JoinMapByCharName joinMapByCharacterName, string errorMessage)
+        //removeUnstartedInstance is for a spin-up this request created whose command never reached a launcher. The zone
+        //instance row would otherwise stay at Status 1 until the two-minute CleanUpInstances sweep, and every joiner who
+        //found it would wait on it instead of spinning up a new instance.
+        private async Task<IActionResult> ReleaseReservationAndReturnFailure(JoinMapByCharName joinMapByCharacterName, string errorMessage, bool removeUnstartedInstance = false)
         {
             if (joinMapByCharacterName?.MapInstanceID > 0)
             {
                 await charactersRepository.ReleaseCharacterMapReservation(CustomerGUID, CharacterName, joinMapByCharacterName.MapInstanceID);
+
+                if (removeUnstartedInstance)
+                {
+                    try
+                    {
+                        await charactersRepository.RemoveUnstartedMapInstance(CustomerGUID, joinMapByCharacterName.MapInstanceID);
+                    }
+                    catch (Exception ex)
+                    {
+                        //The join has already failed; the CleanUpInstances sweep still reaps the row.
+                        Log.Error(ex, "GetServerToConnectTo: could not remove unstarted Zone Instance {MapInstanceId}.", joinMapByCharacterName.MapInstanceID);
+                    }
+                }
             }
 
             Output = joinMapByCharacterName ?? new JoinMapByCharName();
