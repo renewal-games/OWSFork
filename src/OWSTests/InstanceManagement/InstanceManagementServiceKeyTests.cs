@@ -1,3 +1,5 @@
+using Dapper;
+using Npgsql;
 using System;
 using System.Net;
 using System.Net.Http;
@@ -56,6 +58,8 @@ namespace OWSTests.InstanceManagement
                 Environment.SetEnvironmentVariable(ServiceKeyGateSettings.RequireEnvVar, previousRequire);
             }
         }
+
+        public string ConnectionString => _databases.ConnectionString(SchemaSource.Migrated);
 
         public HttpClient CreateClient(string serviceKey = null)
         {
@@ -142,6 +146,96 @@ namespace OWSTests.InstanceManagement
             using HttpResponseMessage response = await client.PostAsJsonAsync("api/Instance/CleanUpInstances", new { });
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("invalid")]
+        [InlineData("00000000-0000-0000-0000-000000000000")]
+        public async Task LauncherEndpoints_RejectInvalidLauncherHeader(string launcherGuid)
+        {
+            using HttpClient client = _host.CreateClient(InstanceManagementHost.ServiceKey);
+            if (launcherGuid != null)
+                client.DefaultRequestHeaders.Add("X-LauncherGUID", launcherGuid);
+
+            using var shutdown = await client.PostAsJsonAsync("api/Instance/ShutDownInstanceLauncher", new { request = new { WorldServerID = 1 } });
+            using var start = await client.GetAsync("api/Instance/StartInstanceLauncher");
+
+            Assert.Equal(HttpStatusCode.BadRequest, shutdown.StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, start.StatusCode);
+        }
+
+        [Theory]
+        [InlineData("{}")]
+        [InlineData("{\"request\":null}")]
+        public async Task LauncherShutdown_RejectsMissingRequest(string body)
+        {
+            using HttpClient client = _host.CreateClient(InstanceManagementHost.ServiceKey);
+            client.DefaultRequestHeaders.Add("X-LauncherGUID", Guid.NewGuid().ToString());
+            using var response = await client.PostAsync("api/Instance/ShutDownInstanceLauncher",
+                new StringContent(body, System.Text.Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        }
+
+        [PostgresFact]
+        public async Task LauncherShutdown_OnlyCleansUpItsOwnWorldServer()
+        {
+            Guid customer = Guid.NewGuid(), launcherA = Guid.NewGuid(), launcherB = Guid.NewGuid();
+            await using var connection = new NpgsqlConnection(_host.ConnectionString);
+            async Task<int> Seed(Guid launcher) => await connection.ExecuteScalarAsync<int>(
+                @"INSERT INTO WorldServers (CustomerGUID, ZoneServerGUID, ServerIP, MaxNumberOfInstances, ActiveStartTime, ServerStatus, StartingMapInstancePort)
+                  VALUES (@customer, @launcher, '127.0.0.1', 10, NOW(), 1, 7777) RETURNING WorldServerID",
+                new { customer, launcher });
+            int a = await Seed(launcherA), b = await Seed(launcherB);
+            async Task<int> SeedInstance(int server) => await connection.ExecuteScalarAsync<int>(
+                @"INSERT INTO MapInstances (CustomerGUID, WorldServerID, MapID, Port, Status, LastUpdateFromServer)
+                  VALUES (@customer, @server, 1, 7777, 2, NOW()) RETURNING MapInstanceID", new { customer, server });
+            int instanceA = await SeedInstance(a), instanceB = await SeedInstance(b);
+            await connection.ExecuteAsync(
+                @"INSERT INTO CharOnMapInstance (CustomerGUID, CharacterID, MapInstanceID)
+                  VALUES (@customer, 41, @instanceA), (@customer, 42, @instanceB)", new { customer, instanceA, instanceB });
+
+            using HttpClient client = _host.CreateClient(InstanceManagementHost.ServiceKey);
+            client.DefaultRequestHeaders.Remove("X-CustomerGUID");
+            client.DefaultRequestHeaders.Add("X-CustomerGUID", customer.ToString());
+            client.DefaultRequestHeaders.Add("X-LauncherGUID", launcherA.ToString());
+            async Task AssertServer(int server, int instance, int count, int status)
+            {
+                Assert.Equal(count, await connection.ExecuteScalarAsync<int>(
+                    "SELECT COUNT(*) FROM MapInstances WHERE CustomerGUID=@customer AND MapInstanceID=@instance", new { customer, instance }));
+                Assert.Equal(count, await connection.ExecuteScalarAsync<int>(
+                    "SELECT COUNT(*) FROM CharOnMapInstance WHERE CustomerGUID=@customer AND MapInstanceID=@instance", new { customer, instance }));
+                Assert.Equal(status, await connection.ExecuteScalarAsync<int>(
+                    "SELECT ServerStatus FROM WorldServers WHERE CustomerGUID=@customer AND WorldServerID=@server", new { customer, server }));
+            }
+
+            using var mismatch = await client.PostAsJsonAsync("api/Instance/ShutDownInstanceLauncher", new { request = new { WorldServerID = b } });
+            Assert.Equal(HttpStatusCode.Forbidden, mismatch.StatusCode);
+            await AssertServer(b, instanceB, 1, 1);
+            await AssertServer(a, instanceA, 1, 1);
+
+            // An unknown launcher and a launcher from another tenant must also fail closed.
+            client.DefaultRequestHeaders.Remove("X-LauncherGUID");
+            client.DefaultRequestHeaders.Add("X-LauncherGUID", Guid.NewGuid().ToString());
+            using var unknown = await client.PostAsJsonAsync("api/Instance/ShutDownInstanceLauncher", new { request = new { WorldServerID = b } });
+            Assert.Equal(HttpStatusCode.Forbidden, unknown.StatusCode);
+            client.DefaultRequestHeaders.Remove("X-LauncherGUID");
+            client.DefaultRequestHeaders.Add("X-LauncherGUID", launcherB.ToString());
+            client.DefaultRequestHeaders.Remove("X-CustomerGUID");
+            client.DefaultRequestHeaders.Add("X-CustomerGUID", Guid.NewGuid().ToString());
+            using var otherTenant = await client.PostAsJsonAsync("api/Instance/ShutDownInstanceLauncher", new { request = new { WorldServerID = b } });
+            Assert.Equal(HttpStatusCode.Forbidden, otherTenant.StatusCode);
+            await AssertServer(b, instanceB, 1, 1);
+
+            client.DefaultRequestHeaders.Remove("X-LauncherGUID");
+            client.DefaultRequestHeaders.Add("X-LauncherGUID", launcherA.ToString());
+            client.DefaultRequestHeaders.Remove("X-CustomerGUID");
+            client.DefaultRequestHeaders.Add("X-CustomerGUID", customer.ToString());
+            using var own = await client.PostAsJsonAsync("api/Instance/ShutDownInstanceLauncher", new { request = new { WorldServerID = a } });
+            Assert.Equal(HttpStatusCode.OK, own.StatusCode);
+            Assert.True((await own.Content.ReadFromJsonAsync<SuccessAndErrorMessage>()).Success);
+            await AssertServer(a, instanceA, 0, 0);
+            await AssertServer(b, instanceB, 1, 1);
         }
 
         //Takes a bare ID, so unlike the endpoints above it needs a real body to get as far as the key check.

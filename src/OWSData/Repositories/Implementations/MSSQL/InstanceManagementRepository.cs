@@ -200,6 +200,11 @@ namespace OWSData.Repositories.Implementations.MSSQL
             return output;
         }
 
+        public Task<int?> GetWorldServerIDForLauncher(Guid customerGUID, Guid launcherGuid)
+        {
+            throw new NotSupportedException("Launcher ownership lookup is only supported on Postgres.");
+        }
+
         public async Task<int> StartWorldServer(Guid customerGUID, string launcherGuid)
         {
             int worldServerId = -1;

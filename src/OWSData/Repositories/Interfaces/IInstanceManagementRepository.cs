@@ -26,6 +26,8 @@ namespace OWSData.Repositories.Interfaces
 
         Task<SuccessAndErrorMessage> CompleteZoneInstanceShutdown(Guid customerGUID, int zoneInstanceID);
         Task<SuccessAndErrorMessage> ShutDownWorldServer(Guid customerGUID, int worldServerID);
+        // Read-only lookup; null means the launcher is not registered for this customer.
+        Task<int?> GetWorldServerIDForLauncher(Guid customerGUID, Guid launcherGuid);
         Task<int> StartWorldServer(Guid customerGUID, string launcherGuid);
         Task<SuccessAndErrorMessage> UpdateNumberOfPlayers(Guid customerGUID, int zoneInstanceId, int numberOfPlayers, ZoneServerStats stats);
         Task<IEnumerable<GetZoneInstancesForZone>> GetZoneInstancesOfZone(Guid customerGUID, string ZoneName);
