@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using OWSData.Models;
+using OWSData.Models.Composites;
 using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Interfaces;
@@ -78,7 +79,10 @@ namespace OWSInstanceLauncher.Services
             {
                 if (ShouldShutdownZoneInstance(zoneInstance, staleServerShutdownMinutes))
                 {
-                    ShutDownZoneInstance(worldServerID, zoneInstance.MapInstanceID);
+                    //A stale server is dead and is reclaimed regardless. An idle one is only shut down if it is still idle
+                    //when InstanceManagement acts, since a player may have been routed to it after this list was read.
+                    bool onlyIfIdle = !IsStaleZoneInstance(zoneInstance, staleServerShutdownMinutes);
+                    ShutDownZoneInstance(worldServerID, zoneInstance.MapInstanceID, onlyIfIdle);
                 }
             }
 
@@ -105,10 +109,13 @@ namespace OWSInstanceLauncher.Services
             //Broken case: the server has stopped reporting in. The dedicated server heartbeats every ~10s
             //(UpdateNumberOfPlayers), so a multi-minute gap means it never became ready or its heartbeat died while
             //occupied. Either way the instance is dead and should be reclaimed.
-            bool stale = staleServerShutdownMinutes > 0
-                && zoneInstance.MinutesSinceLastUpdate >= staleServerShutdownMinutes;
+            return emptyIdle || IsStaleZoneInstance(zoneInstance, staleServerShutdownMinutes);
+        }
 
-            return emptyIdle || stale;
+        public static bool IsStaleZoneInstance(GetZoneInstancesForWorldServer zoneInstance, int staleServerShutdownMinutes)
+        {
+            return staleServerShutdownMinutes > 0
+                && zoneInstance.MinutesSinceLastUpdate >= staleServerShutdownMinutes;
         }
 
         public void Dispose()
@@ -254,16 +261,19 @@ namespace OWSInstanceLauncher.Services
             }
         }
 
-        private void ShutDownZoneInstance(int worldServerId, int zoneInstanceId)
+        private void ShutDownZoneInstance(int worldServerId, int zoneInstanceId, bool onlyIfIdle)
         {
-            Log.Information($"Server Health Monitoring is shutting down empty Zone Server Instance {zoneInstanceId}.");
+            Log.Information(onlyIfIdle
+                ? $"Server Health Monitoring is shutting down empty Zone Server Instance {zoneInstanceId}."
+                : $"Server Health Monitoring is shutting down unresponsive Zone Server Instance {zoneInstanceId}.");
 
             var instanceManagementHttpClient = _httpClientFactory.CreateClient("OWSInstanceManagement");
 
             var shutDownServerInstancePayload = new
             {
                 WorldServerID = worldServerId,
-                ZoneInstanceID = zoneInstanceId
+                ZoneInstanceID = zoneInstanceId,
+                OnlyIfIdle = onlyIfIdle
             };
 
             var shutDownServerInstanceRequest = new StringContent(JsonSerializer.Serialize(shutDownServerInstancePayload), Encoding.UTF8, "application/json");
@@ -273,6 +283,27 @@ namespace OWSInstanceLauncher.Services
             if (!responseMessage.IsSuccessStatusCode)
             {
                 Log.Error($"Server Health Monitoring failed to request shutdown for Zone Server Instance {zoneInstanceId}. HTTP Status: {responseMessage.StatusCode}");
+                return;
+            }
+
+            //Success false with nothing published is how InstanceManagement refuses an idle shutdown (for example a
+            //player was routed to the instance after the list was read). Nothing will be killed; the next cycle re-checks.
+            SuccessAndErrorMessage result = null;
+            try
+            {
+                result = JsonSerializer.Deserialize<SuccessAndErrorMessage>(responseMessage.Content.ReadAsStringAsync().Result, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+            }
+            catch (JsonException)
+            {
+                //Unreadable body: the request was accepted, and the next cycle re-checks the instance either way.
+            }
+
+            if (result != null && !result.Success)
+            {
+                Log.Information($"Server Health Monitoring did not shut down Zone Server Instance {zoneInstanceId}: {result.ErrorMessage}");
             }
         }
     }

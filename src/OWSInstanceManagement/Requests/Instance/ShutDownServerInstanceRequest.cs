@@ -20,6 +20,10 @@ namespace OWSInstanceManagement.Requests.Instance
         public int WorldServerID { get; set; }
         public int ZoneInstanceID { get; set; }
 
+        //Set by the launcher's idle shutdown. The instance is then only shut down if it is still idle when the status
+        //changes: a player may have been routed to it since the launcher read the player count.
+        public bool OnlyIfIdle { get; set; }
+
         private IOptions<RabbitMQOptions> _rabbitMQOptions;
         private SuccessAndErrorMessage Output;
         private Guid CustomerGUID;
@@ -55,10 +59,16 @@ namespace OWSInstanceManagement.Requests.Instance
             //Set the status to 3 (shutting down) BEFORE publishing the shutdown message. The launcher's follow-up
             //CompleteZoneInstanceShutdown requires status 3; publishing first creates a race where the launcher can
             //call CompleteZoneInstanceShutdown before the status is set (papered over by a retry loop launcher-side).
-            Output = await _instanceMangementRepository.SetZoneInstanceStatus(CustomerGUID, ZoneInstanceID, 3);
+            //If an idle shutdown finds the instance no longer idle, nothing is published, so the launcher kills nothing.
+            Output = await _instanceMangementRepository.BeginZoneInstanceShutdown(CustomerGUID, ZoneInstanceID, OnlyIfIdle);
 
             if (!Output.Success)
             {
+                if (OnlyIfIdle)
+                {
+                    Log.Information($"ShutDownServerInstance - Skipped idle shutdown of Zone Instance {ZoneInstanceID}: {Output.ErrorMessage}");
+                }
+
                 return new OkObjectResult(Output);
             }
 

@@ -141,6 +141,17 @@ namespace OWSData.Repositories.Implementations.MSSQL
             return output;
         }
 
+        public Task<SuccessAndErrorMessage> BeginZoneInstanceShutdown(Guid customerGUID, int zoneInstanceID, bool onlyIfIdle)
+        {
+            SuccessAndErrorMessage output = new SuccessAndErrorMessage()
+            {
+                Success = false,
+                ErrorMessage = "BeginZoneInstanceShutdown is only supported by the Postgres repository."
+            };
+
+            return Task.FromResult(output);
+        }
+
         public Task<SuccessAndErrorMessage> CompleteZoneInstanceShutdown(Guid customerGUID, int zoneInstanceID)
         {
             SuccessAndErrorMessage output = new SuccessAndErrorMessage()

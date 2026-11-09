@@ -416,6 +416,28 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
                 WHERE CustomerGUID = @CustomerGUID
                   AND MapID = @MapID";
 
+        //Idle shutdown, rechecked at the moment of the transition: the launcher decides from a snapshot that can be a
+        //whole monitor tick old, and a player routed here since then holds a CharOnMapInstance reservation that the
+        //zone server has not reported yet. The idle test matches ServerLauncherHealthMonitoring.ShouldShutdownZoneInstance.
+        public static readonly string BeginIdleZoneInstanceShutdown = @"UPDATE MapInstances MI
+                SET Status = 3
+                FROM Maps M
+                WHERE MI.CustomerGUID = @CustomerGUID
+                  AND MI.MapInstanceID = @MapInstanceID
+                  AND M.CustomerGUID = MI.CustomerGUID
+                  AND M.MapID = MI.MapID
+                  AND MI.Status = 2
+                  AND MI.NumberOfReportedPlayers = 0
+                  AND M.MinutesToShutdownAfterEmpty > 0
+                  AND MI.LastServerEmptyDate IS NOT NULL
+                  AND MI.LastServerEmptyDate <= NOW()::TIMESTAMP - make_interval(mins => M.MinutesToShutdownAfterEmpty)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM CharOnMapInstance CMI
+                      WHERE CMI.CustomerGUID = MI.CustomerGUID
+                        AND CMI.MapInstanceID = MI.MapInstanceID
+                  )";
+
         public static readonly string RemoveCharactersFromZoneInstance = @"DELETE FROM CharOnMapInstance
                 WHERE CustomerGUID = @CustomerGUID
                   AND MapInstanceID = @ZoneInstanceID
