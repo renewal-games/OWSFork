@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Dapper;
 using Microsoft.AspNetCore.Mvc;
 using Npgsql;
+using OWSData.Models;
 using OWSData.Models.Composites;
 using OWSData.Repositories.Implementations.Postgres;
 using OWSInstanceManagement.Requests.Instance;
@@ -209,6 +210,46 @@ namespace OWSTests.Database
             Assert.Equal(7, row.WorldServerID);
             Assert.Equal(7777, row.Port);
             Assert.Equal(0, otherCustomersView.MapInstanceID);
+        }
+
+        //A zone server asks for its own row by IP and port. Anything but exactly one match is an empty row, so an IP that two
+        //world servers share must not hand one zone server the other's instance.
+        [PostgresTheory]
+        [InlineData(SchemaSource.SetupSql)]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task GetServerInstanceFromPort_ReturnsTheOneMatch_AndAnEmptyRowOtherwise(SchemaSource source)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            int mapID = await connection.ExecuteScalarAsync<int>(
+                @"INSERT INTO Maps (CustomerGUID, MapName, Width, Height, ZoneName)
+                  VALUES (@CustomerGUID, '/Game/Maps/L_ByPort', 1, 1, 'ByPortZone')
+                  RETURNING MapID",
+                new { CustomerGUID = customerGUID });
+            async Task<int> SeedWorldServer() => await connection.ExecuteScalarAsync<int>(
+                @"INSERT INTO WorldServers (CustomerGUID, ServerIP, MaxNumberOfInstances, ActiveStartTime, ServerStatus, StartingMapInstancePort, ServerRegion)
+                  VALUES (@CustomerGUID, '10.0.0.1', 10, NOW(), 1, 7778, @ServerRegion)
+                  RETURNING WorldServerID",
+                new { CustomerGUID = customerGUID, ServerRegion = ServerRegions.Default });
+            async Task<int> SeedInstance(int worldServerID, int port) => await connection.ExecuteScalarAsync<int>(
+                @"INSERT INTO MapInstances (CustomerGUID, WorldServerID, MapID, Port, Status, LastUpdateFromServer)
+                  VALUES (@CustomerGUID, @WorldServerID, @MapID, @Port, 2, NOW())
+                  RETURNING MapInstanceID",
+                new { CustomerGUID = customerGUID, WorldServerID = worldServerID, MapID = mapID, Port = port });
+            int firstWorldServerID = await SeedWorldServer();
+            int secondWorldServerID = await SeedWorldServer();
+            int zoneInstanceID = await SeedInstance(firstWorldServerID, 7778);
+            await SeedInstance(firstWorldServerID, 7779);
+            await SeedInstance(secondWorldServerID, 7779);
+
+            var row = await Repository(source).GetServerInstanceFromPort(customerGUID, "10.0.0.1", 7778);
+            var unknownPort = await Repository(source).GetServerInstanceFromPort(customerGUID, "10.0.0.1", 7780);
+            var sharedPort = await Repository(source).GetServerInstanceFromPort(customerGUID, "10.0.0.1", 7779);
+
+            Assert.Equal(zoneInstanceID, row.MapInstanceID);
+            Assert.Equal("ByPortZone", row.ZoneName);
+            Assert.Equal(0, unknownPort.MapInstanceID);
+            Assert.Equal(0, sharedPort.MapInstanceID);
         }
 
         //The launcher and SpinUpServerInstance refuse a command this row doesn't match, so a wrong column here would refuse every spin-up.
