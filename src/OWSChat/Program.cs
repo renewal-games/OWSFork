@@ -57,6 +57,7 @@ else
     container.Register<IUsersRepository, OWSData.Repositories.Implementations.MSSQL.UsersRepository>(Lifestyle.Transient);
 // Sanctions and the chat log are Postgres-only.
 container.Register<ISanctionsRepository, OWSData.Repositories.Implementations.Postgres.SanctionsRepository>(Lifestyle.Transient);
+container.Register<IChatMembershipRepository, OWSData.Repositories.Implementations.Postgres.ChatMembershipRepository>(Lifestyle.Transient);
 container.Register<IChatLogRepository, OWSData.Repositories.Implementations.Postgres.ChatLogRepository>(Lifestyle.Singleton);
 container.Register<ChatLogWriter>(Lifestyle.Singleton);
 
