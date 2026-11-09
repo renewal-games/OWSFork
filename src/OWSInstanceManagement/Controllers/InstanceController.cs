@@ -19,9 +19,7 @@ using OWSInstanceManagement.Filters;
 
 namespace OWSInstanceManagement.Controllers
 {
-    // Launcher, PublicAPI and Management calls carry [RequireSamsaraServiceKey]. The UE zone server's calls
-    // (GetZoneInstance, GetZoneInstancesForZone, UpdateNumberOfPlayers, GetCurrentWorldTime) send only
-    // X-CustomerGUID today, so they stay ungated until the plugin sends the key on InstanceManagementAPI requests.
+    // Zone servers and backend callers must authenticate independently of the optional global gate.
     [Route("api/[controller]")]
     [ApiController]
     public class InstanceController : Controller
@@ -200,6 +198,7 @@ namespace OWSInstanceManagement.Controllers
         /// </remarks>
         [HttpPost]
         [Route("GetZoneInstance")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(GetServerInstanceFromPort))]
         public async Task<GetServerInstanceFromPort> GetZoneInstance([FromBody] int ZoneInstanceId)
         {
@@ -220,6 +219,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("GetServerInstanceFromPort")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(GetServerInstanceFromPort))]
         /*[SwaggerOperation("ByName")]
         [SwaggerResponse(200)]
@@ -247,6 +247,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("UpdateNumberOfPlayers")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(SuccessAndErrorMessage))]
         /*[SwaggerOperation("ByName")]
         [SwaggerResponse(200)]
@@ -271,6 +272,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("GetZoneInstancesForZone")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(IEnumerable<GetZoneInstancesForZone>))]
         public async Task<IActionResult> GetZoneInstancesForZone([FromBody] GetZoneInstancesForZoneRequest request)
         {
@@ -281,6 +283,7 @@ namespace OWSInstanceManagement.Controllers
 
         [HttpPost]
         [Route("GetCurrentWorldTime")]
+        [RequireSamsaraServiceKey]
         [Produces(typeof(GetCurrentWorldTime))]
         public async Task<IActionResult> GetCurrentWorldTime([FromBody] GetCurrentWorldTimeRequest request)
         {
