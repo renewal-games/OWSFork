@@ -34,29 +34,19 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         private DbConnection Connection => _scopedConnection.Value ??= new ScopedDbConnection(CreateConnection(), () => _scopedConnection.Value = null);
 
+        //An unknown instance comes back as an empty row (MapInstanceID 0). A failed lookup throws instead, so a caller
+        //never mistakes a database error for a deleted instance.
         public async Task<GetServerInstanceFromPort> GetZoneInstance(Guid customerGUID, int zoneInstanceId)
         {
-            GetServerInstanceFromPort output;
-
-            try
+            using (Connection)
             {
-                using (Connection)
-                {
-                    var parameter = new DynamicParameters();
-                    parameter.Add("@CustomerGUID", customerGUID);
-                    parameter.Add("@MapInstanceID", zoneInstanceId);
+                var parameter = new DynamicParameters();
+                parameter.Add("@CustomerGUID", customerGUID);
+                parameter.Add("@MapInstanceID", zoneInstanceId);
 
-                    output = await Connection.QuerySingleAsync<GetServerInstanceFromPort>(GenericQueries.GetMapInstance,
-                        parameter,
-                        commandType: CommandType.Text);
-                }
-
-                return output;
-            }
-            catch (Exception ex)
-            {
-                output = new GetServerInstanceFromPort();
-                return output;
+                return await Connection.QuerySingleOrDefaultAsync<GetServerInstanceFromPort>(GenericQueries.GetMapInstance,
+                    parameter,
+                    commandType: CommandType.Text) ?? new GetServerInstanceFromPort();
             }
         }
 
@@ -74,29 +64,22 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
+        //Anything but exactly one match comes back as an empty row, as before: the IP can match more than one world server.
+        //A failed lookup throws instead of looking like no match.
         public async Task<GetServerInstanceFromPort> GetServerInstanceFromPort(Guid customerGUID, string serverIP, int port)
         {
-            GetServerInstanceFromPort output;
-
-            try
+            using (Connection)
             {
-                using (Connection)
-                {
-                    var parameter = new DynamicParameters();
-                    parameter.Add("@CustomerGUID", customerGUID);
-                    parameter.Add("@ServerIP", serverIP);
-                    parameter.Add("@Port", port);
+                var parameter = new DynamicParameters();
+                parameter.Add("@CustomerGUID", customerGUID);
+                parameter.Add("@ServerIP", serverIP);
+                parameter.Add("@Port", port);
 
-                    output = await Connection.QuerySingleAsync<GetServerInstanceFromPort>(GenericQueries.GetMapInstancesByIpAndPort,
-                        parameter,
-                        commandType: CommandType.Text);
-                }
+                List<GetServerInstanceFromPort> rows = (await Connection.QueryAsync<GetServerInstanceFromPort>(GenericQueries.GetMapInstancesByIpAndPort,
+                    parameter,
+                    commandType: CommandType.Text)).AsList();
 
-                return output;
-            }
-            catch (Exception ex) {
-                output = new GetServerInstanceFromPort();
-                return output;
+                return rows.Count == 1 ? rows[0] : new GetServerInstanceFromPort();
             }
         }
 

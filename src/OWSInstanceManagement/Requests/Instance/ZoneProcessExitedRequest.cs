@@ -32,8 +32,19 @@ namespace OWSInstanceManagement.Requests.Instance
 
         public async Task<IActionResult> Handle()
         {
-            GetServerInstanceFromPort instance = await _instanceManagementRepository.GetZoneInstance(_customerGUID, request.ZoneInstanceID);
-            bool expected = IsExpectedExit(instance);
+            //If the row can't be read we can't tell a deliberate stop from a crash, so report it as unexpected. The launcher
+            //doesn't retry this call, so failing the request would lose the exit altogether.
+            bool expected;
+            try
+            {
+                GetServerInstanceFromPort instance = await _instanceManagementRepository.GetZoneInstance(_customerGUID, request.ZoneInstanceID);
+                expected = IsExpectedExit(instance);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "ZoneProcessExited could not read Zone Instance {ZoneInstanceId}; reporting its exit as unexpected", request.ZoneInstanceID);
+                expected = false;
+            }
 
             const string template = "zone_process_exited {ZoneInstanceId} {MapName}:{Port} exit code {ExitCode}, expected {Expected}";
             if (expected)
