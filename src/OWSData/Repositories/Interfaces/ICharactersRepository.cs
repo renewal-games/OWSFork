@@ -14,6 +14,11 @@ namespace OWSData.Repositories.Interfaces
     {
         Task AddCharacterToMapInstanceByCharName(Guid customerGUID, string characterName, int mapInstanceID);
         Task ReleaseCharacterMapReservation(Guid customerGUID, string characterName, int mapInstanceID);
+        // For a spin-up whose command never reached a launcher: deletes the zone instance row and every reservation on
+        // it, but only while the row is still waiting for its server (Status 1). Returns whether the row was deleted.
+        // Without this the row stays for up to two minutes and each joiner who finds it waits on it instead of spinning
+        // up a new instance.
+        Task<bool> RemoveUnstartedMapInstance(Guid customerGUID, int mapInstanceID);
         // For a write the caller has already tied to the player's own session (the public API). A zone save uses
         // AddOrUpdateOwnedCustomCharacterData.
         Task AddOrUpdateCustomCharacterData(Guid customerGUID, AddOrUpdateCustomCharacterData addOrUpdateCustomCharacterData);

@@ -16,6 +16,11 @@ namespace OWSData.Repositories.Interfaces
 
         Task<GetServerInstanceFromPort> GetServerInstanceFromPort(Guid customerGUID, string serverIP, int port);
         Task<IEnumerable<GetZoneInstancesForWorldServer>> GetZoneInstancesForWorldServer(Guid customerGUID, int worldServerID);
+
+        //Marks the launcher as alive now. Spin-up only picks launchers seen within PostgresQueries.LauncherHeartbeatTimeoutSeconds,
+        //so one that crashed (and never ran its graceful shutdown) stops being chosen.
+        Task RecordWorldServerHeartbeat(Guid customerGUID, int worldServerID);
+
         Task<SuccessAndErrorMessage> SetZoneInstanceStatus(Guid customerGUID, int zoneInstanceID, int instanceStatus);
 
         //Moves the row to status 3 (shutting down) under the lock that player joins take, so a join either sees status 3 and

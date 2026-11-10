@@ -102,6 +102,16 @@ namespace OWSData.Repositories.Implementations.Postgres
             return output;
         }
 
+        public async Task RecordWorldServerHeartbeat(Guid customerGUID, int worldServerID)
+        {
+            using (Connection)
+            {
+                await Connection.ExecuteAsync(PostgresQueries.RecordWorldServerHeartbeat,
+                    new { CustomerGUID = customerGUID, WorldServerID = worldServerID },
+                    commandType: CommandType.Text);
+            }
+        }
+
         public async Task<SuccessAndErrorMessage> SetZoneInstanceStatus(Guid customerGUID, int zoneInstanceID, int instanceStatus)
         {
             int updatedRows;

@@ -16,14 +16,15 @@ namespace OWSData.Health
     public static class SchemaVersionCheck
     {
         /// <summary>The last line of migration-manifest.txt. OWSTests fails until this follows a new script.</summary>
-        public const string ExpectedLastScript = "SamsaraUpdates/RaiseMapPlayerCaps_2026-11-06.sql";
+        public const string ExpectedLastScript = "SamsaraUpdates/AddWorldServerHeartbeat_2026-11-09.sql";
 
         /// <summary>Tables and columns the code reads directly, as (table, column); a null column checks the table only.</summary>
         public static readonly IReadOnlyList<(string Table, string Column)> RequiredObjects = new[]
         {
             ("users", "isinternalnetworktestuser"), // AddUserNetworkTestFlag_2026-10-29.sql, read by every join
             ("loginqueue", (string)null),           // AddSamsaraManagement2_2026-10-22.sql, read by every login
-            ("loginfailures", (string)null)         // LoginBackoff_2026-10-30.sql, read by every password login
+            ("loginfailures", (string)null),        // LoginBackoff_2026-10-30.sql, read by every password login
+            ("worldservers", "lastheartbeat")       // AddWorldServerHeartbeat_2026-11-09.sql, read by every zone spin-up
         };
 
         /// <summary>Indexes the code relies on, such as the target of an ON CONFLICT upsert.</summary>

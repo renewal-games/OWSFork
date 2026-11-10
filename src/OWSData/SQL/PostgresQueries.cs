@@ -122,7 +122,8 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 
 		public static readonly string UpdateWorldServerSQL = @"UPDATE WorldServers
 				SET ActiveStartTime=NOW(),
-				ServerStatus=1
+				ServerStatus=1,
+				LastHeartbeat=NOW()
 				WHERE CustomerGUID=@CustomerGUID::UUID
 				AND WorldServerID=@WorldServerID";
 
@@ -284,6 +285,44 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 		#endregion
 
 		#region Zone Queries
+
+		//A launcher's heartbeat is stamped each time its health monitor fetches its zone instance list
+		//(RunServerHealthMonitoringFrequencyInSeconds, 30 by default), so this is about three missed cycles. Keep it
+		//well above that setting, or every launcher looks dead between cycles.
+		public const int LauncherHeartbeatTimeoutSeconds = 90;
+
+		//Bound with @LauncherHeartbeatTimeoutSeconds. A crashed launcher keeps ServerStatus = 1 (only a graceful
+		//shutdown clears it) and, once CleanUpInstances reaps its rows, has the fewest instances, so without the
+		//heartbeat filter it would be picked first and its spin-up sent to a queue nobody reads. A NULL heartbeat
+		//(never checked in since the column was added) is treated as dead.
+		public static readonly string GetActiveWorldServersByLoad = @"SELECT WS.WorldServerID, WS.ServerIP, WS.InternalServerIP, WS.Port, WS.MaxNumberOfInstances, WS.StartingMapInstancePort
+                FROM WorldServers WS
+                LEFT JOIN MapInstances MI ON MI.WorldServerID = WS.WorldServerID AND MI.CustomerGUID = WS.CustomerGUID
+                WHERE WS.CustomerGUID = @CustomerGUID
+                  AND WS.ServerStatus = 1
+                  AND WS.ActiveStartTime IS NOT NULL
+                  AND WS.LastHeartbeat >= NOW() - @LauncherHeartbeatTimeoutSeconds * INTERVAL '1 second'
+                  --Region routing: only hosts tagged with the player's region are candidates. Fails
+                  --closed (no rows) rather than falling back to another region's hosts.
+                  AND WS.ServerRegion = @ServerRegion
+                GROUP BY WS.WorldServerID, WS.ServerIP, WS.InternalServerIP, WS.Port, WS.MaxNumberOfInstances, WS.StartingMapInstancePort
+                ORDER BY COALESCE (COUNT(MI.MapInstanceID),0)";
+
+		public static readonly string RecordWorldServerHeartbeat = @"UPDATE WorldServers
+				SET LastHeartbeat = NOW()
+				WHERE CustomerGUID = @CustomerGUID
+				  AND WorldServerID = @WorldServerID";
+
+		//Only a row still waiting for its server (Status 1) goes: one that reached Status 2 has a live server on it.
+		public static readonly string RemoveUnstartedMapInstance = @"DELETE FROM MapInstances
+				WHERE CustomerGUID = @CustomerGUID
+				  AND MapInstanceID = @MapInstanceID
+				  AND Status = 1
+				RETURNING MapInstanceID";
+
+		public static readonly string RemoveAllCharactersFromMapInstance = @"DELETE FROM CharOnMapInstance
+				WHERE CustomerGUID = @CustomerGUID
+				  AND MapInstanceID = @MapInstanceID";
 
 		public static readonly string AddMapInstance = @"INSERT INTO MapInstances (CustomerGUID, WorldServerID, MapID, Port, Status, PlayerGroupID, LastUpdateFromServer)
 		VALUES (@CustomerGUID, @WorldServerID, @MapID, @Port, 1, @PlayerGroupID, NOW())

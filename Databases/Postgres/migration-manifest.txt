@@ -57,3 +57,4 @@ SamsaraUpdates/LoginLockAndSessionReplace_2026-11-01.sql
 SamsaraUpdates/AddStressBotPurge_2026-11-04.sql
 SamsaraUpdates/AddPgStatStatements_2026-11-05.sql
 SamsaraUpdates/RaiseMapPlayerCaps_2026-11-06.sql
+SamsaraUpdates/AddWorldServerHeartbeat_2026-11-09.sql

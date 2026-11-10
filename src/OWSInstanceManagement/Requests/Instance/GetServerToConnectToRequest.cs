@@ -6,6 +6,7 @@ using OWSShared.Interfaces;
 using OWSShared.Messages;
 using OWSShared.Options;
 using RabbitMQ.Client;
+using Serilog;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -80,34 +81,23 @@ namespace OWSInstanceManagement.Requests.Instance
             {
                 try
                 {
-                    var factory = new ConnectionFactory()
+                    PublishSpinUpMessage(new MQSpinUpServerMessage
                     {
-                        HostName = rabbitMQOptions.Value.RabbitMQHostName,
-                        Port = rabbitMQOptions.Value.RabbitMQPort,
-                        UserName = rabbitMQOptions.Value.RabbitMQUserName,
-                        Password = rabbitMQOptions.Value.RabbitMQPassword
-                    };
-
-                    using (var connection = factory.CreateConnection())
-                    {
-                        using (var channel = connection.CreateModel())
-                        {
-                            MQSpinUpServerMessage serverSpinUpMessage = new()
-                            {
-                                CustomerGUID = CustomerGUID,
-                                WorldServerID = joinMapByCharacterName.WorldServerID,
-                                ZoneInstanceID = joinMapByCharacterName.MapInstanceID,
-                                MapName = joinMapByCharacterName.MapNameToStart,
-                                Port = joinMapByCharacterName.Port
-                            };
-
-                            LauncherCommandChannel.Publish(channel, LauncherCommandChannel.SpinUpExchange, joinMapByCharacterName.WorldServerID, serverSpinUpMessage.Serialize());
-                        }
-                    }
+                        CustomerGUID = CustomerGUID,
+                        WorldServerID = joinMapByCharacterName.WorldServerID,
+                        ZoneInstanceID = joinMapByCharacterName.MapInstanceID,
+                        MapName = joinMapByCharacterName.MapNameToStart,
+                        Port = joinMapByCharacterName.Port
+                    });
                 }
-                catch
+                catch (Exception ex)
                 {
-                    return await ReleaseReservationAndReturnFailure(joinMapByCharacterName, "GetServerToConnectTo: Failed to request zone server spin-up.");
+                    //Only a command that certainly reached no launcher queue lets the instance go. One that may be queued
+                    //(lost or timed-out confirm) can still start a server on that row and port, so the row stays for the
+                    //launcher or the CleanUpInstances sweep.
+                    Log.Warning(ex, "GetServerToConnectTo: could not confirm the spin-up of Zone Instance {MapInstanceId}.", joinMapByCharacterName.MapInstanceID);
+                    return await ReleaseReservationAndReturnFailure(joinMapByCharacterName, "GetServerToConnectTo: Failed to request zone server spin-up.",
+                        removeUnstartedInstance: LauncherCommandChannel.CertainlyNotQueued(ex));
                 }
 
                 //Wait 5 seconds before the first CheckMapInstanceStatus to give it time to spin up
@@ -137,6 +127,20 @@ namespace OWSInstanceManagement.Requests.Instance
             return new OkObjectResult(Output);
         }
 
+        //Returns only once RabbitMQ confirmed the command reached the launcher queue; throws otherwise.
+        protected virtual void PublishSpinUpMessage(MQSpinUpServerMessage serverSpinUpMessage)
+        {
+            var factory = new ConnectionFactory()
+            {
+                HostName = rabbitMQOptions.Value.RabbitMQHostName,
+                Port = rabbitMQOptions.Value.RabbitMQPort,
+                UserName = rabbitMQOptions.Value.RabbitMQUserName,
+                Password = rabbitMQOptions.Value.RabbitMQPassword
+            };
+
+            LauncherCommandChannel.ConnectAndPublish(factory, LauncherCommandChannel.SpinUpExchange, serverSpinUpMessage.WorldServerID, serverSpinUpMessage.Serialize());
+        }
+
         private async Task<bool> WaitForServerReadyToConnect(int mapInstanceID)
         {
             DateTime StartPollingTime = DateTime.Now;
@@ -162,11 +166,27 @@ namespace OWSInstanceManagement.Requests.Instance
             return false;
         }
 
-        private async Task<IActionResult> ReleaseReservationAndReturnFailure(JoinMapByCharName joinMapByCharacterName, string errorMessage)
+        //removeUnstartedInstance is for a spin-up this request created whose command certainly reached no launcher. The zone
+        //instance row would otherwise stay at Status 1 until the two-minute CleanUpInstances sweep, and every joiner who
+        //found it would wait on it instead of spinning up a new instance.
+        private async Task<IActionResult> ReleaseReservationAndReturnFailure(JoinMapByCharName joinMapByCharacterName, string errorMessage, bool removeUnstartedInstance = false)
         {
             if (joinMapByCharacterName?.MapInstanceID > 0)
             {
                 await charactersRepository.ReleaseCharacterMapReservation(CustomerGUID, CharacterName, joinMapByCharacterName.MapInstanceID);
+
+                if (removeUnstartedInstance)
+                {
+                    try
+                    {
+                        await charactersRepository.RemoveUnstartedMapInstance(CustomerGUID, joinMapByCharacterName.MapInstanceID);
+                    }
+                    catch (Exception ex)
+                    {
+                        //The join has already failed; the CleanUpInstances sweep still reaps the row.
+                        Log.Error(ex, "GetServerToConnectTo: could not remove unstarted Zone Instance {MapInstanceId}.", joinMapByCharacterName.MapInstanceID);
+                    }
+                }
             }
 
             Output = joinMapByCharacterName ?? new JoinMapByCharName();

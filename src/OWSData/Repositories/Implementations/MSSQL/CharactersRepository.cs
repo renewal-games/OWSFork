@@ -77,6 +77,9 @@ namespace OWSData.Repositories.Implementations.MSSQL
             }
         }
 
+        public Task<bool> RemoveUnstartedMapInstance(Guid customerGUID, int mapInstanceID) =>
+            throw new NotSupportedException("RemoveUnstartedMapInstance is only supported by the Postgres repository.");
+
         public async Task ReleaseCharacterMapReservation(Guid customerGUID, string characterName, int mapInstanceID)
         {
             using IDbConnection conn = Connection;

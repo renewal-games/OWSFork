@@ -116,8 +116,8 @@ namespace OWSTests.Database
                 new { CustomerGUID = customerGUID, ZoneName });
 
             int worldServerID = await connection.ExecuteScalarAsync<int>(
-                @"INSERT INTO WorldServers (CustomerGUID, ServerIP, MaxNumberOfInstances, ActiveStartTime, ServerStatus, StartingMapInstancePort, ServerRegion)
-                  VALUES (@CustomerGUID, '10.0.0.1', 10, NOW(), 1, 7778, @ServerRegion)
+                @"INSERT INTO WorldServers (CustomerGUID, ServerIP, MaxNumberOfInstances, ActiveStartTime, ServerStatus, StartingMapInstancePort, ServerRegion, LastHeartbeat)
+                  VALUES (@CustomerGUID, '10.0.0.1', 10, NOW(), 1, 7778, @ServerRegion, NOW())
                   RETURNING WorldServerID",
                 new { CustomerGUID = customerGUID, ServerRegion = ServerRegions.Default });
 

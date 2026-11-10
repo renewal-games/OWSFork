@@ -9,6 +9,7 @@ using OWSShared.Options;
 using OWSShared.RequestPayloads;
 using Microsoft.Extensions.Options;
 using Serilog;
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -152,20 +153,24 @@ namespace OWSPublicAPI.Requests.Users
             //There is no zone server running that will accept our connection, so start up a new one
             if (joinMapByCharacterName.NeedToStartupMap)
             {
-                bool requestSuccess;
+                SpinUpRequestOutcome spinUpOutcome;
 
                 try
                 {
-                    requestSuccess = await RequestServerSpinUp(joinMapByCharacterName.WorldServerID, joinMapByCharacterName.MapInstanceID, joinMapByCharacterName.MapNameToStart, joinMapByCharacterName.Port);
+                    spinUpOutcome = await RequestServerSpinUp(joinMapByCharacterName.WorldServerID, joinMapByCharacterName.MapInstanceID, joinMapByCharacterName.MapNameToStart, joinMapByCharacterName.Port);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    return await ReleaseReservationAndReturnFailure(joinMapByCharacterName, "GetServerToConnectTo: Failed to request zone server spin-up.");
+                    spinUpOutcome = SpinUpOutcomeOf(ex);
+                    Log.Warning(ex, "GetServerToConnectTo: spin-up request for Zone Instance {MapInstanceId} failed ({Outcome}).", joinMapByCharacterName.MapInstanceID, spinUpOutcome);
                 }
 
-                if (!requestSuccess)
+                if (spinUpOutcome != SpinUpRequestOutcome.Sent)
                 {
-                    return await ReleaseReservationAndReturnFailure(joinMapByCharacterName, "GetServerToConnectTo: Failed to request zone server spin-up.");
+                    //Only a command that certainly reached no launcher lets the instance go. If it may have been queued,
+                    //a server can still start on that row and port, so the row stays for the launcher or the sweep.
+                    return await ReleaseReservationAndReturnFailure(joinMapByCharacterName, "GetServerToConnectTo: Failed to request zone server spin-up.",
+                        removeUnstartedInstance: spinUpOutcome == SpinUpRequestOutcome.NotSent);
                 }
 
                 //Wait OWSGeneralConfig.SecondsToWaitBeforeFirstPollForSpinUp seconds before the first CheckMapInstanceStatus to give it time to spin up
@@ -235,11 +240,27 @@ namespace OWSPublicAPI.Requests.Users
             return false;
         }
 
-        private async Task<IActionResult> ReleaseReservationAndReturnFailure(JoinMapByCharName joinMapByCharacterName, string errorMessage)
+        //removeUnstartedInstance is for a spin-up this request created whose command certainly reached no launcher. The zone
+        //instance row would otherwise stay at Status 1 until the two-minute CleanUpInstances sweep, and every joiner who
+        //found it would wait on it instead of spinning up a new instance.
+        private async Task<IActionResult> ReleaseReservationAndReturnFailure(JoinMapByCharName joinMapByCharacterName, string errorMessage, bool removeUnstartedInstance = false)
         {
             if (joinMapByCharacterName?.MapInstanceID > 0)
             {
                 await charactersRepository.ReleaseCharacterMapReservation(CustomerGUID, CharacterName, joinMapByCharacterName.MapInstanceID);
+
+                if (removeUnstartedInstance)
+                {
+                    try
+                    {
+                        await charactersRepository.RemoveUnstartedMapInstance(CustomerGUID, joinMapByCharacterName.MapInstanceID);
+                    }
+                    catch (Exception ex)
+                    {
+                        //The join has already failed; the CleanUpInstances sweep still reaps the row.
+                        Log.Error(ex, "GetServerToConnectTo: could not remove unstarted Zone Instance {MapInstanceId}.", joinMapByCharacterName.MapInstanceID);
+                    }
+                }
             }
 
             Output = joinMapByCharacterName ?? new JoinMapByCharName();
@@ -248,7 +269,41 @@ namespace OWSPublicAPI.Requests.Users
             return new OkObjectResult(Output);
         }
 
-        private async Task<bool> RequestServerSpinUp(int worldServerID, int zoneInstanceID, string zoneName, int port)
+        public enum SpinUpRequestOutcome
+        {
+            //InstanceManagement confirmed the command reached the launcher's queue.
+            Sent,
+            //No launcher can receive the command, so no server will start for the instance.
+            NotSent,
+            //The command may or may not be queued: a launcher may still start a server for the instance.
+            Unknown
+        }
+
+        //SpinUpServerInstance answers 503 only when the command certainly reached no launcher queue and 504 when it may
+        //have (a lost or timed-out RabbitMQ confirm). A 4xx is refused before anything is published (validation, service
+        //key, routing). Any other status, such as a 500 or a proxy's 502/504, is not proof either way.
+        public static SpinUpRequestOutcome SpinUpOutcomeOf(HttpStatusCode statusCode)
+        {
+            int code = (int)statusCode;
+
+            if (code >= 200 && code < 300)
+            {
+                return SpinUpRequestOutcome.Sent;
+            }
+
+            return code == (int)HttpStatusCode.ServiceUnavailable || (code >= 400 && code < 500)
+                ? SpinUpRequestOutcome.NotSent
+                : SpinUpRequestOutcome.Unknown;
+        }
+
+        //Only a failure to reach InstanceManagement at all proves the request was never handled. A timeout, or a
+        //connection lost after the request went out, may follow a publish that succeeded.
+        public static SpinUpRequestOutcome SpinUpOutcomeOf(Exception ex) =>
+            ex is HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError or HttpRequestError.ConnectionError or HttpRequestError.SecureConnectionError }
+                ? SpinUpRequestOutcome.NotSent
+                : SpinUpRequestOutcome.Unknown;
+
+        private async Task<SpinUpRequestOutcome> RequestServerSpinUp(int worldServerID, int zoneInstanceID, string zoneName, int port)
         {
             var instanceManagementHttpClient = httpClientFactory.CreateClient("OWSInstanceManagement");
 
@@ -265,16 +320,9 @@ namespace OWSPublicAPI.Requests.Users
 
             var serverSpinUpPayload = new StringContent(JsonSerializer.Serialize(spinUpServerInstanceRequestPayload), Encoding.UTF8, "application/json");
 
-            var responseMessage = await instanceManagementHttpClient.PostAsync("api/Instance/SpinUpServerInstance", serverSpinUpPayload);
+            using var responseMessage = await instanceManagementHttpClient.PostAsync("api/Instance/SpinUpServerInstance", serverSpinUpPayload);
 
-            if (responseMessage.IsSuccessStatusCode)
-            {
-                return true;
-            }
-            else
-            {
-                return false;
-            }
+            return SpinUpOutcomeOf(responseMessage.StatusCode);
         }
     }
 }

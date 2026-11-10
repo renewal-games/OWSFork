@@ -431,6 +431,7 @@ namespace OWSData.SQL
                 WHERE CustomerGUID = @CustomerGUID
                   AND WorldServerID = @WorldServerID";
 
+        //MSSQL only. Postgres uses PostgresQueries.GetActiveWorldServersByLoad, which also skips launchers whose heartbeat stopped.
         public static readonly string GetActiveWorldServersByLoad = @"SELECT WS.WorldServerID, WS.ServerIP, WS.InternalServerIP, WS.Port, WS.MaxNumberOfInstances, WS.StartingMapInstancePort
                 FROM WorldServers WS
                 LEFT JOIN MapInstances MI ON MI.WorldServerID = WS.WorldServerID AND MI.CustomerGUID = WS.CustomerGUID

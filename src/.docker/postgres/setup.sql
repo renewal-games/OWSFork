@@ -642,6 +642,7 @@ CREATE TABLE WorldServers
     InternalServerIP        VARCHAR(50) DEFAULT ''   NOT NULL,
     StartingMapInstancePort INT         DEFAULT 7778 NOT NULL,
     ServerRegion            VARCHAR(32) DEFAULT 'NA-EAST' NOT NULL,
+    LastHeartbeat           TIMESTAMPTZ              NULL,
     CONSTRAINT PK_WorldServers
         PRIMARY KEY (CustomerGUID, WorldServerID)
 );

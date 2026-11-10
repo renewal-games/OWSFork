@@ -311,6 +311,48 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
+        public async Task<bool> RemoveUnstartedMapInstance(Guid customerGUID, int mapInstanceID)
+        {
+            using IDbConnection conn = CreateConnection();
+            conn.Open();
+            using IDbTransaction transaction = conn.BeginTransaction();
+
+            try
+            {
+                var parameters = new { CustomerGUID = customerGUID, MapInstanceID = mapInstanceID };
+
+                //The lock JoinMapByCharName holds while it picks an instance and reserves a character on it, so no join
+                //can reserve on this row between the delete and the reservation cleanup below.
+                await conn.ExecuteAsync(PostgresQueries.AcquireMapAllocationLock,
+                    parameters,
+                    transaction: transaction,
+                    commandType: CommandType.Text);
+
+                bool removed = (await conn.QueryAsync<int>(PostgresQueries.RemoveUnstartedMapInstance,
+                    parameters,
+                    transaction: transaction,
+                    commandType: CommandType.Text)).Any();
+
+                if (removed)
+                {
+                    //Joiners already reserved on the row wait on a server that will never start; drop their rows too,
+                    //or they would point at a deleted instance (there is no foreign key) and count toward occupancy.
+                    await conn.ExecuteAsync(PostgresQueries.RemoveAllCharactersFromMapInstance,
+                        parameters,
+                        transaction: transaction,
+                        commandType: CommandType.Text);
+                }
+
+                transaction.Commit();
+                return removed;
+            }
+            catch
+            {
+                transaction.Rollback();
+                throw;
+            }
+        }
+
         public async Task AddOrUpdateCustomCharacterData(Guid customerGUID, AddOrUpdateCustomCharacterData addOrUpdateCustomCharacterData)
         {
             using (Connection)
@@ -721,10 +763,11 @@ namespace OWSData.Repositories.Implementations.Postgres
                 CustomerGUID = customerGUID,
                 ZoneName = outputMap.ZoneName,
                 PlayerGroupId = playerGroupId,
-                ServerRegion = ServerRegions.Normalize(serverRegion)
+                ServerRegion = ServerRegions.Normalize(serverRegion),
+                PostgresQueries.LauncherHeartbeatTimeoutSeconds
             };
 
-            List<WorldServers> outputWorldServers = (List<WorldServers>)await conn.QueryAsync<WorldServers>(GenericQueries.GetActiveWorldServersByLoad,
+            List<WorldServers> outputWorldServers = (List<WorldServers>)await conn.QueryAsync<WorldServers>(PostgresQueries.GetActiveWorldServersByLoad,
                 worldServerParameters,
                 transaction: transaction,
                 commandType: CommandType.Text);
