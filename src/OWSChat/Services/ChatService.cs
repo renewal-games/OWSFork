@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using ChatServiceApp.Protos;
@@ -36,12 +37,15 @@ namespace OWSChat.Service
         private readonly IUsersRepository _usersRepository;
         private readonly ISanctionsRepository _sanctionsRepository;
         private readonly ChatLogWriter _chatLog;
+        private readonly IChatMembershipRepository _membershipRepository;
 
-        public ChatService(IUsersRepository usersRepository, ISanctionsRepository sanctionsRepository, ChatLogWriter chatLog)
+        public ChatService(IUsersRepository usersRepository, ISanctionsRepository sanctionsRepository, ChatLogWriter chatLog,
+            IChatMembershipRepository membershipRepository)
         {
             _usersRepository = usersRepository;
             _sanctionsRepository = sanctionsRepository;
             _chatLog = chatLog;
+            _membershipRepository = membershipRepository;
         }
 
         public override async Task Chat(
@@ -171,9 +175,9 @@ namespace OWSChat.Service
                 return;
 
             Sanction mute = await GetActiveMute(sender);
-            LogChat(sender, messageType, recipientName, text, dropped: mute != null);
             if (mute != null)
             {
+                LogChat(sender, messageType, recipientName, text, dropped: true);
                 sender.Outbox.Writer.TryWrite(new ServerMessage
                 {
                     MessageType = ChatType.MessageTypeGeneral,
@@ -183,6 +187,50 @@ namespace OWSChat.Service
                 return;
             }
 
+            HashSet<string> groupMembers = null;
+            if (messageType == ChatType.MessageTypeParty || messageType == ChatType.MessageTypeGuild)
+            {
+                string group = messageType == ChatType.MessageTypeParty ? "party" : "guild";
+                string rejection = null;
+                if (!sender.CustomerGuid.HasValue)
+                {
+                    // Auth-disabled development streams have no trusted tenant/character identity.
+                    rejection = $"Sign in to use {group} chat.";
+                }
+                else
+                {
+                    // Resolve sender and recipients together for every send: never retain stale membership
+                    // on a long-lived stream after a leave, kick, disband or character joining another group.
+                    try
+                    {
+                        var members = messageType == ChatType.MessageTypeParty
+                            ? await _membershipRepository.GetPartyMembers(sender.CustomerGuid.Value, sender.Name)
+                            : await _membershipRepository.GetGuildMembers(sender.CustomerGuid.Value, sender.Name);
+                        groupMembers = new HashSet<string>(members, StringComparer.OrdinalIgnoreCase);
+                        if (!groupMembers.Contains(sender.Name))
+                            rejection = $"You're not in a {group}.";
+                    }
+                    catch (Exception)
+                    {
+                        // Fail closed when membership cannot be verified; never fall back to a broadcast.
+                        rejection = $"Unable to verify {group} membership. Please try again.";
+                    }
+                }
+
+                if (rejection != null)
+                {
+                    LogChat(sender, messageType, recipientName, text, dropped: true);
+                    sender.Outbox.Writer.TryWrite(new ServerMessage
+                    {
+                        MessageType = messageType,
+                        PlayerName = "[Server]",
+                        Chat = new ServerMessageChat { Now = DateTime.UtcNow.ToString("O"), Text = rejection }
+                    });
+                    return;
+                }
+            }
+
+            LogChat(sender, messageType, recipientName, text, dropped: false);
             var outgoing = new ServerMessage
             {
                 MessageType = messageType,
@@ -196,6 +244,9 @@ namespace OWSChat.Service
 
             foreach (var client in _clients.Values)
             {
+                if (groupMembers != null && (client.CustomerGuid != sender.CustomerGuid || !groupMembers.Contains(client.Name)))
+                    continue;
+
                 if (messageType == ChatType.MessageTypeWhisper)
                 {
                     bool toSender = string.Equals(client.Name, sender.Name, StringComparison.Ordinal);

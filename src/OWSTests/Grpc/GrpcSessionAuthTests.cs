@@ -80,7 +80,7 @@ namespace OWSTests.Grpc
             Assert.False(PartyService._partyClients.ContainsKey("Victim"));
         }
 
-        private static ChatService NewChatService() => new ChatService(null, null, new ChatLogWriter(null));
+        private static ChatService NewChatService() => new ChatService(null, null, new ChatLogWriter(null), null);
 
         /// <summary>A first frame claiming another player's name, then one general chat line.</summary>
         private static ListStreamReader<ClientMessage> ImpersonationFrames() => new ListStreamReader<ClientMessage>(
