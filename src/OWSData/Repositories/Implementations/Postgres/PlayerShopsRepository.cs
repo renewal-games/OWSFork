@@ -60,6 +60,12 @@ namespace OWSData.Repositories.Implementations.Postgres
             public int MerchantXpClaimed { get; set; }
         }
 
+        private sealed class UnresolvedProceedsRow
+        {
+            public long Gold { get; set; }
+            public long Xp { get; set; }
+        }
+
         private static long TaxFor(long total, int taxRateBps)
         {
             if (taxRateBps <= 0) return 0;
@@ -585,6 +591,18 @@ namespace OWSData.Repositories.Implementations.Postgres
                 long playerShopItemID = (long)purchase.playershopitemid;
                 int refund = checked(unitPrice * quantity + taxPaid);
 
+                // Lock the shop before the buyer (same order as Purchase) so ClaimEscrow cannot pay these
+                // proceeds out between this check and the decredit below. ClaimEscrow holds back the
+                // proceeds of 'paid' purchases, so a shortfall here means they were claimed before that
+                // rule existed: they are in the owner's wallet, and refunding the buyer too would mint gold.
+                // Refused, the purchase stays 'paid' and can still be delivered.
+                ShopLockRow shop = await conn.QuerySingleOrDefaultAsync<ShopLockRow>(
+                    PlayerShopQueries.LockShopForClaim,
+                    new { CustomerGUID = customerGUID, PlayerShopID = playerShopID },
+                    transaction: tx, commandType: CommandType.Text);
+                if (shop == null) { await tx.RollbackAsync(); return new ResolveUndeliveredResult { Success = false, ReasonCode = "bad_request" }; }
+                if (shop.ProceedsGoldPending < proceeds) { await tx.RollbackAsync(); return new ResolveUndeliveredResult { Success = false, ReasonCode = "proceeds_claimed" }; }
+
                 CharLockRow buyer = await conn.QuerySingleOrDefaultAsync<CharLockRow>(
                     PlayerShopQueries.LockCharacterForUpdate,
                     new { CustomerGUID = customerGUID, CharacterID = buyerCharacterID },
@@ -599,9 +617,10 @@ namespace OWSData.Repositories.Implementations.Postgres
                 await conn.ExecuteAsync(PlayerShopQueries.RestockItem,
                     new { PlayerShopItemID = playerShopItemID, Quantity = quantity },
                     transaction: tx, commandType: CommandType.Text);
-                await conn.ExecuteAsync(PlayerShopQueries.DecreditProceedsAndXp,
+                int decredited = await conn.ExecuteAsync(PlayerShopQueries.DecreditProceedsAndXp,
                     new { CustomerGUID = customerGUID, PlayerShopID = playerShopID, Proceeds = proceeds, Xp = xp },
                     transaction: tx, commandType: CommandType.Text);
+                if (decredited != 1) { await tx.RollbackAsync(); return new ResolveUndeliveredResult { Success = false, ReasonCode = "proceeds_claimed" }; }
                 await conn.ExecuteAsync(PlayerShopQueries.RevertSoldOutToOpen,
                     new { CustomerGUID = customerGUID, PlayerShopID = playerShopID },
                     transaction: tx, commandType: CommandType.Text);
@@ -732,19 +751,27 @@ namespace OWSData.Repositories.Implementations.Postgres
                     if (ok == null) { await tx.RollbackAsync(); return new ClaimEscrowResult { Success = false, ReasonCode = "bad_item" }; }
                 }
 
+                // Proceeds of purchases still 'paid' stay pending: ResolveUndelivered can still refund
+                // those sales, and paying them out here first let the buyer get the gold back while the
+                // owner kept it. They become claimable once ConfirmDelivery settles the purchase.
+                UnresolvedProceedsRow unresolved = await conn.QuerySingleAsync<UnresolvedProceedsRow>(
+                    PlayerShopQueries.GetUnresolvedProceedsForShop,
+                    new { CustomerGUID = customerGUID, PlayerShopID = input.PlayerShopID },
+                    transaction: tx, commandType: CommandType.Text);
+
                 int goldClaimed = 0, xpClaimed = 0;
                 if (input.ClaimGold)
                 {
-                    goldClaimed = shop.ProceedsGoldPending;
+                    goldClaimed = (int)Math.Max(0L, shop.ProceedsGoldPending - unresolved.Gold);
                     await conn.ExecuteAsync(PlayerShopQueries.ClaimGold,
-                        new { PlayerShopID = input.PlayerShopID, CustomerGUID = customerGUID },
+                        new { PlayerShopID = input.PlayerShopID, CustomerGUID = customerGUID, Gold = goldClaimed },
                         transaction: tx, commandType: CommandType.Text);
                 }
                 if (input.ClaimXp)
                 {
-                    xpClaimed = shop.MerchantXpPending;
+                    xpClaimed = (int)Math.Max(0L, shop.MerchantXpPending - unresolved.Xp);
                     await conn.ExecuteAsync(PlayerShopQueries.ClaimXp,
-                        new { PlayerShopID = input.PlayerShopID, CustomerGUID = customerGUID },
+                        new { PlayerShopID = input.PlayerShopID, CustomerGUID = customerGUID, Xp = xpClaimed },
                         transaction: tx, commandType: CommandType.Text);
                 }
 
