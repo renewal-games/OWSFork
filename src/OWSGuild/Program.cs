@@ -103,6 +103,9 @@ if (OWSStorageConfig.Exists())
     }
 }
 
+// Guild storage is Postgres-only, like the other server-owned economy writes.
+container.Register<IGuildStorageRepository, OWSData.Repositories.Implementations.Postgres.GuildStorageRepository>(Lifestyle.Transient);
+
 container.Register<IPublicAPIInputValidation, DefaultPublicAPIInputValidation>(Lifestyle.Singleton);
 container.Register<ICustomCharacterDataSelector, DefaultCustomCharacterDataSelector>(Lifestyle.Singleton);
 container.Register<IGetReadOnlyPublicCharacterData, DefaultGetReadOnlyPublicCharacterData>(Lifestyle.Singleton);
