@@ -10,19 +10,22 @@ using OWSData.Repositories.Interfaces;
 using OWSGuild.Service;
 using OWSShared.Grpc;
 using OWSShared.Implementations;
+using OWSShared.Options;
 
 namespace OWSTests.Guild
 {
     /// <summary>Doubles shared by the guild storage tests.</summary>
     internal static class GuildStorageTestDoubles
     {
-        public static GuildService CreateService(IGuildStorageRepository storage, string sessionCharacter)
+        /// <param name="requireExpectedRevision">OWSGuild's OWSEconomyConfig:RequireExpectedRevision; storage is closed without it.</param>
+        public static GuildService CreateService(IGuildStorageRepository storage, string sessionCharacter, bool requireExpectedRevision = true)
         {
             var users = DispatchProxy.Create<IUsersRepository, SessionStub>();
             ((SessionStub)(object)users).Session = sessionCharacter == null
                 ? null
                 : new GetUserSession { UserGuid = Guid.NewGuid(), SelectedCharacterName = sessionCharacter };
-            return new GuildService(DispatchProxy.Create<ICharactersRepository, Unused>(), users, new HeaderCustomerGUID(), storage);
+            return new GuildService(DispatchProxy.Create<ICharactersRepository, Unused>(), users, new HeaderCustomerGUID(), storage,
+                Microsoft.Extensions.Options.Options.Create(new EconomyOptions { RequireExpectedRevision = requireExpectedRevision }));
         }
 
         public static GuildToSend StorageMessage(Guid customer, Guid guildGuid, bool deposit, string itemId, int quantity,

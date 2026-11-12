@@ -37,7 +37,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                 WHERE GM.CustomerGUID = @CustomerGUID AND GM.CharacterID = @CharacterID AND G.GuildGuid = @GuildGuid
                 FOR UPDATE OF G FOR SHARE OF GM";
 
-        private const string GetInventoryID = @"SELECT CharInventoryID
+        // CharInventory.InventorySize is the backend's record of the bag's capacity. Slots 0..InventorySize-1 are the
+        // bag; rows outside it (the game persists equipped items at slot 1000 and up) are never taken or filled here.
+        private const string GetInventory = @"SELECT CharInventoryID, InventorySize
                 FROM CharInventory
                 WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
                 ORDER BY CharInventoryID
@@ -46,6 +48,7 @@ namespace OWSData.Repositories.Implementations.Postgres
         private const string GetBagStacks = @"SELECT InSlotNumber, Quantity
                 FROM CharInventoryItems
                 WHERE CustomerGUID = @CustomerGUID AND CharInventoryID = @CharInventoryID
+                  AND InSlotNumber >= 0 AND InSlotNumber < @InventorySize
                   AND ItemIDTag = @ItemIDTag AND COALESCE(CustomData, '') = @CustomData AND Quantity > 0
                 ORDER BY InSlotNumber";
 
@@ -56,10 +59,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                 SET Quantity = Quantity - @Take
                 WHERE CustomerGUID = @CustomerGUID AND CharInventoryID = @CharInventoryID AND InSlotNumber = @InSlotNumber";
 
-        // Lowest slot number with no item. 0..COUNT(*) always contains one.
+        // Lowest empty bag slot; no row when the bag is full.
         private const string FirstFreeSlot = @"SELECT s
-                FROM generate_series(0, (SELECT COUNT(*) FROM CharInventoryItems
-                        WHERE CustomerGUID = @CustomerGUID AND CharInventoryID = @CharInventoryID)::INT) AS s
+                FROM generate_series(0, @InventorySize - 1) AS s
                 WHERE NOT EXISTS (SELECT 1 FROM CharInventoryItems
                         WHERE CustomerGUID = @CustomerGUID AND CharInventoryID = @CharInventoryID AND InSlotNumber = s)
                 ORDER BY s
@@ -105,6 +107,12 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         private DbConnection CreateConnection() =>
             new NpgsqlConnection(PostgresConnectionString.WithPoolDefaults(_storageOptions.Value.OWSDBConnectionString));
+
+        private sealed class InventoryRow
+        {
+            public int CharInventoryID { get; set; }
+            public int InventorySize { get; set; }
+        }
 
         private sealed class SlotRow
         {
@@ -157,10 +165,10 @@ namespace OWSData.Repositories.Implementations.Postgres
                     return Fail("not_member");
                 }
 
-                int? inventoryID = await conn.QuerySingleOrDefaultAsync<int?>(GetInventoryID,
+                InventoryRow bag = await conn.QuerySingleOrDefaultAsync<InventoryRow>(GetInventory,
                     new { CustomerGUID = customerGUID, CharacterID = characterID.Value },
                     transaction: tx, commandType: CommandType.Text);
-                if (inventoryID == null)
+                if (bag == null)
                 {
                     await tx.RollbackAsync();
                     return Fail("no_inventory");
@@ -169,8 +177,8 @@ namespace OWSData.Repositories.Implementations.Postgres
                 foreach (GuildStorageTransferItem stack in stacks)
                 {
                     string refusal = deposit
-                        ? await Deposit(conn, tx, customerGUID, guildID.Value, inventoryID.Value, stack)
-                        : await Withdraw(conn, tx, customerGUID, guildID.Value, inventoryID.Value, stack);
+                        ? await Deposit(conn, tx, customerGUID, guildID.Value, bag, stack)
+                        : await Withdraw(conn, tx, customerGUID, guildID.Value, bag, stack);
                     if (refusal != null)
                     {
                         await tx.RollbackAsync();
@@ -206,12 +214,13 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        // Bag -> storage. Takes from the matching stacks in slot order; refuses if the bag holds less than asked.
+        // Bag -> storage. Takes from the matching bag stacks in slot order; refuses if the bag holds less than asked.
         private static async Task<string> Deposit(DbConnection conn, DbTransaction tx, Guid customerGUID, int guildID,
-            int inventoryID, GuildStorageTransferItem stack)
+            InventoryRow bag, GuildStorageTransferItem stack)
         {
+            int inventoryID = bag.CharInventoryID;
             List<SlotRow> slots = (await conn.QueryAsync<SlotRow>(GetBagStacks,
-                new { CustomerGUID = customerGUID, CharInventoryID = inventoryID, stack.ItemIDTag, stack.CustomData },
+                new { CustomerGUID = customerGUID, CharInventoryID = inventoryID, bag.InventorySize, stack.ItemIDTag, stack.CustomData },
                 transaction: tx, commandType: CommandType.Text)).ToList();
 
             if (slots.Sum(s => (long)s.Quantity) < stack.Quantity)
@@ -259,9 +268,11 @@ namespace OWSData.Repositories.Implementations.Postgres
             return null;
         }
 
-        // Storage -> bag. Refuses if storage holds less than asked; the withdrawn stack goes into the lowest free slot.
+        // Storage -> bag. Refuses if storage holds less than asked or the bag has no empty slot; the withdrawn stack goes
+        // into the lowest empty bag slot. The caller rolls back on any refusal, so a list that only partly fits moves
+        // nothing.
         private static async Task<string> Withdraw(DbConnection conn, DbTransaction tx, Guid customerGUID, int guildID,
-            int inventoryID, GuildStorageTransferItem stack)
+            InventoryRow bag, GuildStorageTransferItem stack)
         {
             StoredRow stored = await conn.QuerySingleOrDefaultAsync<StoredRow>(GetStoredStack,
                 new { CustomerGUID = customerGUID, GuildID = guildID, stack.ItemIDTag, stack.CustomData },
@@ -271,23 +282,27 @@ namespace OWSData.Repositories.Implementations.Postgres
                 return "insufficient_storage";
             }
 
+            int? slot = await conn.QuerySingleOrDefaultAsync<int?>(FirstFreeSlot,
+                new { CustomerGUID = customerGUID, bag.CharInventoryID, bag.InventorySize },
+                transaction: tx, commandType: CommandType.Text);
+            if (slot == null)
+            {
+                return "inventory_full";
+            }
+
             int left = stored.Quantity - stack.Quantity;
             await conn.ExecuteAsync(left == 0 ? DeleteStoredStack : SetStoredQuantity,
                 new { CustomerGUID = customerGUID, stored.GuildStorageID, Quantity = left },
-                transaction: tx, commandType: CommandType.Text);
-
-            int slot = await conn.ExecuteScalarAsync<int>(FirstFreeSlot,
-                new { CustomerGUID = customerGUID, CharInventoryID = inventoryID },
                 transaction: tx, commandType: CommandType.Text);
 
             await conn.ExecuteAsync(PlayerShopQueries.InsertInventoryItem,
                 new
                 {
                     CustomerGUID = customerGUID,
-                    CharInventoryID = inventoryID,
+                    bag.CharInventoryID,
                     stack.ItemIDTag,
                     stack.Quantity,
-                    InSlotNumber = slot,
+                    InSlotNumber = slot.Value,
                     stack.CustomData,
                     InstanceId = (Guid?)null
                 },

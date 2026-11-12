@@ -10,6 +10,8 @@ using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Interfaces;
 using OWSShared.Grpc;
+using OWSShared.Options;
+using Microsoft.Extensions.Options;
 using Google.Protobuf.WellKnownTypes;
 using GuildServiceApp.Protos;
 using MySqlX.XDevAPI;
@@ -29,16 +31,19 @@ namespace OWSGuild.Service
         private readonly IUsersRepository _usersRepository;
         private readonly IHeaderCustomerGUID _customerGuid;
         private readonly IGuildStorageRepository _guildStorageRepository;
+        private readonly EconomyOptions _economyOptions;
 
         public GuildService(ICharactersRepository charactersRepository,
             IUsersRepository usersRepository,
             IHeaderCustomerGUID customerGuid,
-            IGuildStorageRepository guildStorageRepository)
+            IGuildStorageRepository guildStorageRepository,
+            IOptions<EconomyOptions> economyOptions)
         {
             _charactersRepository = charactersRepository;
             _usersRepository = usersRepository;
             _customerGuid = customerGuid;
             _guildStorageRepository = guildStorageRepository;
+            _economyOptions = economyOptions.Value;
         }
 
         public override async Task RegisterGuild(GuildRegister request, IServerStreamWriter<GuildToSend> responseStream, ServerCallContext context)
@@ -151,6 +156,19 @@ namespace OWSGuild.Service
         /// </summary>
         private async Task TransferStorage(GuildToSend request, Guid customerGuid, string sessionCharacter)
         {
+            // A transfer rewrites the bag in the database while the zone server still holds the old bag in memory. Only
+            // the economy-revision guard stops that stale bag being saved back over the transfer (re-minting a deposit,
+            // erasing a withdrawal): the transfer bumps EconomyRevision, and with RequireExpectedRevision on, every bag
+            // save must carry the revision it was computed from, so the stale save is refused and the zone server has to
+            // resync. With it off, revision-less saves still win, so storage stays closed. This must be set together with
+            // the character persistence API's OWSEconomyConfig, after the zone server sends ExpectedRevision
+            // (docs/mvp-hardening-spec.md item 2).
+            if (!_economyOptions.RequireExpectedRevision)
+            {
+                throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                    "Guild storage is disabled until inventory saves require an economy revision (OWSEconomyConfig:RequireExpectedRevision)."));
+            }
+
             // With session auth off there is no trusted character to debit or credit.
             if (string.IsNullOrWhiteSpace(sessionCharacter))
             {
@@ -199,6 +217,7 @@ namespace OWSGuild.Service
                     "insufficient_items" => new Status(StatusCode.FailedPrecondition, "Your inventory does not hold those items."),
                     "insufficient_storage" => new Status(StatusCode.FailedPrecondition, "Guild storage does not hold those items."),
                     "storage_full" => new Status(StatusCode.FailedPrecondition, "Guild storage cannot hold that many."),
+                    "inventory_full" => new Status(StatusCode.FailedPrecondition, "Your inventory has no free slot."),
                     "no_inventory" => new Status(StatusCode.FailedPrecondition, "Your character has no inventory."),
                     _ => new Status(StatusCode.Internal, "Guild storage transfer failed.")
                 });

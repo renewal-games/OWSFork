@@ -43,6 +43,23 @@ namespace OWSTests.Guild
             Assert.Empty(storage.Calls);
         }
 
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task WithoutRequiredEconomyRevision_StorageIsClosed_AndNeverReachesStorage(bool deposit)
+        {
+            var storage = new FakeStorage();
+            using var a = Register(Customer, "A");
+
+            var ex = await Assert.ThrowsAsync<RpcException>(() => CreateService(storage, "A", requireExpectedRevision: false)
+                .SendGuildMsg(StorageMessage(Customer, GuildGuid, deposit, "Item.Potion", 1, "A"), new CallContext(Customer)));
+
+            Assert.Equal(StatusCode.FailedPrecondition, ex.StatusCode);
+            Assert.Contains("RequireExpectedRevision", ex.Status.Detail);
+            Assert.Empty(storage.Calls);
+            Assert.Empty(a.Written);
+        }
+
         [Fact]
         public async Task WithSessionAuthOff_StorageIsRefused_BecauseNoCharacterIsVerified()
         {
@@ -76,6 +93,7 @@ namespace OWSTests.Guild
         [InlineData("not_member", StatusCode.PermissionDenied)]
         [InlineData("insufficient_items", StatusCode.FailedPrecondition)]
         [InlineData("insufficient_storage", StatusCode.FailedPrecondition)]
+        [InlineData("inventory_full", StatusCode.FailedPrecondition)]
         [InlineData("bad_request", StatusCode.InvalidArgument)]
         public async Task RepositoryRefusal_MapsToStatus_AndNotifiesNobody(string reason, StatusCode expected)
         {

@@ -37,6 +37,7 @@ namespace OWSData.Models.Composites
         /// "no_inventory" (the character has no bag row),
         /// "insufficient_items" (deposit: the bag holds less than asked),
         /// "insufficient_storage" (withdraw: guild storage holds less than asked),
+        /// "inventory_full" (withdraw: no empty slot below CharInventory.InventorySize for a withdrawn stack),
         /// "storage_full" (deposit: the stored stack would pass int range).
         /// </summary>
         public string ReasonCode { get; set; } = "";

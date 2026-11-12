@@ -124,7 +124,8 @@ namespace OWSTests.Guild
             var users = DispatchProxy.Create<IUsersRepository, UsersRepositoryStub>();
             ((UsersRepositoryStub)(object)users).Session = session;
             return new GuildService(DispatchProxy.Create<ICharactersRepository, UnusedRepository>(), users, new HeaderCustomerGUID(),
-                DispatchProxy.Create<IGuildStorageRepository, UnusedRepository>());
+                DispatchProxy.Create<IGuildStorageRepository, UnusedRepository>(),
+                Microsoft.Extensions.Options.Options.Create(new OWSShared.Options.EconomyOptions()));
         }
 
         private static GetUserSession LiveSession(string characterName) =>

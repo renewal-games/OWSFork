@@ -6,9 +6,12 @@ using Dapper;
 using Grpc.Core;
 using GuildServiceApp.Protos;
 using Npgsql;
+using OWSCharacterPersistence.Requests.Characters;
 using OWSData.Models.Composites;
+using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Implementations.Postgres;
 using OWSShared.Grpc;
+using OWSShared.Implementations;
 using OWSShared.Options;
 using Xunit;
 using static OWSTests.Guild.GuildStorageTestDoubles;
@@ -155,6 +158,112 @@ namespace OWSTests.Database
             Assert.Empty(await world.Repository.GetStoredItems(world.Customer, world.G));
         }
 
+        /// <summary>
+        /// The zone server still holds the pre-transfer bag and saves it afterwards, by each bag-saving path, revision-less
+        /// and with the revision it last saw. With RequireExpectedRevision on (the only setting OWSGuild opens storage
+        /// under) every such save is refused, so a deposit is not re-minted and a withdrawal is not erased.
+        /// </summary>
+        [PostgresTheory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task PreTransferBagSnapshot_CannotOverwriteTheTransfer(bool deposit)
+        {
+            var world = await World.Create(_databases);
+            if (deposit)
+            {
+                await world.PutInBag("A", Potion, 7, slot: 0);
+            }
+            else
+            {
+                await world.Store(Potion, 10);
+            }
+            long before = await world.Revision("A");
+            var snapshot = (await world.Bag("A"))
+                .Select(s => new UpdateCharacterInventory { InSlotNumber = s.Item1, ItemIDTag = s.Item2, Quantity = s.Item3, CustomData = "" })
+                .ToList();
+
+            await world.Send("A", deposit, Potion, deposit ? 5 : 4);
+            int bagAfter = deposit ? 2 : 4;
+            int storedAfter = deposit ? 5 : 6;
+            Assert.Equal(bagAfter, await world.InBag("A", Potion));
+            Assert.Equal(storedAfter, await world.Stored(Potion));
+
+            var required = new EconomyOptions { RequireExpectedRevision = true };
+            foreach (long? sentRevision in new long?[] { null, before })
+            {
+                UpdateCharacterInventoryResponse inventorySave = await world.InventorySave("A", snapshot, sentRevision, required).Handle();
+                UpdateCharacterDataResponse dataSave = await world.DataSave("A", snapshot, sentRevision, required).Handle();
+
+                string expected = sentRevision == null ? "revision_required" : "stale_revision";
+                Assert.Equal(expected, inventorySave.ReasonCode);
+                Assert.Equal(expected, dataSave.ReasonCode);
+                Assert.Equal(bagAfter, await world.InBag("A", Potion));
+                Assert.Equal(storedAfter, await world.Stored(Potion));
+            }
+
+            // A zone server that resyncs to the bumped revision saves normally again.
+            long current = await world.Revision("A");
+            Assert.True(current > before);
+            var resynced = (await world.Bag("A"))
+                .Select(s => new UpdateCharacterInventory { InSlotNumber = s.Item1, ItemIDTag = s.Item2, Quantity = s.Item3, CustomData = "" })
+                .ToList();
+            UpdateCharacterInventoryResponse resyncedSave = await world.InventorySave("A", resynced, current, required).Handle();
+            Assert.True(resyncedSave.Success, resyncedSave.ReasonCode);
+            Assert.Equal(bagAfter, await world.InBag("A", Potion));
+        }
+
+        [PostgresFact]
+        public async Task WithdrawIntoAFullBag_IsRejected_AndNothingMoves()
+        {
+            var world = await World.Create(_databases);
+            await world.SetBagSize("A", 3);
+            await world.PutInBag("A", "Item.Herb", 1, slot: 0);
+            await world.PutInBag("A", "Item.Herb", 1, slot: 1);
+            await world.PutInBag("A", "Item.Herb", 1, slot: 2);
+            await world.PutInBag("A", "Item.Sword", 1, slot: 1000); // equipped: not a bag slot, and no room for one
+            await world.Store(Potion, 10);
+            var bagBefore = await world.Bag("A");
+
+            var ex = await Assert.ThrowsAsync<RpcException>(() => world.Send("A", deposit: false, Potion, 1));
+
+            Assert.Equal(StatusCode.FailedPrecondition, ex.StatusCode);
+            Assert.Equal(10, await world.Stored(Potion));
+            Assert.Equal(bagBefore, await world.Bag("A"));
+        }
+
+        [PostgresFact]
+        public async Task WithdrawThatOnlyPartlyFits_MovesNothing()
+        {
+            var world = await World.Create(_databases);
+            await world.SetBagSize("A", 2);
+            await world.PutInBag("A", "Item.Herb", 1, slot: 0);
+            await world.Store("Item.Elixir", 5);
+            await world.Store(Potion, 10);
+
+            GuildToSend message = StorageMessage(world.Customer, world.G, false, "Item.Elixir", 2);
+            message.GuildBank.GuildStorageItems.Add(new GuildStorageItem { GuildItemId = Potion, GuildItemQuantity = 3, GuildItemCustomData = "" });
+            var ex = await Assert.ThrowsAsync<RpcException>(() =>
+                CreateService(world.Repository, "A").SendGuildMsg(message, new CallContext(world.Customer)));
+
+            Assert.Equal(StatusCode.FailedPrecondition, ex.StatusCode);
+            Assert.Equal(5, await world.Stored("Item.Elixir"));
+            Assert.Equal(10, await world.Stored(Potion));
+            Assert.Equal(new[] { (0, "Item.Herb", 1) }, await world.Bag("A"));
+        }
+
+        [PostgresFact]
+        public async Task DepositNeverTakesEquippedRows()
+        {
+            var world = await World.Create(_databases);
+            await world.PutInBag("A", "Item.Sword", 1, slot: 1000);
+
+            var ex = await Assert.ThrowsAsync<RpcException>(() => world.Send("A", deposit: true, "Item.Sword", 1));
+
+            Assert.Equal(StatusCode.FailedPrecondition, ex.StatusCode);
+            Assert.Equal(new[] { (1000, "Item.Sword", 1) }, await world.Bag("A"));
+            Assert.Equal(0, await world.Stored("Item.Sword"));
+        }
+
         /// <summary>One customer's characters, guilds and bags in the shared migrated database.</summary>
         private sealed class World
         {
@@ -258,6 +367,43 @@ namespace OWSTests.Database
                     SELECT InSlotNumber, ItemIDTag, Quantity FROM CharInventoryItems
                     WHERE CustomerGUID = @Customer AND CharInventoryID = @CharInventoryID ORDER BY InSlotNumber",
                     new { Customer, CharInventoryID = _inventoryIds[character] })).ToArray();
+            }
+
+            public async Task SetBagSize(string character, int size)
+            {
+                await using var connection = new NpgsqlConnection(_connectionString);
+                await connection.ExecuteAsync(
+                    "UPDATE CharInventory SET InventorySize = @Size WHERE CustomerGUID = @Customer AND CharInventoryID = @CharInventoryID",
+                    new { Customer, CharInventoryID = _inventoryIds[character], Size = size });
+            }
+
+            private CharactersRepository Characters() =>
+                new CharactersRepository(Microsoft.Extensions.Options.Options.Create(
+                    new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _connectionString }));
+
+            /// <summary>The zone server's api/Characters/UpdateCharacterInventory save.</summary>
+            public UpdateCharacterInventoryRequest InventorySave(string character, List<UpdateCharacterInventory> bag, long? expectedRevision,
+                EconomyOptions economy)
+            {
+                var request = new UpdateCharacterInventoryRequest { CharacterName = character, Inventory = bag, ExpectedRevision = expectedRevision };
+                request.SetData(Characters(), new HeaderCustomerGUID { CustomerGUID = Customer }, economy);
+                return request;
+            }
+
+            /// <summary>The zone server's periodic api/Characters/UpdateCharacterData autosave.</summary>
+            public UpdateCharacterDataRequest DataSave(string character, List<UpdateCharacterInventory> bag, long? expectedRevision,
+                EconomyOptions economy)
+            {
+                var request = new UpdateCharacterDataRequest
+                {
+                    CharacterName = character,
+                    CharQuests = new List<UpdateCharacterQuest>(),
+                    CharInventory = bag,
+                    CharStats = new List<UpdateCharacterStats>(),
+                    ExpectedRevision = expectedRevision
+                };
+                request.SetData(Characters(), new HeaderCustomerGUID { CustomerGUID = Customer }, economy);
+                return request;
             }
 
             public async Task<long> Revision(string character)
