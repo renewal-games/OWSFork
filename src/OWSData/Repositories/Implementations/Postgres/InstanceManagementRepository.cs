@@ -317,6 +317,13 @@ namespace OWSData.Repositories.Implementations.Postgres
             return output;
         }
 
+        public async Task<int?> GetWorldServerIDForLauncher(Guid customerGUID, Guid launcherGuid)
+        {
+            using var connection = CreateConnection();
+            return await connection.QuerySingleOrDefaultAsync<int?>(PostgresQueries.GetWorldServerSQL,
+                new { CustomerGUID = customerGUID, ZoneServerGUID = launcherGuid });
+        }
+
         public async Task<int> StartWorldServer(Guid customerGUID, string launcherGuid)
         {
             int worldServerId = -1;
