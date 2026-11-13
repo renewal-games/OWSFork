@@ -253,15 +253,23 @@ namespace OWSData.Repositories.Implementations.Postgres
                     transaction: transaction,
                     commandType: CommandType.Text);
 
-                var outputZone = await conn.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetZoneName,
+                // The instance can disappear after the readiness check. Keep it live through the handoff writes.
+                var outputZone = await conn.QuerySingleOrDefaultAsync<Maps>(GenericQueries.GetZoneName + @"
+                    AND MI.Status IN (1, 2)
+                    FOR SHARE OF MI",
                     parameters,
                     transaction: transaction,
                     commandType: CommandType.Text);
 
+                if (string.IsNullOrWhiteSpace(outputZone?.ZoneName))
+                {
+                    throw new InvalidOperationException("The destination map instance is unavailable or has no zone name.");
+                }
+
                 if (outputCharacter?.CharacterId > 0)
                 {
                     parameters.Add("@CharacterID", outputCharacter.CharacterId);
-                    parameters.Add("@ZoneName", outputZone?.ZoneName);
+                    parameters.Add("@ZoneName", outputZone.ZoneName);
 
                     await conn.ExecuteAsync(GenericQueries.RemoveCharacterFromAllInstances,
                         parameters,
