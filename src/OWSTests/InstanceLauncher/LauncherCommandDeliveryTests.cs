@@ -399,6 +399,7 @@ namespace OWSTests.InstanceLauncher
             public List<EventHandler<BasicReturnEventArgs>> ReturnHandlers { get; } = new();
             public List<ulong> Acks { get; } = new();
             public List<(ulong DeliveryTag, bool Requeue)> Nacks { get; } = new();
+            public List<(string Queue, bool AutoAck, IBasicConsumer Consumer)> Consumers { get; } = new();
 
             public static FakeModel Create()
             {
@@ -456,6 +457,10 @@ namespace OWSTests.InstanceLauncher
                     case "BasicNack":
                         Nacks.Add(((ulong)args[0], (bool)args[2]));
                         return null;
+                    case "BasicConsume":
+                        //BasicConsume(queue, autoAck, consumerTag, noLocal, exclusive, arguments, consumer)
+                        Consumers.Add(((string)args[0], (bool)args[1], (IBasicConsumer)args[6]));
+                        return "ctag-" + Consumers.Count;
                     default:
                         return targetMethod.ReturnType.IsValueType && targetMethod.ReturnType != typeof(void)
                             ? Activator.CreateInstance(targetMethod.ReturnType)

@@ -197,7 +197,7 @@ namespace OWSInstanceLauncher
             //container.Register<IOWSInstanceLauncherDataRepository, OWSData.Repositories.Implementations.InMemory.OWSInstanceLauncherDataRepository> (Lifestyle.Singleton);
             container.RegisterSingleton<IOWSInstanceLauncherDataRepository, OWSData.Repositories.Implementations.InMemory.OWSInstanceLauncherDataRepository>();
 
-            //ServerLauncherMQListener runs only once
+            //ServerLauncherMQListener runs until one run succeeds: a run that throws (RabbitMQ unreachable) is retried every 10 seconds
             container.RegisterInstance(new TimedHostedService<IInstanceLauncherJob>.Settings(
                 interval: TimeSpan.FromSeconds(10),
                 runOnce: true,
