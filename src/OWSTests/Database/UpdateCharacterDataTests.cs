@@ -129,6 +129,37 @@ namespace OWSTests.Database
 
         [PostgresTheory]
         [InlineData(SchemaSource.Migrated)]
+        public async Task SourceZoneSavesWhileTheDestinationIsReservedUntilTheHandoff(SchemaSource source)
+        {
+            // A join reserves the destination's row beside the source's; the source keeps saving through the spin-up
+            // wait and is refused only once AddCharacterToMapInstanceByCharName hands the character over.
+            const int destination = OwningZone + 1;
+            Guid customerGUID = await SeedCharacter(source);
+            await using (var connection = new NpgsqlConnection(_databases.ConnectionString(source)))
+            {
+                await connection.ExecuteAsync(@"INSERT INTO CharOnMapInstance (CustomerGUID, CharacterID, MapInstanceID)
+                    SELECT CustomerGUID, CharacterID, @Destination FROM Characters WHERE CustomerGUID = @CustomerGUID",
+                    new { CustomerGUID = customerGUID, Destination = destination });
+            }
+
+            UpdateCharacterDataResponse beforeHandoff = await Request(source, customerGUID, NewQuests("Quest.Second"), NewInventory(), NewStats(), OwningZone).Handle();
+
+            Assert.True(beforeHandoff.Success, beforeHandoff.ErrorMessage);
+            Assert.Equal("", beforeHandoff.ErrorMessage ?? "");
+            Assert.Equal(7, await Stat(source, customerGUID));
+
+            await Characters(source).AddCharacterToMapInstanceByCharName(customerGUID, CharName, destination);
+            var laterStats = new List<UpdateCharacterStats> { new() { StatIdentifier = "BaseLevel", Value = 9 } };
+
+            SuccessAndErrorMessage afterHandoff = await Request(source, customerGUID, NewQuests("Quest.Third"), NewInventory(), laterStats, OwningZone).Handle();
+
+            Assert.Equal("stale_zone", afterHandoff.ErrorMessage);
+            Assert.Equal(7, await Stat(source, customerGUID));
+            Assert.Equal(new[] { "Quest.First", "Quest.Second" }, await Quests(source, customerGUID));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
         public async Task StaleRevisionSkipsBagButSavesQuestsAndStats(SchemaSource source)
         {
             // A shop transaction committed after the zone computed its bag: the bag must not be written back,
@@ -291,6 +322,9 @@ namespace OWSTests.Database
             Assert.Equal(new[] { "NewSword" }, await Items(source, customerGUID));
             Assert.Equal(7, await Stat(source, customerGUID));
         }
+
+        private CharactersRepository Characters(SchemaSource source) =>
+            new(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) }));
 
         private CharacterOwnersRepository Owners(SchemaSource source) =>
             new(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) }));
