@@ -89,6 +89,14 @@ namespace OWSTests.InstanceManagement
             _host = host;
         }
 
+        [Fact]
+        public void Host_RegistersIndependentInstanceCleanup()
+        {
+            Assert.Contains(Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
+                .GetServices<Microsoft.Extensions.Hosting.IHostedService>(_host.Factory.Services),
+                service => service is OWSInstanceManagement.Services.InstanceCleanupWorker);
+        }
+
         private static object AddZoneBody(string mapName) => new
         {
             addOrUpdateZone = new { MapName = mapName, ZoneName = "Zone_" + Guid.NewGuid().ToString("N"), SoftPlayerCap = 10, HardPlayerCap = 20, MapMode = 1, MinutesToShutdownAfterEmpty = 1 }
