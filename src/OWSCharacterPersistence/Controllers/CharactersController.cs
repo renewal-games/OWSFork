@@ -241,7 +241,6 @@ namespace OWSCharacterPersistence.Controllers
         {
             request.SetData(_charactersRepository, _customerGuid);
             SuccessAndErrorMessage result = await request.Handle();
-            await _ownersRepository.EndOwnerSession(_customerGuid.CustomerGUID, request.CharacterName, request.OwnerToken);
             return result;
         }
 

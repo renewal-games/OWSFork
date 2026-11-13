@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using OWSData.Models.Composites;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Interfaces;
@@ -27,12 +27,11 @@ namespace OWSCharacterPersistence.Requests.Characters
 
         public async Task<SuccessAndErrorMessage> Handle()
         {
-            await charactersRepository.PlayerLogout(customerGUID, CharacterName);
+            bool accepted = await charactersRepository.PlayerLogout(customerGUID, CharacterName, OwnerToken);
 
-            SuccessAndErrorMessage output = new SuccessAndErrorMessage();
-            output.Success = true;
-            output.ErrorMessage = "";
-            return output;
+            return accepted
+                ? new SuccessAndErrorMessage { Success = true, ErrorMessage = "" }
+                : new StaleOwnerResult();
         }
     }
 }

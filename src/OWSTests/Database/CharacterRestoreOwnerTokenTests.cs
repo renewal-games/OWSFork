@@ -474,8 +474,7 @@ namespace OWSTests.Database
 
             ClaimCharacterResult claim = await Owners().ClaimByName(customerGUID, name, MapInstanceID);
             Assert.True(claim.Success, claim.ErrorMessage);
-            await Characters().PlayerLogout(customerGUID, name);
-            await Owners().EndOwnerSession(customerGUID, name, claim.OwnerToken);
+            Assert.True(await Characters().PlayerLogout(customerGUID, name, claim.OwnerToken));
 
             return new Restored(customerGUID, characterID, name, claim.OwnerToken, stagingConnectionString, backupClassID);
         }
