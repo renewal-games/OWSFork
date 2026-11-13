@@ -98,8 +98,8 @@ services:
      - OWSAPIPathConfig__InternalCharacterPersistenceApiURL=${InternalCharacterPersistenceApiURL}
      - RabbitMQOptions__RabbitMQHostName=${RabbitMQHostName}
      - RabbitMQOptions__RabbitMQPort=${RabbitMQPort}
-     - RabbitMQOptions__RabbitMQUserName=${RabbitMQUserName}
-     - RabbitMQOptions__RabbitMQPassword=${RabbitMQPassword}
+     - RabbitMQOptions__RabbitMQUserName=${RABBITMQ_DEFAULT_USER:?Set a RabbitMQ application user}
+     - RabbitMQOptions__RabbitMQPassword=${RABBITMQ_DEFAULT_PASS:?Set a unique RabbitMQ password}
      - OWS_SAMSARA_SERVICE_KEY=${OWS_SAMSARA_SERVICE_KEY:-}
     # Internal API (zone spin-up/shutdown): reachable from this host only.
     ports:
@@ -123,8 +123,8 @@ services:
      - OWSAPIPathConfig__InternalCharacterPersistenceApiURL=${InternalCharacterPersistenceApiURL}
      - RabbitMQOptions__RabbitMQHostName=${RabbitMQHostName}
      - RabbitMQOptions__RabbitMQPort=${RabbitMQPort}
-     - RabbitMQOptions__RabbitMQUserName=${RabbitMQUserName}
-     - RabbitMQOptions__RabbitMQPassword=${RabbitMQPassword}
+     - RabbitMQOptions__RabbitMQUserName=${RABBITMQ_DEFAULT_USER:?Set a RabbitMQ application user}
+     - RabbitMQOptions__RabbitMQPassword=${RABBITMQ_DEFAULT_PASS:?Set a unique RabbitMQ password}
     ports:
       - "44323:80"
       - "44324:443"
@@ -146,8 +146,8 @@ services:
      - OWSAPIPathConfig__InternalCharacterPersistenceApiURL=${InternalCharacterPersistenceApiURL}
      - RabbitMQOptions__RabbitMQHostName=${RabbitMQHostName}
      - RabbitMQOptions__RabbitMQPort=${RabbitMQPort}
-     - RabbitMQOptions__RabbitMQUserName=${RabbitMQUserName}
-     - RabbitMQOptions__RabbitMQPassword=${RabbitMQPassword}
+     - RabbitMQOptions__RabbitMQUserName=${RABBITMQ_DEFAULT_USER:?Set a RabbitMQ application user}
+     - RabbitMQOptions__RabbitMQPassword=${RABBITMQ_DEFAULT_PASS:?Set a unique RabbitMQ password}
     ports:
       - "44325:80"
       - "44326:443"

@@ -7,6 +7,10 @@ nav_order: 1
 
 # Docker Setup
 
+Before launching either Compose stack, [configure RabbitMQ credentials](../hosting/rabbitmq.md).
+The broker requires a supplied username and unique password; host launchers need
+the same credentials in their process environment or user secrets.
+
 ## Requirements  
 * Download or clone [OWS](https://github.com/Dartanlla/OWS)
 * Download and install [Visual Studio 2022 Community](https://visualstudio.microsoft.com/downloads/)

@@ -5,14 +5,17 @@ param(
     [string]$LauncherUrl = "http://localhost:18181/",
     [string]$RabbitHost = "localhost",
     [int]$RabbitPort = 5672,
-    [string]$RabbitUser = "dev",
-    [string]$RabbitPassword = "test",
+    [string]$RabbitUser = $env:RABBITMQ_DEFAULT_USER,
+    [string]$RabbitPassword = $env:RABBITMQ_DEFAULT_PASS,
     [int]$TimeoutSeconds = 120,
     [switch]$UseExistingServices,
     [switch]$KeepStartedServices
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($RabbitUser) -or [string]::IsNullOrWhiteSpace($RabbitPassword)) {
+    throw "Set RABBITMQ_DEFAULT_USER/PASS or pass -RabbitUser and -RabbitPassword."
+}
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path (Join-Path $scriptRoot "..\..")).Path

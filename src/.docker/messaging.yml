@@ -6,8 +6,11 @@ services:
     container_name: RabbitMQ
     image: rabbitmq:3.9.0-management-alpine
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:?Set a RabbitMQ application user}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:?Set a unique RabbitMQ password}"
     volumes:
       - messaging:/var/lib/rabbitmq
       - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
