@@ -1,4 +1,5 @@
 using OWSCharacterPersistence.Requests.Characters;
+using OWSCharacterPersistence.Services;
 using OWSData.Models.Composites;
 using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
@@ -48,17 +49,63 @@ namespace OWSTests.CharacterPersistence
         public async Task Inventory_StaleSnapshotWithoutRevision_StillOverwrites_WhenNotRequired()
         {
             // Documents the legacy path the option exists to close; turn the option on once the zone
-            // server sends ExpectedRevision on every bag save.
+            // server sends ExpectedRevision on every bag save. Until then each such save is counted, so
+            // the economy_revisionless_saves warning shows when it is safe to.
             FakeEconomy economy = FakeEconomy.Create(revision: 4, bag: "potion", gold: 100);
             List<UpdateCharacterInventory> prePurchaseBag = economy.Bag;
             economy.CommitPurchase(item: "sword", price: 60);
+            var monitor = new RevisionlessSaveMonitor(Serilog.Core.Logger.None);
 
             var request = new UpdateCharacterInventoryRequest { CharacterName = CharName, Inventory = prePurchaseBag };
-            request.SetData(economy.Repository, new HeaderCustomerGUID(), Legacy);
+            request.SetData(economy.Repository, new HeaderCustomerGUID(), Legacy, monitor);
             UpdateCharacterInventoryResponse response = await request.Handle();
 
             Assert.True(response.Success);
             Assert.DoesNotContain(economy.Bag, i => i.ItemIDTag == "sword");
+            Assert.Equal(1, monitor.Total);
+        }
+
+        [Fact]
+        public async Task EveryRevisionlessBagAndWalletSave_IsCounted()
+        {
+            FakeEconomy economy = FakeEconomy.Create(revision: 4, bag: "potion", gold: 100);
+            var monitor = new RevisionlessSaveMonitor(Serilog.Core.Logger.None);
+
+            var inventory = new UpdateCharacterInventoryRequest { CharacterName = CharName, Inventory = economy.Bag, ExpectedRevision = -1 };
+            inventory.SetData(economy.Repository, new HeaderCustomerGUID(), Legacy, monitor);
+            await inventory.Handle();
+            var currency = new UpdateCharacterCurrencyRequest { CharacterName = CharName, Gold = 100 };
+            currency.SetData(economy.Repository, new HeaderCustomerGUID(), Required, monitor);
+            await currency.Handle();
+            var data = new UpdateCharacterDataRequest { CharacterName = CharName, CharQuests = NoQuests, CharInventory = economy.Bag, CharStats = NoStats };
+            data.SetData(economy.Repository, new HeaderCustomerGUID(), Legacy, monitor);
+            await data.Handle();
+            Assert.Equal(3, monitor.Total);
+
+            // On the protocol: not counted.
+            var guarded = new UpdateCharacterInventoryRequest { CharacterName = CharName, Inventory = economy.Bag, ExpectedRevision = economy.Revision };
+            guarded.SetData(economy.Repository, new HeaderCustomerGUID(), Required, monitor);
+            Assert.True((await guarded.Handle()).Success);
+            Assert.Equal(3, monitor.Total);
+        }
+
+        [Fact]
+        public async Task Currency_StaleRevision_IsAFailure()
+        {
+            // A buyer whose Purchase response was lost still holds its pre-purchase wallet. Reported as a success,
+            // the refusal let a caller adopt NewEconomyRevision and write that wallet again, past the guard.
+            FakeEconomy economy = FakeEconomy.Create(revision: 4, bag: "potion", gold: 100);
+            economy.CommitPurchase(item: "sword", price: 60);
+
+            var request = new UpdateCharacterCurrencyRequest { CharacterName = CharName, Gold = 100, ExpectedRevision = 4 };
+            request.SetData(economy.Repository, new HeaderCustomerGUID(), Required);
+            UpdateCharacterCurrencyResponse response = await request.Handle();
+
+            Assert.False(response.Success);
+            Assert.Equal("stale_revision", response.ReasonCode);
+            Assert.Equal(5, response.NewEconomyRevision);
+            Assert.Equal(40, response.AuthoritativeGold);
+            Assert.Equal(40, economy.Gold);
         }
 
         [Fact]
@@ -259,7 +306,7 @@ namespace OWSTests.CharacterPersistence
             {
                 if (expectedRevision.HasValue && expectedRevision.Value != Revision)
                 {
-                    return new UpdateCharacterCurrencyResponse { Success = true, ReasonCode = "stale_revision", NewEconomyRevision = Revision, AuthoritativeGold = Gold };
+                    return new UpdateCharacterCurrencyResponse { Success = false, ErrorMessage = "stale_revision", ReasonCode = "stale_revision", NewEconomyRevision = Revision, AuthoritativeGold = Gold };
                 }
                 Gold = gold;
                 Revision++;

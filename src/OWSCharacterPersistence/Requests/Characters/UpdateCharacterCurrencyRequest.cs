@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using OWSCharacterPersistence.Services;
 using OWSData.Models.Composites;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Interfaces;
@@ -25,12 +26,15 @@ namespace OWSCharacterPersistence.Requests.Characters
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
         private EconomyOptions economyOptions;
+        private RevisionlessSaveMonitor revisionlessSaves;
 
-        public void SetData(ICharactersRepository charactersRepository, IHeaderCustomerGUID customerGuid, EconomyOptions economyOptions)
+        public void SetData(ICharactersRepository charactersRepository, IHeaderCustomerGUID customerGuid, EconomyOptions economyOptions,
+            RevisionlessSaveMonitor revisionlessSaves = null)
         {
             this.charactersRepository = charactersRepository;
             customerGUID = customerGuid.CustomerGUID;
             this.economyOptions = economyOptions;
+            this.revisionlessSaves = revisionlessSaves ?? RevisionlessSaveMonitor.Shared;
         }
 
         public async Task<UpdateCharacterCurrencyResponse> Handle()
@@ -47,6 +51,10 @@ namespace OWSCharacterPersistence.Requests.Characters
                 };
             }
 
+            if (ExpectedRevision == null)
+            {
+                revisionlessSaves.Record(RevisionlessSaveMonitor.Currency, economyOptions.RequireExpectedRevision);
+            }
             if (ExpectedRevision == null && economyOptions.RequireExpectedRevision)
             {
                 return new UpdateCharacterCurrencyResponse
