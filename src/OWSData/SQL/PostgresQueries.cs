@@ -534,6 +534,9 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
         FROM character_check cc
         LEFT JOIN action_house_items ahi ON 1=1;";
 
+        // True when another instance holds the character and the caller holds no row of its own. A join reserves
+        // the destination's row while the source's stays, so until AddCharacterToMapInstanceByCharName swaps them
+        // the source still owns the character and its saves land.
         public static string IsCharacterOwnedByOtherZoneInstance = @"
             SELECT EXISTS (
                 SELECT 1
@@ -544,6 +547,12 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
                 WHERE C.CustomerGUID = @CustomerGUID
                   AND C.CharName = @CharName
                   AND COMI.MapInstanceID <> @CallerZoneInstanceID
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM CharOnMapInstance Own
+                      WHERE Own.CustomerGUID = COMI.CustomerGUID
+                        AND Own.CharacterID = COMI.CharacterID
+                        AND Own.MapInstanceID = @CallerZoneInstanceID)
             );";
 
         // InstanceId goes back to UE in its own 32-digit form (FGuid Digits).

@@ -173,6 +173,41 @@ namespace OWSTests.Database
             Assert.Equal(before, await StoredValue(kind, character));
         }
 
+        // A join reserves the destination's CharOnMapInstance row while the source's stays. The source still owns the
+        // character through the spin-up wait, so its saves land until AddCharacterToMapInstanceByCharName hands it over.
+        [PostgresTheory]
+        [InlineData("stats")]
+        [InlineData("quests")]
+        public async Task StandaloneSave_FromTheSourceZoneWhileTheDestinationIsReserved_LandsUntilTheHandoff(string kind)
+        {
+            Restored character = await SeedLoggedOutCharacter("Reserved" + kind);
+            int destination = MapInstanceID + 1;
+            await using var live = new NpgsqlConnection(LiveConnectionString);
+            await live.ExecuteAsync(@"INSERT INTO CharOnMapInstance (CustomerGUID, CharacterID, MapInstanceID)
+                VALUES (@CustomerGUID, @CharacterID, @MapInstanceID), (@CustomerGUID, @CharacterID, @Destination)",
+                new { character.CustomerGUID, character.CharacterID, MapInstanceID, Destination = destination });
+            string before = await StoredValue(kind, character);
+
+            Assert.Null(await SaveFromZone(kind, character, MapInstanceID));
+            string saved = await StoredValue(kind, character);
+            Assert.NotEqual(before, saved);
+
+            await Characters().AddCharacterToMapInstanceByCharName(character.CustomerGUID, character.Name, destination);
+            await live.ExecuteAsync(@"UPDATE CharStats SET Value = @BackupLevel WHERE CustomerGUID = @CustomerGUID
+                AND CharacterID = @CharacterID AND StatIdentifier = 'BaseLevel';
+                UPDATE CharQuests SET QuestJournalTagContainer = @BackupValue WHERE CustomerGUID = @CustomerGUID
+                AND CharacterID = @CharacterID AND QuestIDTag = 'Quest1'",
+                new { character.CustomerGUID, character.CharacterID, BackupLevel, BackupValue });
+            string afterHandoff = await StoredValue(kind, character);
+
+            Assert.Equal("stale_zone", await SaveFromZone(kind, character, MapInstanceID));
+            Assert.Equal(afterHandoff, await StoredValue(kind, character));
+        }
+
+        private Task<string> SaveFromZone(string kind, Restored character, int zoneInstanceID) => kind == "stats"
+            ? Characters().UpdateCharacterStats(character.CustomerGUID, character.Name, LateStats, character.Token, zoneInstanceID)
+            : Characters().UpdateCharacterQuests(character.CustomerGUID, character.Name, LateQuests, character.Token, zoneInstanceID);
+
         [PostgresFact]
         public async Task StandaloneSave_ForAnUnknownCharacter_WritesNothing()
         {

@@ -845,10 +845,11 @@ namespace OWSData.Repositories.Implementations.Postgres
             return outputObject.ServerIP;
         }
 
-        // A zone server that no longer owns this character must not write to it. The handoff swaps the
-        // CharOnMapInstance row inside AddCharacterToMapInstanceByCharName's transaction, so this flips
-        // the moment the destination takes ownership. A character owned by nobody (logout, instance
-        // cleanup) is still writable, so a late save from the last zone is not lost.
+        // A zone server that no longer owns this character must not write to it. A join only reserves the
+        // destination's CharOnMapInstance row beside the source's, and a zone that still has its own row is
+        // not refused. The handoff deletes the source's row inside AddCharacterToMapInstanceByCharName's
+        // transaction, so this flips the moment the destination takes ownership. A character owned by nobody
+        // (logout, instance cleanup) is still writable, so a late save from the last zone is not lost.
         private static async Task<bool> IsStaleZoneWriteUnderLock(DbConnection conn, DbTransaction tx, Guid customerGUID, string characterName, int? callerZoneInstanceId)
         {
             if (!callerZoneInstanceId.HasValue || callerZoneInstanceId.Value <= 0)
