@@ -260,6 +260,104 @@ namespace OWSTests.Database
             throw new TimeoutException("The save never blocked on the character row lock.");
         }
 
+        [PostgresTheory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Logout_AfterControllerCheck_PreservesDestination(bool claimDestination)
+        {
+            const SchemaSource source = SchemaSource.Migrated;
+            Guid customerGUID = Guid.NewGuid();
+            const string name = "LogoutRace";
+            await SeedCharacterWithItem(source, customerGUID, name, "Sword");
+            var owners = Owners(source);
+            Guid token = (await owners.ClaimByName(customerGUID, name, MapInstanceID)).OwnerToken;
+            await Execute(source, @"INSERT INTO CharOnMapInstance (CustomerGUID, CharacterID, MapInstanceID)
+                SELECT CustomerGUID, CharacterID, @MapInstanceID FROM Characters WHERE CustomerGUID = @CustomerGUID",
+                new { CustomerGUID = customerGUID, MapInstanceID });
+
+            // The strict controller check succeeds. Pause before invoking the handler while the join proceeds.
+            Assert.False(await owners.IsStaleOwnerWrite(customerGUID, name, token, allowPreviousOwner: false));
+            await Execute(source, @"INSERT INTO CharOnMapInstance (CustomerGUID, CharacterID, MapInstanceID)
+                SELECT CustomerGUID, CharacterID, @Destination FROM Characters WHERE CustomerGUID = @CustomerGUID",
+                new { CustomerGUID = customerGUID, Destination = MapInstanceID + 1 });
+            Guid expectedToken = token;
+            if (claimDestination)
+            {
+                await Characters(source).AddCharacterToMapInstanceByCharName(customerGUID, name, MapInstanceID + 1);
+                var claim = await owners.ClaimByName(customerGUID, name, MapInstanceID + 1);
+                Assert.True(claim.Success, claim.ErrorMessage);
+                Assert.True(claim.HandoverSeconds > 0); // Previous owners must be refused even during handover.
+                expectedToken = claim.OwnerToken;
+            }
+
+            var request = new OWSCharacterPersistence.Requests.Characters.PlayerLogoutRequest
+                { CharacterName = name, OwnerToken = token };
+            request.SetData(Characters(source), new OWSShared.Implementations.HeaderCustomerGUID { CustomerGUID = customerGUID });
+            var result = await request.Handle();
+            Assert.Equal(!claimDestination, result.Success);
+            Assert.Equal(claimDestination ? "stale_owner" : "", result.ErrorMessage);
+
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            Assert.Equal(new[] { MapInstanceID + 1 }, (await connection.QueryAsync<int>(
+                "SELECT MapInstanceID FROM CharOnMapInstance WHERE CustomerGUID = @CustomerGUID ORDER BY MapInstanceID",
+                new { CustomerGUID = customerGUID })).ToArray());
+            Assert.Equal(expectedToken, await connection.ExecuteScalarAsync<Guid>(
+                "SELECT OwnerToken FROM CharacterOwners WHERE CustomerGUID = @CustomerGUID", new { CustomerGUID = customerGUID }));
+            Assert.Equal(claimDestination, await connection.ExecuteScalarAsync<bool>(
+                "SELECT LastConfirmedAt IS NOT NULL FROM CharacterOwners WHERE CustomerGUID = @CustomerGUID", new { CustomerGUID = customerGUID }));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task Logout_WaitingOnCharacterLock_RechecksCommittedOwner(SchemaSource source)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            const string name = "LogoutLock";
+            await SeedCharacterWithItem(source, customerGUID, name, "Sword");
+            Guid token = (await Owners(source).ClaimByName(customerGUID, name, MapInstanceID)).OwnerToken;
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            await connection.OpenAsync();
+            await using var tx = await connection.BeginTransactionAsync();
+            await connection.ExecuteAsync("SELECT CharacterID FROM Characters WHERE CustomerGUID = @CustomerGUID FOR UPDATE",
+                new { CustomerGUID = customerGUID }, tx);
+            Guid destinationToken = Guid.NewGuid();
+            await connection.ExecuteAsync(@"UPDATE CharacterOwners SET OwnerToken = @Token, MapInstanceID = 2
+                WHERE CustomerGUID = @CustomerGUID;
+                INSERT INTO CharOnMapInstance (CustomerGUID, CharacterID, MapInstanceID)
+                SELECT CustomerGUID, CharacterID, 2 FROM Characters WHERE CustomerGUID = @CustomerGUID",
+                new { CustomerGUID = customerGUID, Token = destinationToken }, tx);
+            Task<bool> logout = Characters(source).PlayerLogout(customerGUID, name, token);
+            await WaitUntilBlockedOnLock(source, logout);
+            await tx.CommitAsync();
+            Assert.False(await logout);
+            Assert.Equal(1, await connection.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM CharOnMapInstance WHERE CustomerGUID = @CustomerGUID", new { CustomerGUID = customerGUID }));
+            Assert.Equal(destinationToken, await connection.ExecuteScalarAsync<Guid>(
+                "SELECT OwnerToken FROM CharacterOwners WHERE CustomerGUID = @CustomerGUID", new { CustomerGUID = customerGUID }));
+        }
+
+        [PostgresFact]
+        public async Task Logout_MissingTokenCannotDeleteOwnedMembership_UnknownNameIsANoop()
+        {
+            const SchemaSource source = SchemaSource.Migrated;
+            Guid customerGUID = Guid.NewGuid();
+            const string name = "TokenlessLogout";
+            await SeedCharacterWithItem(source, customerGUID, name, "Sword");
+            Guid token = (await Owners(source).ClaimByName(customerGUID, name, MapInstanceID)).OwnerToken;
+            await Execute(source, @"INSERT INTO CharOnMapInstance (CustomerGUID, CharacterID, MapInstanceID)
+                SELECT CustomerGUID, CharacterID, @MapInstanceID FROM Characters WHERE CustomerGUID = @CustomerGUID",
+                new { CustomerGUID = customerGUID, MapInstanceID });
+            Assert.False(await Characters(source).PlayerLogout(customerGUID, name));
+            Assert.True(await Characters(source).PlayerLogout(customerGUID, "Unknown", token));
+            Assert.True(await Characters(source).PlayerLogout(customerGUID, name, token));
+            Assert.True(await Characters(source).PlayerLogout(customerGUID, name, token)); // Retry is harmless.
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            Assert.Equal(0, await connection.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM CharOnMapInstance WHERE CustomerGUID = @CustomerGUID", new { CustomerGUID = customerGUID }));
+            Assert.False(await connection.ExecuteScalarAsync<bool>(
+                "SELECT LastConfirmedAt IS NOT NULL FROM CharacterOwners WHERE CustomerGUID = @CustomerGUID", new { CustomerGUID = customerGUID }));
+        }
+
         private async Task<string[]> BagItems(SchemaSource source, Guid customerGUID, string charName)
         {
             await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));

@@ -31,7 +31,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 WHERE CustomerGUID = @CustomerGUID AND CharName = @CharacterName";
 
         // Serializes the claim with the inventory and currency saves, which lock the same row.
-        private const string LockCharacterSql = @"SELECT CharacterID FROM Characters
+        internal const string LockCharacterSql = @"SELECT CharacterID FROM Characters
                 WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID FOR UPDATE";
 
         private const string CurrentOwnerSql = @"SELECT OwnerToken,
@@ -86,7 +86,7 @@ namespace OWSData.Repositories.Implementations.Postgres
         internal const string StaleByIdSql = @"SELECT EXISTS (SELECT 1 FROM CharacterOwners CO
                 WHERE CO.CustomerGUID = @CustomerGUID AND CO.CharacterID = @CharacterID AND " + NotOwnerSql + ")";
 
-        private const string EndOwnerSessionSql = @"UPDATE CharacterOwners CO SET LastConfirmedAt = NULL
+        internal const string EndOwnerSessionSql = @"UPDATE CharacterOwners CO SET LastConfirmedAt = NULL
                 FROM Characters C
                 WHERE C.CustomerGUID = @CustomerGUID AND C.CharName = @CharacterName
                   AND CO.CustomerGUID = C.CustomerGUID AND CO.CharacterID = C.CharacterID AND CO.OwnerToken = @OwnerToken::uuid";
