@@ -6,9 +6,11 @@ using Microsoft.AspNetCore.Mvc;
 using Npgsql;
 using OWSData.Models;
 using OWSData.Models.Composites;
+using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Implementations.Postgres;
 using OWSInstanceManagement.Requests.Instance;
 using OWSShared.Implementations;
+using OWSShared.Messages;
 using OWSShared.Options;
 using Xunit;
 
@@ -70,19 +72,72 @@ namespace OWSTests.Database
             Assert.Equal(ShuttingDownStatus, await Status(source, customerGUID, zoneInstanceID));
         }
 
+        //No launcher can receive the command (unroutable, or nothing was sent), so nobody will complete the shutdown: the
+        //instance goes back to ready and joins use it again.
         [PostgresTheory]
         [InlineData(SchemaSource.SetupSql)]
         [InlineData(SchemaSource.Migrated)]
-        public async Task ShutDown_FailedPublishRestoresStatus(SchemaSource source)
+        public async Task ShutDown_PublishThatCertainlyQueuedNothing_RestoresStatus(SchemaSource source)
         {
             Guid customerGUID = Guid.NewGuid();
-            int zoneInstanceID = await SeedMapInstance(source, customerGUID, worldServerID: 7, ReadyStatus);
-            var request = new RecordingShutDownRequest { WorldServerID = 7, ZoneInstanceID = zoneInstanceID, PublishFails = true };
+            (int worldServerID, int zoneInstanceID) = await SeedRoutableInstance(source, customerGUID, "Joiner");
+            var request = new RecordingShutDownRequest { WorldServerID = worldServerID, ZoneInstanceID = zoneInstanceID, PublishFails = true };
 
             SuccessAndErrorMessage result = await Handle(request, source, customerGUID);
 
             Assert.False(result.Success);
+            Assert.Empty(request.PublishedTo);
             Assert.Equal(ReadyStatus, await Status(source, customerGUID, zoneInstanceID));
+            JoinMapByCharName join = await Characters(source).JoinMapByCharName(customerGUID, "Joiner", RoutableZoneName, playerGroupType: 0);
+            Assert.True(join.Success, join.ErrorMessage);
+            Assert.Equal(zoneInstanceID, join.MapInstanceID);
+        }
+
+        //The real publish path: a broker that refuses the connection received nothing, which must count as certainly not queued.
+        [PostgresTheory]
+        [InlineData(SchemaSource.SetupSql)]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task ShutDown_UnreachableBroker_RestoresStatus(SchemaSource source)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            int zoneInstanceID = await SeedMapInstance(source, customerGUID, worldServerID: 7, ReadyStatus);
+            // Nothing listens on port 1: the connection fails before anything is published.
+            var request = new ShutDownServerInstanceRequest { WorldServerID = 7, ZoneInstanceID = zoneInstanceID };
+            var rabbitMQ = new RabbitMQOptions { RabbitMQHostName = "127.0.0.1", RabbitMQPort = 1, RabbitMQUserName = "guest", RabbitMQPassword = "guest" };
+
+            SuccessAndErrorMessage result = await Handle(request, source, customerGUID, rabbitMQ);
+
+            Assert.False(result.Success);
+            Assert.Equal(ReadyStatus, await Status(source, customerGUID, zoneInstanceID));
+        }
+
+        //#216: the broker queued the shutdown and then the confirm was lost. The launcher may still stop the process and
+        //complete the shutdown, so the row must stay at status 3: joins must not be routed to it, and the late
+        //CompleteZoneInstanceShutdown must still find it shutting down.
+        [PostgresTheory]
+        [InlineData(SchemaSource.SetupSql, LostConfirm.TimedOut)]
+        [InlineData(SchemaSource.Migrated, LostConfirm.TimedOut)]
+        [InlineData(SchemaSource.SetupSql, LostConfirm.ConnectionLost)]
+        [InlineData(SchemaSource.Migrated, LostConfirm.ConnectionLost)]
+        public async Task ShutDown_WhoseConfirmWasLost_KeepsTheInstanceShuttingDown(SchemaSource source, LostConfirm lostConfirm)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            (int worldServerID, int zoneInstanceID) = await SeedRoutableInstance(source, customerGUID, "Joiner");
+            var request = new RecordingShutDownRequest { WorldServerID = worldServerID, ZoneInstanceID = zoneInstanceID, ConfirmLost = lostConfirm };
+
+            SuccessAndErrorMessage result = await Handle(request, source, customerGUID);
+
+            Assert.False(result.Success);
+            Assert.Equal(new[] { worldServerID }, request.PublishedTo);
+            Assert.Equal(ShuttingDownStatus, await Status(source, customerGUID, zoneInstanceID));
+
+            JoinMapByCharName join = await Characters(source).JoinMapByCharName(customerGUID, "Joiner", RoutableZoneName, playerGroupType: 0);
+            Assert.True(join.Success, join.ErrorMessage);
+            Assert.NotEqual(zoneInstanceID, join.MapInstanceID);
+
+            // The launcher got the command after all, stopped the server and reports it.
+            SuccessAndErrorMessage completed = await Repository(source).CompleteZoneInstanceShutdown(customerGUID, zoneInstanceID);
+            Assert.True(completed.Success, completed.ErrorMessage);
         }
 
         //#173: the launcher decides an idle shutdown from a player count that can be a monitor tick old. A player routed to
@@ -281,9 +336,9 @@ namespace OWSTests.Database
             Assert.Null(await Repository(source).GetZoneInstanceForSpinUp(Guid.NewGuid(), zoneInstanceID));
         }
 
-        private async Task<SuccessAndErrorMessage> Handle(RecordingShutDownRequest request, SchemaSource source, Guid customerGUID)
+        private async Task<SuccessAndErrorMessage> Handle(ShutDownServerInstanceRequest request, SchemaSource source, Guid customerGUID, RabbitMQOptions rabbitMQ = null)
         {
-            request.SetData(Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions()), Repository(source),
+            request.SetData(Microsoft.Extensions.Options.Options.Create(rabbitMQ ?? new RabbitMQOptions()), Repository(source),
                 new HeaderCustomerGUID { CustomerGUID = customerGUID });
 
             IActionResult result = await request.Handle();
@@ -292,7 +347,46 @@ namespace OWSTests.Database
         }
 
         private InstanceManagementRepository Repository(SchemaSource source) =>
-            new(Microsoft.Extensions.Options.Options.Create(new StorageOptions { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) }));
+            new(Microsoft.Extensions.Options.Options.Create(Storage(source)));
+
+        private CharactersRepository Characters(SchemaSource source) =>
+            new(Microsoft.Extensions.Options.Options.Create(Storage(source)));
+
+        private StorageOptions Storage(SchemaSource source) =>
+            new() { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) };
+
+        private const string RoutableZoneName = "ShutdownRoutingZone";
+
+        //A ready, heartbeating public instance on a live launcher, which a join by charName for RoutableZoneName picks.
+        private async Task<(int WorldServerID, int ZoneInstanceID)> SeedRoutableInstance(SchemaSource source, Guid customerGUID, string charName)
+        {
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            int mapID = await connection.ExecuteScalarAsync<int>(
+                @"INSERT INTO Maps (CustomerGUID, MapName, Width, Height, ZoneName)
+                  VALUES (@CustomerGUID, @ZoneName, 1, 1, @ZoneName)
+                  RETURNING MapID",
+                new { CustomerGUID = customerGUID, ZoneName = RoutableZoneName });
+            int worldServerID = await connection.ExecuteScalarAsync<int>(
+                @"INSERT INTO WorldServers (CustomerGUID, ServerIP, MaxNumberOfInstances, ActiveStartTime, ServerStatus, StartingMapInstancePort, ServerRegion, LastHeartbeat)
+                  VALUES (@CustomerGUID, '10.0.0.1', 10, NOW(), 1, 7778, @ServerRegion, NOW())
+                  RETURNING WorldServerID",
+                new { CustomerGUID = customerGUID, ServerRegion = ServerRegions.Default });
+            int zoneInstanceID = await connection.ExecuteScalarAsync<int>(
+                @"INSERT INTO MapInstances (CustomerGUID, WorldServerID, MapID, Port, Status, LastUpdateFromServer)
+                  VALUES (@CustomerGUID, @WorldServerID, @MapID, 7778, @Status, NOW())
+                  RETURNING MapInstanceID",
+                new { CustomerGUID = customerGUID, WorldServerID = worldServerID, MapID = mapID, Status = ReadyStatus });
+
+            // The two schemas disagree on Characters: setup.sql has required Email and stat columns the migrated table dropped.
+            string characterSql = source == SchemaSource.SetupSql
+                ? @"INSERT INTO Characters (CustomerGUID, Email, CharName, MapName, X, Y, Z, Perception, Acrobatics, Climb, Stealth, ClassID)
+                    VALUES (@CustomerGUID, '', @CharName, @ZoneName, 0, 0, 0, 0, 0, 0, 0, 1)"
+                : @"INSERT INTO Characters (CustomerGUID, CharName, MapName, X, Y, Z, ClassID)
+                    VALUES (@CustomerGUID, @CharName, @ZoneName, 0, 0, 0, 1)";
+            await connection.ExecuteAsync(characterSql, new { CustomerGUID = customerGUID, CharName = charName, ZoneName = RoutableZoneName });
+
+            return (worldServerID, zoneInstanceID);
+        }
 
         private async Task<int> SeedMapInstance(SchemaSource source, Guid customerGUID, int worldServerID, int status)
         {
@@ -346,10 +440,21 @@ namespace OWSTests.Database
                 new { CustomerGUID = customerGUID, MapInstanceID = zoneInstanceID });
         }
 
+        public enum LostConfirm
+        {
+            None,
+            TimedOut,
+            ConnectionLost
+        }
+
         /// <summary>Records where the shutdown would be published instead of talking to RabbitMQ.</summary>
         private sealed class RecordingShutDownRequest : ShutDownServerInstanceRequest
         {
+            //Fails before anything reaches the broker, as LauncherCommandChannel reports an unreachable broker or an unroutable command.
             public bool PublishFails { get; set; }
+
+            //Reaches the broker, so the launcher may receive it, and then the confirm is lost this way.
+            public LostConfirm ConfirmLost { get; set; }
 
             public List<int> PublishedTo { get; } = new();
 
@@ -357,10 +462,18 @@ namespace OWSTests.Database
             {
                 if (PublishFails)
                 {
-                    throw new InvalidOperationException("RabbitMQ is unreachable.");
+                    throw new LauncherCommandNotDeliveredException("RabbitMQ is unreachable.", new InvalidOperationException("connection refused"), certainlyNotQueued: true);
                 }
 
                 PublishedTo.Add(worldServerID);
+
+                switch (ConfirmLost)
+                {
+                    case LostConfirm.TimedOut:
+                        throw new LauncherCommandNotDeliveredException("RabbitMQ did not confirm the command.", new TimeoutException("no confirm"), certainlyNotQueued: false);
+                    case LostConfirm.ConnectionLost:
+                        throw new LauncherCommandNotDeliveredException("RabbitMQ did not confirm the command.", new System.IO.IOException("connection lost"), certainlyNotQueued: false);
+                }
             }
         }
     }

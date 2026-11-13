@@ -78,10 +78,26 @@ namespace OWSInstanceManagement.Requests.Instance
             }
             catch (Exception ex)
             {
-                //Nobody will complete the shutdown, and status 3 stops the server's heartbeat from updating the row.
-                //Put the previous status back so the instance stays usable and a later shutdown can be retried.
-                Log.Error(ex, $"ShutDownServerInstance - Could not publish the shutdown of Zone Instance {ZoneInstanceID} to World Server {zoneInstance.WorldServerID}.");
+                bool certainlyNotQueued = LauncherCommandChannel.CertainlyNotQueued(ex);
+                Log.Error(ex, $"ShutDownServerInstance - Could not confirm the shutdown of Zone Instance {ZoneInstanceID} to World Server {zoneInstance.WorldServerID} (certainly not queued: {certainlyNotQueued}).");
 
+                if (!certainlyNotQueued)
+                {
+                    //The command may still be queued (a confirm that timed out or was lost with the connection), so the launcher
+                    //may yet stop the process and call CompleteZoneInstanceShutdown, which needs status 3. Putting the old status
+                    //back would route joins to a server about to die and make that completion fail. If the command really was
+                    //lost, status 3 stops the heartbeat from refreshing the row, so the health monitor sees it go stale and
+                    //sends the shutdown again.
+                    return new OkObjectResult(new SuccessAndErrorMessage()
+                    {
+                        Success = false,
+                        ErrorMessage = $"Could not confirm the shutdown of Zone Instance {ZoneInstanceID}; it may still be delivered, so the instance stays shutting down: {ex.Message}"
+                    });
+                }
+
+                //No launcher can receive the command, so nobody will complete the shutdown, and status 3 stops the server's
+                //heartbeat from updating the row. Put the previous status back so the instance stays usable and a later
+                //shutdown can be retried.
                 if (zoneInstance.Status != 3)
                 {
                     await _instanceMangementRepository.SetZoneInstanceStatus(CustomerGUID, ZoneInstanceID, zoneInstance.Status);
@@ -98,9 +114,9 @@ namespace OWSInstanceManagement.Requests.Instance
         }
 
         //Returns only once RabbitMQ confirmed the command reached the launcher queue for worldServerID; throws otherwise.
+        //A failure to connect or open a channel is reported as certainly not queued, since nothing was sent.
         protected virtual void PublishShutDownMessage(int worldServerID)
         {
-            //Send the servershutdown message to RabbitMQ
             ConnectionFactory factory = new()
             {
                 HostName = _rabbitMQOptions.Value.RabbitMQHostName,
@@ -109,19 +125,13 @@ namespace OWSInstanceManagement.Requests.Instance
                 Password = _rabbitMQOptions.Value.RabbitMQPassword
             };
 
-            using (var connection = factory.CreateConnection())
+            MQShutDownServerMessage serverShutDownMessage = new()
             {
-                using (var channel = connection.CreateModel())
-                {
-                    MQShutDownServerMessage serverShutDownMessage = new()
-                    {
-                        CustomerGUID = CustomerGUID,
-                        ZoneInstanceID = ZoneInstanceID
-                    };
+                CustomerGUID = CustomerGUID,
+                ZoneInstanceID = ZoneInstanceID
+            };
 
-                    LauncherCommandChannel.Publish(channel, LauncherCommandChannel.ShutDownExchange, worldServerID, serverShutDownMessage.Serialize());
-                }
-            }
+            LauncherCommandChannel.ConnectAndPublish(factory, LauncherCommandChannel.ShutDownExchange, worldServerID, serverShutDownMessage.Serialize());
         }
     }
 }
