@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using OWSCharacterPersistence.Services;
 using OWSData.Models.Composites;
 using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
@@ -35,12 +36,15 @@ namespace OWSCharacterPersistence.Requests.Characters
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
         private EconomyOptions economyOptions;
+        private RevisionlessSaveMonitor revisionlessSaves;
 
-        public void SetData(ICharactersRepository charactersRepository, IHeaderCustomerGUID customerGuid, EconomyOptions economyOptions)
+        public void SetData(ICharactersRepository charactersRepository, IHeaderCustomerGUID customerGuid, EconomyOptions economyOptions,
+            RevisionlessSaveMonitor revisionlessSaves = null)
         {
             this.charactersRepository = charactersRepository;
             customerGUID = customerGuid.CustomerGUID;
             this.economyOptions = economyOptions;
+            this.revisionlessSaves = revisionlessSaves ?? RevisionlessSaveMonitor.Shared;
         }
 
         public async Task<UpdateCharacterDataResponse> Handle()
@@ -55,6 +59,10 @@ namespace OWSCharacterPersistence.Requests.Characters
                 // guard (ExpectedRevision / RequireExpectedRevision) refuses only the bag, as it did when
                 // these were separate saves: quests and stats are not economy state and still commit.
                 long? expectedRevision = ExpectedRevision >= 0 ? ExpectedRevision : null;
+                if (expectedRevision == null)
+                {
+                    revisionlessSaves.Record(RevisionlessSaveMonitor.CharacterData, economyOptions.RequireExpectedRevision);
+                }
                 UpdateCharacterDataResponse result = await charactersRepository.UpdateCharacterData(customerGUID, CharacterName,
                     CharQuests, CharInventory, CharStats, OwnerToken, ZoneInstanceID, expectedRevision, economyOptions.RequireExpectedRevision);
 

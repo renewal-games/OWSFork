@@ -91,6 +91,14 @@ so the zone server must send it rather than omit it. Rollout:
    and on `stale_revision` resyncs and recomputes rather than resending.
 2. Then set `RequireExpectedRevision` to `true`. Turning it on first rejects every autosave.
 
+CharacterPersistence logs every save that omits `ExpectedRevision` as the
+`economy_revisionless_saves` warning: the first at once, then one summary per five minutes with
+counts per save (inventory, currency, characterData). Step 2 is safe once that warning stops
+appearing with the zone server on the step-1 build. A wallet save refused `stale_revision` answers
+`Success = false` (as the bag save does), with `NewEconomyRevision` and `AuthoritativeGold` set
+so the zone server can correct its wallet without writing; reading it as a success would adopt
+the new revision and let the same stale wallet through on the next save.
+
 `UpdateCharacterCurrency` also refuses negative gold, and gold above `OWSEconomyConfig:MaxGold`
 when that is set (0 = uncapped), with `gold_out_of_range`.
 

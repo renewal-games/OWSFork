@@ -9,7 +9,8 @@ namespace OWSData.Models.Composites
 
         // "" on success. "stale_revision" when the caller supplied an ExpectedRevision that no longer
         // matches: the wallet it computed lost a race with a shop transaction, so writing it would undo
-        // that transaction. Reconcile against NewEconomyRevision/AuthoritativeGold instead of retrying.
+        // that transaction. Nothing was written and Success is false. Reconcile against
+        // NewEconomyRevision/AuthoritativeGold instead of retrying.
         public string ReasonCode { get; set; } = "";
 
         // Committed Characters.Gold. On a stale_revision refusal this is what the wallet actually is,
