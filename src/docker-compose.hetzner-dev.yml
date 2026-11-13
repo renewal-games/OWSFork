@@ -95,6 +95,9 @@ services:
 
   messaging:
     image: rabbitmq:3.9.0-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:?Set a RabbitMQ application user}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:?Set a unique RabbitMQ password}"
     restart: unless-stopped
     logging: *default-logging
     volumes:

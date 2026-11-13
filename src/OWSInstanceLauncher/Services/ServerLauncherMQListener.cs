@@ -137,7 +137,7 @@ namespace OWSInstanceLauncher.Services
             }
             catch (Exception ex)
             {
-                Log.Error($"Error connecting to RabbitMQ.  Check that your can access RabbitMQ from your browser by going to: http://host.docker.internal:15672/  Use default username / password: dev / test.  If the page doesn't load check your Windows HOSTs file for the three entries that Docker Desktop is supposed to add on installation.  If the page does load, but you can't login, you probably have another copy of RabbitMQ already running.  Disable your copy of RabbitMQ and try again.  Error message: {ex.Message}");
+                Log.Error($"Error connecting to RabbitMQ. Check the configured broker address, port, and application credentials. See docs/hosting/rabbitmq.md for setup and diagnostics. Error message: {ex.Message}");
                 return;
             }
 
