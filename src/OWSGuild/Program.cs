@@ -81,6 +81,8 @@ builder.Configuration.GetSection(OWSShared.Options.APIPathOptions.SectionName).B
 builder.Services.Configure<OWSShared.Options.PublicAPIOptions>(builder.Configuration.GetSection(OWSShared.Options.PublicAPIOptions.SectionName));
 builder.Services.Configure<OWSShared.Options.APIPathOptions>(builder.Configuration.GetSection(OWSShared.Options.APIPathOptions.SectionName));
 builder.Services.Configure<OWSShared.Options.StorageOptions>(builder.Configuration.GetSection(OWSShared.Options.StorageOptions.SectionName));
+// Guild storage stays closed until RequireExpectedRevision is on; set it with the persistence API's copy (GuildService).
+builder.Services.Configure<OWSShared.Options.EconomyOptions>(builder.Configuration.GetSection(OWSShared.Options.EconomyOptions.SectionName));
 
 // Register And Validate External Login Provider Options
 // services.ConfigureAndValidate<EpicOnlineServicesOptions>(ExternalLoginProviderOptions.EpicOnlineServices, Configuration.GetSection($"{ExternalLoginProviderOptions.SectionName}:{ExternalLoginProviderOptions.EpicOnlineServices}"));
@@ -102,6 +104,9 @@ if (OWSStorageConfig.Exists())
             break;
     }
 }
+
+// Guild storage is Postgres-only, like the other server-owned economy writes.
+container.Register<IGuildStorageRepository, OWSData.Repositories.Implementations.Postgres.GuildStorageRepository>(Lifestyle.Transient);
 
 container.Register<IPublicAPIInputValidation, DefaultPublicAPIInputValidation>(Lifestyle.Singleton);
 container.Register<ICustomCharacterDataSelector, DefaultCustomCharacterDataSelector>(Lifestyle.Singleton);
