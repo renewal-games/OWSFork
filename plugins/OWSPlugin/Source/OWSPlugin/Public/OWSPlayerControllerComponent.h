@@ -98,6 +98,10 @@ public:
 	// Sets default values for this component's properties
 	UOWSPlayerControllerComponent();
 
+	// Set by the zone server when it claims the character. Never replicate the owner token to clients.
+	UPROPERTY(Transient, BlueprintReadWrite, Category = "Character")
+	FString OwnerToken;
+
 	UFUNCTION(BlueprintCallable, Category = "Player State")
 		AOWSPlayerState* GetOWSPlayerState() const;
 
