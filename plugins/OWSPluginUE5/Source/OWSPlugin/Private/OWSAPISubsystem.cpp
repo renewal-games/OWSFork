@@ -1,6 +1,7 @@
 // Copyright 2022 Sabre Dart Studios
 
 #include "OWSAPISubsystem.h"
+#include "HAL/PlatformMisc.h"
 #include "Runtime/Engine/Classes/Kismet/GameplayStatics.h"
 #include "JsonObjectConverter.h"
 
@@ -93,6 +94,8 @@ void UOWSAPISubsystem::ProcessOWS2POSTRequest(FString ApiModuleToCall, FString A
 	else if (ApiModuleToCall == "InstanceManagementAPI")
 	{
 		OWS2APIPathToUse = OWS2InstanceManagementAPIPath;
+		// Server-only environment secret; never put it in client config or send it to PublicAPI.
+		Request->SetHeader(TEXT("X-Samsara-Service-Key"), FPlatformMisc::GetEnvironmentVariable(TEXT("OWS_SAMSARA_SERVICE_KEY")));
 	}
 	else if (ApiModuleToCall == "CharacterPersistenceAPI")
 	{
@@ -135,6 +138,8 @@ void UOWSAPISubsystem::ProcessOWS2GETRequest(FString ApiModuleToCall, FString Ap
 	else if (ApiModuleToCall == "InstanceManagementAPI")
 	{
 		OWS2APIPathToUse = OWS2InstanceManagementAPIPath;
+		// Server-only environment secret; never put it in client config or send it to PublicAPI.
+		Request->SetHeader(TEXT("X-Samsara-Service-Key"), FPlatformMisc::GetEnvironmentVariable(TEXT("OWS_SAMSARA_SERVICE_KEY")));
 	}
 	else if (ApiModuleToCall == "CharacterPersistenceAPI")
 	{
