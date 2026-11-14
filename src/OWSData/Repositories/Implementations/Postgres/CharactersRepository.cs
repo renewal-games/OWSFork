@@ -1151,7 +1151,7 @@ namespace OWSData.Repositories.Implementations.Postgres
         }
 
         public async Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName,
-            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, Guid? ownerToken, long? expectedRevision = null)
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, Guid? ownerToken, long? expectedRevision = null, long? saveSeq = null)
         {
             // A whole-bag rewrite is DELETE-then-INSERT, so it has to be one transaction. This ran
             // on an auto-committing connection before: a failure part-way through the insert loop
@@ -1193,6 +1193,25 @@ namespace OWSData.Repositories.Implementations.Postgres
                     return InventoryFail("stale_owner", character.EconomyRevision);
                 }
 
+                // Order between the owner's own saves. The row lock makes two bag saves take turns in the
+                // order they reach it, not the order the zone server sent them, and each one replaces the
+                // whole bag: an older save still on its way when the final one commits (a disconnect, a
+                // logout pre-save timeout) used to replace it. Not a failure: the newer bag is stored, so
+                // the caller has nothing to redo.
+                long? supersededBy = await SupersedingSaveSeq(conn, tx, customerGUID, character.CharacterID, saveSeq);
+                if (supersededBy.HasValue)
+                {
+                    await tx.RollbackAsync();
+                    return new UpdateCharacterInventoryResponse
+                    {
+                        Success = true,
+                        ErrorMessage = "",
+                        ReasonCode = "superseded",
+                        NewEconomyRevision = character.EconomyRevision,
+                        InventorySaveSeq = supersededBy.Value
+                    };
+                }
+
                 // Opt-in optimistic guard. Serializing on the lock alone does not save a stale
                 // caller: it would still write a pre-transaction bag over a shop op that committed
                 // while it was queued. Only this check stops that, and it needs the caller to tell
@@ -1224,6 +1243,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     transaction: tx, commandType: CommandType.Text);
 
                 await InsertInventoryItems(conn, tx, customerGUID, charInventoryID, updateCharacterInventory);
+                await StoreSaveSeq(conn, tx, customerGUID, character.CharacterID, saveSeq);
 
                 // Bump only for callers on the protocol. UpdateCharacterCurrency bumps
                 // unconditionally and gets away with it because the zone server already reads the
@@ -1248,7 +1268,8 @@ namespace OWSData.Repositories.Implementations.Postgres
                     Success = true,
                     ErrorMessage = "",
                     ReasonCode = "",
-                    NewEconomyRevision = newRevision
+                    NewEconomyRevision = newRevision,
+                    InventorySaveSeq = saveSeq ?? 0
                 };
             }
             catch
@@ -1256,6 +1277,38 @@ namespace OWSData.Repositories.Implementations.Postgres
                 try { await tx.RollbackAsync(); } catch { /* connection already gone */ }
                 throw;
             }
+        }
+
+        // Null when the save may write the bag: it sent no SaveSeq, or one above Characters.InventorySaveSeq. Otherwise
+        // the stored value, which is the newer save that superseded this one; an equal SaveSeq is that same save sent
+        // again. Call with the Characters row locked, so no other save can store a SaveSeq before this one commits.
+        // A save without a SaveSeq does not read the column at all and stays last-write-wins.
+        private static async Task<long?> SupersedingSaveSeq(DbConnection conn, DbTransaction tx, Guid customerGUID, int characterID, long? saveSeq)
+        {
+            if (!saveSeq.HasValue)
+            {
+                return null;
+            }
+
+            long stored = await conn.ExecuteScalarAsync<long>(PostgresQueries.GetInventorySaveSeq,
+                new { CustomerGUID = customerGUID, CharacterID = characterID },
+                transaction: tx, commandType: CommandType.Text);
+
+            return saveSeq.Value <= stored ? stored : null;
+        }
+
+        // Records the SaveSeq of a bag that was just written, in the same transaction: a save that rolls back or
+        // whose bag is refused leaves the stored value alone, so the caller can send that SaveSeq again.
+        private static async Task StoreSaveSeq(DbConnection conn, DbTransaction tx, Guid customerGUID, int characterID, long? saveSeq)
+        {
+            if (!saveSeq.HasValue)
+            {
+                return;
+            }
+
+            await conn.ExecuteAsync(PostgresQueries.SetInventorySaveSeq,
+                new { CustomerGUID = customerGUID, CharacterID = characterID, SaveSeq = saveSeq.Value },
+                transaction: tx, commandType: CommandType.Text);
         }
 
         // The controller checks the owner token on its own connection before the save's transaction begins, so a claim
@@ -1295,7 +1348,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
             IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false)
+            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false, long? saveSeq = null)
         {
             // A missing section is refused, not skipped: the inventory write deletes the bag before
             // inserting, so a null CharInventory would read as "empty bag" and wipe it.
@@ -1353,15 +1406,26 @@ namespace OWSData.Repositories.Implementations.Postgres
                     }
                 }
 
+                // A superseded bag (see UpdateCharacterInventory) is skipped like a refused one, and for the
+                // same reason quests and stats still commit: InventorySaveSeq orders bags only, and the save
+                // that moved it past this one may have been a bag-only save that carried no quests or stats.
+                // It is not a failure, so Success stays true. revision_required is decided first, as the
+                // request layer does for UpdateCharacterInventory.
                 string bagRefusal = null;
+                long? supersededBy = null;
                 if (expectedRevision == null && requireExpectedRevision)
                 {
                     bagRefusal = "revision_required";
                 }
-                else if (expectedRevision.HasValue && expectedRevision.Value != character.EconomyRevision)
+                else
                 {
-                    bagRefusal = "stale_revision";
+                    supersededBy = await SupersedingSaveSeq(conn, tx, customerGUID, character.CharacterID, saveSeq);
+                    if (!supersededBy.HasValue && expectedRevision.HasValue && expectedRevision.Value != character.EconomyRevision)
+                    {
+                        bagRefusal = "stale_revision";
+                    }
                 }
+                bool writeBag = bagRefusal == null && !supersededBy.HasValue;
 
                 foreach (UpdateCharacterQuest quest in updateCharacterQuests)
                 {
@@ -1376,7 +1440,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 }
 
                 long newRevision = character.EconomyRevision;
-                if (bagRefusal == null)
+                if (writeBag)
                 {
                     IEnumerable<int> inventoryIDs = await conn.QueryAsync<int>(GenericQueries.GetCharInventoryIDByCharName,
                         parameters,
@@ -1396,6 +1460,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                         transaction: tx, commandType: CommandType.Text);
 
                     await InsertInventoryItems(conn, tx, customerGUID, charInventoryID, updateCharacterInventory);
+                    await StoreSaveSeq(conn, tx, customerGUID, character.CharacterID, saveSeq);
 
                     // Bump only for callers on the protocol, as in UpdateCharacterInventory.
                     if (expectedRevision.HasValue)
@@ -1419,8 +1484,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                 {
                     Success = bagRefusal == null,
                     ErrorMessage = bagRefusal ?? "",
-                    ReasonCode = bagRefusal ?? "",
-                    NewEconomyRevision = newRevision
+                    ReasonCode = bagRefusal ?? (supersededBy.HasValue ? "superseded" : ""),
+                    NewEconomyRevision = newRevision,
+                    InventorySaveSeq = supersededBy ?? (writeBag ? saveSeq ?? 0 : 0)
                 };
             }
             catch

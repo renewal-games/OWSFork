@@ -1,0 +1,12 @@
+-- Order for bag saves (issue #227).
+--
+-- UpdateCharacterInventory and the bag half of UpdateCharacterData replace the whole bag, and each request runs on its
+-- own connection. The Characters row lock makes two saves take turns, but in the order they reach the lock, not the
+-- order the zone server sent them: at a disconnect the final bag save could commit before an older one still on its
+-- way, and the older bag then replaced it.
+--
+-- InventorySaveSeq is the SaveSeq of the last bag save that was written with one. A save whose SaveSeq is not above it
+-- is answered "superseded" and writes no bag. Saves without a SaveSeq neither read nor change it. 0 = no such save yet.
+--
+-- Idempotent: safe to run more than once.
+ALTER TABLE Characters ADD COLUMN IF NOT EXISTS InventorySaveSeq BIGINT NOT NULL DEFAULT 0;
