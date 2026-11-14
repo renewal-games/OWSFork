@@ -16,10 +16,11 @@ namespace OWSTests.Database
 {
     /// <summary>
     /// Bag saves replace the whole bag and are handled in the order they reach the Characters row lock, not the order
-    /// the zone server sent them. A save that carries a SaveSeq is written only when that SaveSeq is above
-    /// Characters.InventorySaveSeq, so an older save arriving after a newer one is answered "superseded" and leaves
-    /// the newer bag in place. A save without a SaveSeq is last-write-wins as before. Runs on the migrated schema
-    /// only: InventorySaveSeq, CharQuests, CharStats and CharacterOwners are not in setup.sql.
+    /// the zone server sent them. A save that carries a SaveSeq is written only when that SaveSeq is above the one its
+    /// owner last stored (Characters.InventorySaveSeq), so an older save arriving after a newer one is answered
+    /// "superseded" and leaves the newer bag in place. Owners are ordered by their claim, never by comparing their
+    /// SaveSeqs. A save without a SaveSeq is last-write-wins as before. Runs on the migrated schema only:
+    /// InventorySaveSeq, CharQuests, CharStats and CharacterOwners are not in setup.sql.
     /// </summary>
     public class InventorySaveSeqTests : IClassFixture<PostgresTestDatabases>
     {
@@ -284,10 +285,165 @@ namespace OWSTests.Database
             Assert.Equal(5, await StoredSaveSeq(source, customerGUID));
         }
 
+        // A SaveSeq orders one owner's saves. Each zone server numbers its saves from its own counter and clock, so the
+        // owner that takes a character over can start far below the last owner's number and must still be saved.
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task NewOwnerWhoseSaveSeqStartsBelowThePreviousOwners_IsSaved(SchemaSource source)
+        {
+            // The previous zone server's clock ran ahead: its last SaveSeq is above anything the new owner will send
+            // for a long time. The handover has ended, as it has when the claiming zone server loads the character.
+            Guid customerGUID = await SeedCharacter(source);
+            Guid oldToken = (await Owners(source).ClaimByName(customerGUID, CharName, FirstZone)).OwnerToken;
+            Assert.True((await Characters(source).UpdateCharacterInventory(customerGUID, CharName, Bag("OldOwnerBag"), oldToken,
+                saveSeq: AheadClockSaveSeq)).Success);
+            Guid newToken = (await Owners(source).ClaimByName(customerGUID, CharName, SecondZone)).OwnerToken;
+            await ExpireHandover(source, customerGUID);
+
+            UpdateCharacterInventoryResponse first = await Characters(source).UpdateCharacterInventory(customerGUID, CharName,
+                Bag("NewOwnerBag"), newToken, saveSeq: 500);
+
+            Assert.True(first.Success, first.ReasonCode);
+            Assert.Equal("", first.ReasonCode);
+            Assert.Equal(500, first.InventorySaveSeq);
+            Assert.Equal(new[] { "NewOwnerBag" }, await Items(source, customerGUID));
+            Assert.Equal(500, await StoredSaveSeq(source, customerGUID));
+
+            // From here the new owner's own saves are ordered among themselves.
+            UpdateCharacterInventoryResponse final = await Characters(source).UpdateCharacterInventory(customerGUID, CharName,
+                Bag("NewOwnerFinalBag"), newToken, saveSeq: 502);
+            UpdateCharacterInventoryResponse late = await Characters(source).UpdateCharacterInventory(customerGUID, CharName,
+                Bag("NewOwnerOlderBag"), newToken, saveSeq: 501);
+
+            Assert.Equal("", final.ReasonCode);
+            Assert.True(late.Success);
+            Assert.Equal("superseded", late.ReasonCode);
+            Assert.Equal(new[] { "NewOwnerFinalBag" }, await Items(source, customerGUID));
+            Assert.Equal(502, await StoredSaveSeq(source, customerGUID));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task NewOwnerWhoseSaveSeqStartsBelowThePreviousOwners_IsSavedByCharacterDataToo(SchemaSource source)
+        {
+            Guid customerGUID = await SeedCharacter(source);
+            Guid oldToken = (await Owners(source).ClaimByName(customerGUID, CharName, FirstZone)).OwnerToken;
+            Assert.True((await Characters(source).UpdateCharacterInventory(customerGUID, CharName, Bag("OldOwnerBag"), oldToken,
+                saveSeq: AheadClockSaveSeq)).Success);
+            Guid newToken = (await Owners(source).ClaimByName(customerGUID, CharName, SecondZone)).OwnerToken;
+            await ExpireHandover(source, customerGUID);
+
+            UpdateCharacterDataResponse autosave = await DataRequest(source, customerGUID, "Quest.First", Bag("NewOwnerBag"), level: 7,
+                saveSeq: 500, ownerToken: newToken).Handle();
+
+            Assert.True(autosave.Success, autosave.ErrorMessage);
+            Assert.Equal("", autosave.ReasonCode);
+            Assert.Equal(new[] { "NewOwnerBag" }, await Items(source, customerGUID));
+            Assert.Equal(500, await StoredSaveSeq(source, customerGUID));
+
+            // One order for both endpoints under the new owner as well.
+            UpdateCharacterInventoryResponse late = await Characters(source).UpdateCharacterInventory(customerGUID, CharName,
+                Bag("NewOwnerOlderBag"), newToken, saveSeq: 499);
+            Assert.Equal("superseded", late.ReasonCode);
+            Assert.Equal(new[] { "NewOwnerBag" }, await Items(source, customerGUID));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task ReplacedOwnerSave_BeforeTheNewOwnerHasSaved_StillLands(SchemaSource source)
+        {
+            // The handover policy is unchanged: the replaced owner's last saves land while it runs, in their own order.
+            Guid customerGUID = await SeedCharacter(source);
+            Guid oldToken = (await Owners(source).ClaimByName(customerGUID, CharName, FirstZone)).OwnerToken;
+            Assert.True((await Characters(source).UpdateCharacterInventory(customerGUID, CharName, Bag("OldOwnerBag"), oldToken,
+                saveSeq: AheadClockSaveSeq)).Success);
+            Assert.True((await Owners(source).ClaimByName(customerGUID, CharName, SecondZone)).HandoverSeconds > 0);
+
+            UpdateCharacterInventoryResponse lastSecond = await Characters(source).UpdateCharacterInventory(customerGUID, CharName,
+                Bag("LastSecondLoot"), oldToken, saveSeq: AheadClockSaveSeq + 2);
+            UpdateCharacterInventoryResponse older = await Characters(source).UpdateCharacterInventory(customerGUID, CharName,
+                Bag("OlderBag"), oldToken, saveSeq: AheadClockSaveSeq + 1);
+
+            Assert.True(lastSecond.Success, lastSecond.ReasonCode);
+            Assert.Equal("", lastSecond.ReasonCode);
+            Assert.Equal("superseded", older.ReasonCode);
+            Assert.Equal(new[] { "LastSecondLoot" }, await Items(source, customerGUID));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task ReplacedOwnerSave_AfterTheNewOwnerHasSaved_IsSupersededWhateverItsSaveSeq(SchemaSource source)
+        {
+            // Both owners save during the handover. The replaced owner's number is the higher one, but its bag is the
+            // older: comparing the two would let it replace the new owner's bag, and so would letting it restart the
+            // order, which would then also let the new owner's own older save through.
+            Guid customerGUID = await SeedCharacter(source);
+            Guid oldToken = (await Owners(source).ClaimByName(customerGUID, CharName, FirstZone)).OwnerToken;
+            Assert.True((await Characters(source).UpdateCharacterInventory(customerGUID, CharName, Bag("OldOwnerBag"), oldToken,
+                saveSeq: AheadClockSaveSeq)).Success);
+            ClaimCharacterResult claim = await Owners(source).ClaimByName(customerGUID, CharName, SecondZone);
+            Assert.True(claim.HandoverSeconds > 0);
+            Assert.True((await Characters(source).UpdateCharacterInventory(customerGUID, CharName, Bag("NewOwnerBag"), claim.OwnerToken,
+                saveSeq: 500)).Success);
+
+            UpdateCharacterInventoryResponse replaced = await Characters(source).UpdateCharacterInventory(customerGUID, CharName,
+                Bag("OldOwnerLateBag"), oldToken, saveSeq: AheadClockSaveSeq + 1);
+
+            Assert.True(replaced.Success);
+            Assert.Equal("superseded", replaced.ReasonCode);
+            Assert.Equal("", replaced.ErrorMessage);
+            Assert.Equal(500, replaced.InventorySaveSeq);
+            Assert.Equal(new[] { "NewOwnerBag" }, await Items(source, customerGUID));
+            Assert.Equal(500, await StoredSaveSeq(source, customerGUID));
+
+            UpdateCharacterInventoryResponse newOwnersOlder = await Characters(source).UpdateCharacterInventory(customerGUID, CharName,
+                Bag("NewOwnerOlderBag"), claim.OwnerToken, saveSeq: 499);
+
+            Assert.Equal("superseded", newOwnersOlder.ReasonCode);
+            Assert.Equal(new[] { "NewOwnerBag" }, await Items(source, customerGUID));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task ReplacedOwnerSaveWithoutSaveSeq_AfterTheNewOwnerHasSaved_StillLands(SchemaSource source)
+        {
+            // Only numbered saves are ordered. A build that sends no SaveSeq keeps the handover behaviour it has today.
+            Guid customerGUID = await SeedCharacter(source);
+            Guid oldToken = (await Owners(source).ClaimByName(customerGUID, CharName, FirstZone)).OwnerToken;
+            ClaimCharacterResult claim = await Owners(source).ClaimByName(customerGUID, CharName, SecondZone);
+            Assert.True(claim.HandoverSeconds > 0);
+            Assert.True((await Characters(source).UpdateCharacterInventory(customerGUID, CharName, Bag("NewOwnerBag"), claim.OwnerToken,
+                saveSeq: 500)).Success);
+
+            UpdateCharacterInventoryResponse legacy = await Characters(source).UpdateCharacterInventory(customerGUID, CharName,
+                Bag("OldOwnerLegacyBag"), oldToken);
+
+            Assert.True(legacy.Success, legacy.ReasonCode);
+            Assert.Equal("", legacy.ReasonCode);
+            Assert.Equal(new[] { "OldOwnerLegacyBag" }, await Items(source, customerGUID));
+            Assert.Equal(500, await StoredSaveSeq(source, customerGUID));
+        }
+
+        private const int FirstZone = 1;
+        private const int SecondZone = 2;
+
+        // A SaveSeq from a zone server whose clock is a day ahead of the next owner's, which starts in the hundreds here.
+        private const long AheadClockSaveSeq = 1_800_000_000_000 + 86_400_000;
+
         private StorageOptions Storage(SchemaSource source) =>
             new() { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) };
 
         private CharactersRepository Characters(SchemaSource source) => new(Microsoft.Extensions.Options.Options.Create(Storage(source)));
+
+        private CharacterOwnersRepository Owners(SchemaSource source) => new(Microsoft.Extensions.Options.Options.Create(Storage(source)));
+
+        private async Task ExpireHandover(SchemaSource source, Guid customerGUID)
+        {
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            await connection.ExecuteAsync(@"UPDATE CharacterOwners SET PreviousOwnerUntil = NOW() - INTERVAL '1 second'
+                WHERE CustomerGUID = @CustomerGUID", new { CustomerGUID = customerGUID });
+        }
 
         private UpdateCharacterInventoryRequest InventoryRequest(SchemaSource source, Guid customerGUID,
             IEnumerable<UpdateCharacterInventory> inventory, long? saveSeq)
@@ -303,11 +459,12 @@ namespace OWSTests.Database
         }
 
         private UpdateCharacterDataRequest DataRequest(SchemaSource source, Guid customerGUID, string questIDTag,
-            IEnumerable<UpdateCharacterInventory> inventory, int level, long? saveSeq, long? expectedRevision = null)
+            IEnumerable<UpdateCharacterInventory> inventory, int level, long? saveSeq, long? expectedRevision = null, Guid? ownerToken = null)
         {
             var request = new UpdateCharacterDataRequest
             {
                 CharacterName = CharName,
+                OwnerToken = ownerToken,
                 CharQuests = new List<UpdateCharacterQuest>
                 {
                     new() { QuestIDTag = questIDTag, QuestJournalTagContainer = "(Journal=\"new\")", CustomData = "" }

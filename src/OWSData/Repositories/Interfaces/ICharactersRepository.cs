@@ -47,10 +47,13 @@ namespace OWSData.Repositories.Interfaces
         // neither that owner nor the one a running handover replaced is refused with "stale_owner" and writes nothing.
         // It is checked under the Characters row lock, so a claim cannot commit between the check and the write.
         // A null token passes only while the character has no owner (legacy builds).
-        // saveSeq is opt-in and orders the caller's own bag saves: a number that grows with every bag save sent for the
-        // character. Under the row lock, a saveSeq not above Characters.InventorySaveSeq writes nothing and returns
-        // Success with "superseded"; otherwise the bag is written and the saveSeq stored with it. Null keeps
-        // last-write-wins between saves, and neither reads nor changes the stored value.
+        // saveSeq is opt-in and orders one owner's bag saves: a number that grows with every bag save sent with the
+        // same ownerToken. Under the row lock, a saveSeq not above the one last stored by that ownerToken
+        // (Characters.InventorySaveSeq / InventorySaveSeqOwner) writes nothing and returns Success with "superseded";
+        // otherwise the bag is written and the saveSeq stored with its owner. Different owners are not compared by
+        // saveSeq: a new owner's first numbered save is written whatever its value, and after it a late save from the
+        // owner it replaced is "superseded". Null keeps last-write-wins between saves, and neither reads nor changes
+        // the stored order.
         Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory, Guid? ownerToken, long? expectedRevision = null, long? saveSeq = null);
         // Quests, inventory and stats in one transaction. Every section is required (an empty list is a
         // valid empty section, null is rejected) because the inventory write replaces the whole bag.

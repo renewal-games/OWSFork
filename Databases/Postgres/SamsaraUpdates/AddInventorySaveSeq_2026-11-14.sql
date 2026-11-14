@@ -5,8 +5,13 @@
 -- order the zone server sent them: at a disconnect the final bag save could commit before an older one still on its
 -- way, and the older bag then replaced it.
 --
--- InventorySaveSeq is the SaveSeq of the last bag save that was written with one. A save whose SaveSeq is not above it
--- is answered "superseded" and writes no bag. Saves without a SaveSeq neither read nor change it. 0 = no such save yet.
+-- InventorySaveSeq is the SaveSeq of the last bag save that was written with one, and InventorySaveSeqOwner the
+-- CharacterOwners.OwnerToken that sent it (NULL for a save without a token). A SaveSeq orders the saves of one owner
+-- only: a save from the same owner whose SaveSeq is not above the stored one is answered "superseded" and writes no
+-- bag. Owners are ordered by their claim, not by SaveSeq, so a new owner's SaveSeq may start anywhere: two zone
+-- servers' counters and clocks are never compared. Saves without a SaveSeq neither read nor change either column.
+-- 0 = no such save yet.
 --
 -- Idempotent: safe to run more than once.
 ALTER TABLE Characters ADD COLUMN IF NOT EXISTS InventorySaveSeq BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE Characters ADD COLUMN IF NOT EXISTS InventorySaveSeqOwner UUID NULL;
