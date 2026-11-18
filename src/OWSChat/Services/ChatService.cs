@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -18,6 +19,7 @@ namespace OWSChat.Service
     {
         private readonly TimeSpan _recheckInterval;
         private static readonly TimeSpan LookupTimeout = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan MinimumWait = TimeSpan.FromMilliseconds(1);
 
         private sealed class Client
         {
@@ -184,19 +186,26 @@ namespace OWSChat.Service
             int failures = 0;
             try
             {
+                // The lookup cadence runs on a monotonic clock and the session deadline on the wall clock.
+                // A timer can fire slightly before the deadline it was set for, so a wait that ends early
+                // just waits again (at least 1 ms, since Task.Delay truncates sub-millisecond delays to 0)
+                // and spends no lookup before the interval is really up.
+                var sinceLookup = Stopwatch.StartNew();
                 while (true)
                 {
-                    var delay = _recheckInterval;
-                    if (client.ExpiresAt.HasValue)
-                    {
-                        var remaining = client.ExpiresAt.Value - DateTime.UtcNow;
-                        if (remaining <= TimeSpan.Zero)
-                            throw new RpcException(new Status(StatusCode.Unauthenticated, "Chat session expired."));
-                        if (remaining < delay) delay = remaining;
-                    }
-                    await Task.Delay(delay, stop.Token);
-                    if (client.ExpiresAt <= DateTime.UtcNow)
+                    var untilExpiry = client.ExpiresAt.HasValue ? client.ExpiresAt.Value - DateTime.UtcNow : TimeSpan.MaxValue;
+                    if (untilExpiry <= TimeSpan.Zero)
                         throw new RpcException(new Status(StatusCode.Unauthenticated, "Chat session expired."));
+
+                    var untilLookup = _recheckInterval - sinceLookup.Elapsed;
+                    if (untilLookup > TimeSpan.Zero)
+                    {
+                        var delay = untilExpiry < untilLookup ? untilExpiry : untilLookup;
+                        await Task.Delay(delay < MinimumWait ? MinimumWait : delay, stop.Token);
+                        continue;
+                    }
+
+                    sinceLookup.Restart();
                     try
                     {
                         await ValidateSession(client, stop.Token);
