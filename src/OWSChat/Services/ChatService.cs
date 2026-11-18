@@ -79,13 +79,20 @@ namespace OWSChat.Service
                 }
             }
 
+            using var streamCancellation = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
+            var streamToken = streamCancellation.Token;
             using var userLease = session?.UserGuid is Guid userGuid
-                ? ChatAdmissionGuard.TryAcquireUser(userGuid) : null;
-            if (session != null && userLease == null)
-                throw new RpcException(new Status(StatusCode.ResourceExhausted, "Chat account connection limit reached."));
+                ? ChatAdmissionGuard.TryAcquireUser(userGuid, () =>
+                {
+                    // Release all admission slots immediately, even if the transport has a pending write.
+                    lease.Dispose();
+                    addressLease.Dispose();
+                    try { streamCancellation.Cancel(); }
+                    catch (ObjectDisposedException) { /* The old call already finished. */ }
+                }) : null;
 
             // The first frame identifies the client and is not broadcast as chat.
-            using (var handshake = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken))
+            using (var handshake = CancellationTokenSource.CreateLinkedTokenSource(streamToken))
             {
                 handshake.CancelAfter(TimeSpan.FromSeconds(ChatAdmissionGuard.Setting("OWS_CHAT_HANDSHAKE_TIMEOUT_SECONDS", 10)));
                 try
@@ -93,7 +100,7 @@ namespace OWSChat.Service
                     if (!await requestStream.MoveNext(handshake.Token))
                         return;
                 }
-                catch (OperationCanceledException) when (!context.CancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException) when (!streamToken.IsCancellationRequested)
                 {
                     throw new RpcException(new Status(StatusCode.DeadlineExceeded, "Chat first frame timed out."));
                 }
@@ -118,8 +125,8 @@ namespace OWSChat.Service
             {
                 try
                 {
-                    await foreach (var msg in me.Outbox.Reader.ReadAllAsync(context.CancellationToken))
-                        await responseStream.WriteAsync(msg);
+                    await foreach (var msg in me.Outbox.Reader.ReadAllAsync(streamToken))
+                        await responseStream.WriteAsync(msg, streamToken);
                 }
                 catch
                 {
@@ -129,7 +136,7 @@ namespace OWSChat.Service
 
             try
             {
-                await foreach (var incoming in requestStream.ReadAllAsync(context.CancellationToken))
+                await foreach (var incoming in requestStream.ReadAllAsync(streamToken))
                 {
                     if (!rateLimiter.Allow())
                         continue;

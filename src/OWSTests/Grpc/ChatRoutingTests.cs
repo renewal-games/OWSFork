@@ -23,18 +23,33 @@ namespace OWSTests.Grpc
         public ChatRoutingTests() => Environment.SetEnvironmentVariable(GrpcSessionAuth.RequireSessionAuthVariable, "true");
         public void Dispose() => Environment.SetEnvironmentVariable(GrpcSessionAuth.RequireSessionAuthVariable, _previous);
 
-        [Fact]
-        public async Task AccountCap_RejectsThirdStream_LeavesGlobalSlotForAnotherAccount()
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        public async Task AccountCap_NewestReplacesOldest_LeavesGlobalSlotForAnotherAccount(bool waitingForFirstFrame, bool blockedWrite)
         {
             using var settings = new Settings(("OWS_GRPC_MAX_CONNECTIONS", "3"));
             await using var chat = new ChatHarness();
             var user = Guid.NewGuid();
-            await chat.Connect("A", user: user);
-            await chat.Connect("A", user: user);
-            var rejected = chat.Start("A", user: user);
-            rejected.ExpectedFailure = true;
-            Assert.Equal(StatusCode.ResourceExhausted, (await Assert.ThrowsAsync<RpcException>(() => rejected.Running.WaitAsync(TimeSpan.FromSeconds(5)))).StatusCode);
-            await chat.Connect("B");
+            var oldest = waitingForFirstFrame ? chat.Start("A", user: user, firstFrame: false) : await chat.Connect("A", user: user);
+            oldest.ExpectedFailure = true;
+            var second = await chat.Connect("A", user: user);
+            if (blockedWrite)
+            {
+                oldest.BlockWrites = true;
+                await second.Send(ChatType.MessageTypeGeneral, "start blocked write");
+                await oldest.WriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            var newest = await chat.Connect("A", user: user);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => oldest.Running.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.False(second.Running.IsCompleted);
+            Assert.False(newest.Running.IsCompleted);
+            var b = await chat.Connect("B");
+            await newest.Send(ChatType.MessageTypeGeneral, "reconnected");
+            await chat.Finish();
+            Assert.Equal("reconnected", Assert.Single(b.Written).Chat.Text);
+            if (blockedWrite) Assert.True(oldest.WriteCancelled);
         }
 
         [Fact]
@@ -51,14 +66,18 @@ namespace OWSTests.Grpc
                 await a1.Send(ChatType.MessageTypeGeneral, "one");
                 await a2.Send(ChatType.MessageTypeGeneral, "two");
             }
-            a1.Complete();
+            a1.ExpectedFailure = true;
+            var replacement = await chat.Connect("A", user: user);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => a1.Running.WaitAsync(TimeSpan.FromSeconds(5)));
+            await replacement.Send(ChatType.MessageTypeGeneral, "over budget after eviction");
             a2.Complete();
-            await Task.WhenAll(a1.Running, a2.Running);
+            replacement.Complete();
+            await Task.WhenAll(a2.Running, replacement.Running);
             var reconnected = await chat.Connect("A", user: user);
             await reconnected.Send(ChatType.MessageTypeGeneral, "over budget after reconnect");
             await chat.Finish();
             Assert.Equal(20, b.Written.Count);
-            Assert.DoesNotContain(b.Written, m => m.Chat.Text.Contains("reconnect"));
+            Assert.DoesNotContain(b.Written, m => m.Chat.Text.Contains("over budget"));
         }
 
         [Fact]
@@ -273,6 +292,9 @@ namespace OWSTests.Grpc
             public Task Running { get; set; } = Task.CompletedTask;
             public bool ExpectedFailure { get; set; }
             public Task Identified { get; set; } = Task.CompletedTask;
+            public bool BlockWrites { get; set; }
+            public bool WriteCancelled { get; private set; }
+            public TaskCompletionSource WriteStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
             public ClientMessage Current { get; private set; }
             public WriteOptions WriteOptions { get; set; }
             public Task Queue(ClientMessage message)
@@ -299,6 +321,16 @@ namespace OWSTests.Grpc
             {
                 Written.Add(message);
                 return Task.CompletedTask;
+            }
+            public async Task WriteAsync(ServerMessage message, CancellationToken cancellationToken)
+            {
+                if (BlockWrites)
+                {
+                    WriteStarted.TrySetResult();
+                    try { await Task.Delay(Timeout.Infinite, cancellationToken); }
+                    catch (OperationCanceledException) { WriteCancelled = true; throw; }
+                }
+                await WriteAsync(message);
             }
         }
 
