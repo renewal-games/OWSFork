@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using ChatServiceApp.Protos;
@@ -53,6 +54,10 @@ namespace OWSChat.Service
             IServerStreamWriter<ServerMessage> responseStream,
             ServerCallContext context)
         {
+            using var addressLease = ChatAdmissionGuard.TryAcquireAddress(context.Peer);
+            if (addressLease == null)
+                throw new RpcException(new Status(StatusCode.ResourceExhausted, "Chat address connection limit reached."));
+
             // Bound the number of concurrent chat streams so a flood of connections can't
             // exhaust memory (each stream holds a bounded outbox channel and a writer task).
             using GrpcStreamGuard.ConnectionLease lease = GrpcStreamGuard.TryAcquireConnection();
@@ -74,9 +79,25 @@ namespace OWSChat.Service
                 }
             }
 
+            using var userLease = session?.UserGuid is Guid userGuid
+                ? ChatAdmissionGuard.TryAcquireUser(userGuid) : null;
+            if (session != null && userLease == null)
+                throw new RpcException(new Status(StatusCode.ResourceExhausted, "Chat account connection limit reached."));
+
             // The first frame identifies the client and is not broadcast as chat.
-            if (!await requestStream.MoveNext())
-                return;
+            using (var handshake = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken))
+            {
+                handshake.CancelAfter(TimeSpan.FromSeconds(ChatAdmissionGuard.Setting("OWS_CHAT_HANDSHAKE_TIMEOUT_SECONDS", 10)));
+                try
+                {
+                    if (!await requestStream.MoveNext(handshake.Token))
+                        return;
+                }
+                catch (OperationCanceledException) when (!context.CancellationToken.IsCancellationRequested)
+                {
+                    throw new RpcException(new Status(StatusCode.DeadlineExceeded, "Chat first frame timed out."));
+                }
+            }
 
             var first = requestStream.Current;
             if (string.IsNullOrWhiteSpace(first.PlayerName))
@@ -90,8 +111,8 @@ namespace OWSChat.Service
             };
             _clients.TryAdd(responseStream, me);
 
-            // Per-connection message rate limit; over-limit messages are dropped, not broadcast.
-            GrpcStreamGuard.MessageRateLimiter rateLimiter = GrpcStreamGuard.CreateMessageRateLimiter();
+            // Authenticated streams share the account's budget, including across reconnects.
+            var rateLimiter = userLease?.RateLimiter ?? GrpcStreamGuard.CreateMessageRateLimiter();
 
             var writerLoop = Task.Run(async () =>
             {

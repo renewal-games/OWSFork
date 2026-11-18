@@ -23,6 +23,84 @@ namespace OWSTests.Grpc
         public ChatRoutingTests() => Environment.SetEnvironmentVariable(GrpcSessionAuth.RequireSessionAuthVariable, "true");
         public void Dispose() => Environment.SetEnvironmentVariable(GrpcSessionAuth.RequireSessionAuthVariable, _previous);
 
+        [Fact]
+        public async Task AccountCap_RejectsThirdStream_LeavesGlobalSlotForAnotherAccount()
+        {
+            using var settings = new Settings(("OWS_GRPC_MAX_CONNECTIONS", "3"));
+            await using var chat = new ChatHarness();
+            var user = Guid.NewGuid();
+            await chat.Connect("A", user: user);
+            await chat.Connect("A", user: user);
+            var rejected = chat.Start("A", user: user);
+            rejected.ExpectedFailure = true;
+            Assert.Equal(StatusCode.ResourceExhausted, (await Assert.ThrowsAsync<RpcException>(() => rejected.Running.WaitAsync(TimeSpan.FromSeconds(5)))).StatusCode);
+            await chat.Connect("B");
+        }
+
+        [Fact]
+        public async Task AccountBudget_IsSharedAcrossStreams_AndSurvivesReconnect()
+        {
+            using var settings = new Settings(("OWS_GRPC_MSGS_PER_WINDOW", "20"), ("OWS_GRPC_RATE_WINDOW_SECONDS", "60"));
+            await using var chat = new ChatHarness();
+            var user = Guid.NewGuid();
+            var a1 = await chat.Connect("A", user: user);
+            var a2 = await chat.Connect("A", user: user);
+            var b = await chat.Connect("B");
+            for (int i = 0; i < 11; i++)
+            {
+                await a1.Send(ChatType.MessageTypeGeneral, "one");
+                await a2.Send(ChatType.MessageTypeGeneral, "two");
+            }
+            a1.Complete();
+            a2.Complete();
+            await Task.WhenAll(a1.Running, a2.Running);
+            var reconnected = await chat.Connect("A", user: user);
+            await reconnected.Send(ChatType.MessageTypeGeneral, "over budget after reconnect");
+            await chat.Finish();
+            Assert.Equal(20, b.Written.Count);
+            Assert.DoesNotContain(b.Written, m => m.Chat.Text.Contains("reconnect"));
+        }
+
+        [Fact]
+        public async Task FirstFrameTimeout_ReleasesAllAdmissionSlots()
+        {
+            using var settings = new Settings(("OWS_CHAT_HANDSHAKE_TIMEOUT_SECONDS", "1"),
+                ("OWS_GRPC_MAX_CONNECTIONS", "1"), ("OWS_CHAT_MAX_STREAMS_PER_USER", "1"), ("OWS_CHAT_MAX_STREAMS_PER_IP", "1"));
+            await using var chat = new ChatHarness();
+            var user = Guid.NewGuid();
+            var idle = chat.Start("A", user: user, firstFrame: false);
+            idle.ExpectedFailure = true;
+            var error = await Assert.ThrowsAsync<RpcException>(() => idle.Running.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(StatusCode.DeadlineExceeded, error.StatusCode);
+            await chat.Connect("A", user: user);
+        }
+
+        [Fact]
+        public async Task AddressCap_IsAppliedBeforeSessionLookup_AndIgnoresSourcePort()
+        {
+            using var settings = new Settings(("OWS_CHAT_MAX_STREAMS_PER_IP", "1"));
+            await using var chat = new ChatHarness();
+            await chat.Connect("A");
+            var rejected = new Connection();
+            var error = await Assert.ThrowsAsync<RpcException>(() => new ChatService(null, null, null, null)
+                .Chat(rejected, rejected, new CallContext(Guid.NewGuid(), Guid.NewGuid(), "ipv4:127.0.0.1:999")));
+            Assert.Equal(StatusCode.ResourceExhausted, error.StatusCode);
+        }
+
+        private sealed class Settings : IDisposable
+        {
+            private readonly (string Name, string Value)[] _previous;
+            public Settings(params (string Name, string Value)[] values)
+            {
+                _previous = values.Select(v => (v.Name, Environment.GetEnvironmentVariable(v.Name))).ToArray();
+                foreach (var v in values) Environment.SetEnvironmentVariable(v.Name, v.Value);
+            }
+            public void Dispose()
+            {
+                foreach (var v in _previous) Environment.SetEnvironmentVariable(v.Name, v.Value);
+            }
+        }
+
         [Theory]
         [InlineData(ChatType.MessageTypeParty)]
         [InlineData(ChatType.MessageTypeGuild)]
@@ -134,16 +212,22 @@ namespace OWSTests.Grpc
             private readonly List<Connection> _connections = new();
             private readonly IUsersRepository _users = DispatchProxy.Create<IUsersRepository, SessionRepository>();
 
-            public async Task<Connection> Connect(string name, Guid? customer = null)
+            public async Task<Connection> Connect(string name, Guid? customer = null, Guid? user = null)
+            {
+                var connection = Start(name, customer, user);
+                await connection.Identified.WaitAsync(TimeSpan.FromSeconds(5));
+                return connection;
+            }
+
+            public Connection Start(string name, Guid? customer = null, Guid? user = null, bool firstFrame = true)
             {
                 Guid session = Guid.NewGuid();
-                ((SessionRepository)(object)_users).Sessions[session] = new GetUserSession { SelectedCharacterName = name, UserGuid = Guid.NewGuid() };
+                ((SessionRepository)(object)_users).Sessions[session] = new GetUserSession { SelectedCharacterName = name, UserGuid = user ?? Guid.NewGuid() };
                 var connection = new Connection();
                 _connections.Add(connection);
-                Task identified = connection.Queue(new ClientMessage { PlayerName = "Spoofed" });
+                if (firstFrame) connection.Identified = connection.Queue(new ClientMessage { PlayerName = "Spoofed" });
                 connection.Running = new ChatService(_users, null, new ChatLogWriter(null), Membership)
                     .Chat(connection, connection, new CallContext(customer ?? Customer, session));
-                await identified.WaitAsync(TimeSpan.FromSeconds(5));
                 return connection;
             }
 
@@ -151,7 +235,8 @@ namespace OWSTests.Grpc
             {
                 foreach (var connection in _connections)
                     connection.Complete();
-                await Task.WhenAll(_connections.Select(c => c.Running)).WaitAsync(TimeSpan.FromSeconds(10));
+                await Task.WhenAll(_connections.Select(c => c.ExpectedFailure
+                    ? c.Running.ContinueWith(_ => { }) : c.Running)).WaitAsync(TimeSpan.FromSeconds(10));
             }
 
             public async ValueTask DisposeAsync() => await Finish();
@@ -186,6 +271,8 @@ namespace OWSTests.Grpc
             private TaskCompletionSource _processed;
             public List<ServerMessage> Written { get; } = new();
             public Task Running { get; set; } = Task.CompletedTask;
+            public bool ExpectedFailure { get; set; }
+            public Task Identified { get; set; } = Task.CompletedTask;
             public ClientMessage Current { get; private set; }
             public WriteOptions WriteOptions { get; set; }
             public Task Queue(ClientMessage message)
@@ -218,14 +305,16 @@ namespace OWSTests.Grpc
         private sealed class CallContext : ServerCallContext
         {
             private readonly Metadata _headers = new();
-            public CallContext(Guid customer, Guid session)
+            private readonly string _peer;
+            public CallContext(Guid customer, Guid session, string peer = "ipv4:127.0.0.1:1")
             {
+                _peer = peer;
                 _headers.Add(GrpcSessionAuth.CustomerGuidHeader, customer.ToString());
                 _headers.Add(GrpcSessionAuth.UserSessionGuidHeader, session.ToString());
             }
             protected override string MethodCore => "/Chat.ChatApp/Chat";
             protected override string HostCore => "localhost";
-            protected override string PeerCore => "ipv4:127.0.0.1:1";
+            protected override string PeerCore => _peer;
             protected override DateTime DeadlineCore => DateTime.MaxValue;
             protected override Metadata RequestHeadersCore => _headers;
             protected override CancellationToken CancellationTokenCore => CancellationToken.None;
