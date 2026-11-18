@@ -32,7 +32,7 @@ builder.Services.AddDataProtection()
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddControllers();
-builder.Services.AddGrpc();
+builder.Services.AddGrpc().AddServiceOptions<ChatService>(ChatService.ConfigureGrpc);
 builder.Services.AddSingleton(typeof(IGrpcServiceActivator<>), typeof(GrpcSimpleInjectorActivator<>));
 builder.Services.Configure<OWSShared.Options.StorageOptions>(builder.Configuration.GetSection(OWSShared.Options.StorageOptions.SectionName));
 builder.Services.AddHealthChecks().AddOWSPostgres(builder.Configuration);

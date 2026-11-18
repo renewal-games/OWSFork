@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using ChatServiceApp.Protos;
+using Grpc.AspNetCore.Server;
 using Grpc.Core;
 using OWSData.Models.Composites;
 using OWSData.Models.StoredProcs;
@@ -15,6 +16,33 @@ namespace OWSChat.Service
     public class ChatService : ChatApp.ChatAppBase
     {
         private static readonly TimeSpan MuteRecheckInterval = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// Longest chat text, in UTF-16 chars after trimming, that the server fans out. The Unreal client
+        /// clamps outgoing chat to 140, so this only stops crafted clients. Longer messages are rejected
+        /// rather than broadcast to every connected client.
+        /// </summary>
+        public const int MaxMessageLength = 500;
+
+        /// <summary>
+        /// Largest frame the chat stream accepts. A legitimate ClientMessage is MaxMessageLength chars
+        /// (at most 3 UTF-8 bytes each) plus two character names, far below this; without it gRPC's
+        /// 4 MB default lets one frame carry megabytes of text into the service.
+        /// </summary>
+        public const int MaxReceiveMessageSize = 16 * 1024;
+
+        /// <summary>
+        /// Largest frame the chat stream sends. Every ServerMessage holds one name taken from a received
+        /// frame plus at most MaxMessageLength chars of text, so it stays under twice the receive limit.
+        /// </summary>
+        public const int MaxSendMessageSize = 2 * MaxReceiveMessageSize;
+
+        /// <summary>Message size limits for the chat gRPC service; Program.cs and the tests both apply this.</summary>
+        public static void ConfigureGrpc(GrpcServiceOptions options)
+        {
+            options.MaxReceiveMessageSize = MaxReceiveMessageSize;
+            options.MaxSendMessageSize = MaxSendMessageSize;
+        }
 
         private sealed class Client
         {
@@ -173,6 +201,22 @@ namespace OWSChat.Service
 
             if (messageType == ChatType.MessageTypeWhisper && string.IsNullOrWhiteSpace(recipientName))
                 return;
+
+            if (text.Length > MaxMessageLength)
+            {
+                LogChat(sender, messageType, recipientName, text, dropped: true);
+                sender.Outbox.Writer.TryWrite(new ServerMessage
+                {
+                    MessageType = ChatType.MessageTypeGeneral,
+                    PlayerName = "[Server]",
+                    Chat = new ServerMessageChat
+                    {
+                        Now = DateTime.UtcNow.ToString("O"),
+                        Text = $"Message not sent: chat messages can be at most {MaxMessageLength} characters."
+                    }
+                });
+                return;
+            }
 
             Sanction mute = await GetActiveMute(sender);
             if (mute != null)
