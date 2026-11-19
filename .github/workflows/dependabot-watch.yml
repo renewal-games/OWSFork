@@ -1,0 +1,28 @@
+name: Dependabot watch
+
+# dependabot.yml schedules NuGet, GitHub Actions and Docker update checks every Monday. On a fork
+# they only run once version updates are enabled in the repository settings, and GitHub pauses
+# them after 90 days without activity on Dependabot PRs. Neither shows up as a failure, so this
+# checks on Wednesday that each ecosystem actually ran this week.
+on:
+  schedule:
+    - cron: '17 6 * * 3'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  check:
+    name: Dependabot version updates ran
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Check for recent Dependabot runs
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash .github/scripts/check-dependabot-version-updates.sh .github/dependabot.yml 8
