@@ -27,6 +27,19 @@ namespace OWSCharacterPersistence.Requests.Characters
         // EconomyOptions.RequireExpectedRevision is on.
         public long? ExpectedRevision { get; set; }
 
+        // Order of this owner's bag saves. Requests are handled in the order they reach the database,
+        // not the order they were sent, and each replaces the whole bag; a save whose SaveSeq is not
+        // above the last one written with the same OwnerToken is answered Success with "superseded" and
+        // writes nothing. Send a number that grows with every bag save made under one OwnerToken, from
+        // one counter shared with UpdateCharacterData: max(last sent + 1, Unix time in milliseconds)
+        // keeps growing even if the counter is lost while the token is kept.
+        // It is never compared with another owner's SaveSeq, so a zone server that takes the character
+        // over needs neither the previous owner's last value nor a clock that agrees with it: owners are
+        // ordered by their claim, and once the new owner has saved, a late save from the owner it
+        // replaced is "superseded" whatever its SaveSeq.
+        // Omitting it (or sending 0 or a negative) keeps last-write-wins between saves.
+        public long? SaveSeq { get; set; }
+
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
         private EconomyOptions economyOptions;
@@ -53,7 +66,8 @@ namespace OWSCharacterPersistence.Requests.Characters
 
             try
             {
-                return await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, Inventory, OwnerToken, expectedRevision);
+                long? saveSeq = SaveSeq > 0 ? SaveSeq : null;
+                return await charactersRepository.UpdateCharacterInventory(customerGUID, CharacterName, Inventory, OwnerToken, expectedRevision, saveSeq);
             }
             catch (Exception ex)
             {

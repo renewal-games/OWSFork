@@ -47,7 +47,14 @@ namespace OWSData.Repositories.Interfaces
         // neither that owner nor the one a running handover replaced is refused with "stale_owner" and writes nothing.
         // It is checked under the Characters row lock, so a claim cannot commit between the check and the write.
         // A null token passes only while the character has no owner (legacy builds).
-        Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory, Guid? ownerToken, long? expectedRevision = null);
+        // saveSeq is opt-in and orders one owner's bag saves: a number that grows with every bag save sent with the
+        // same ownerToken. Under the row lock, a saveSeq not above the one last stored by that ownerToken
+        // (Characters.InventorySaveSeq / InventorySaveSeqOwner) writes nothing and returns Success with "superseded";
+        // otherwise the bag is written and the saveSeq stored with its owner. Different owners are not compared by
+        // saveSeq: a new owner's first numbered save is written whatever its value, and after it a late save from the
+        // owner it replaced is "superseded". Null keeps last-write-wins between saves, and neither reads nor changes
+        // the stored order.
+        Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterInventory> updateCharacterInventory, Guid? ownerToken, long? expectedRevision = null, long? saveSeq = null);
         // Quests, inventory and stats in one transaction. Every section is required (an empty list is a
         // valid empty section, null is rejected) because the inventory write replaces the whole bag.
         // ownerToken works as in UpdateCharacterInventory; a stale owner writes nothing.
@@ -55,9 +62,11 @@ namespace OWSData.Repositories.Interfaces
         // expectedRevision works as in UpdateCharacterInventory, and requireExpectedRevision refuses a
         // revision-less bag with "revision_required". Either revision refusal skips only the bag: quests
         // and stats still commit (together), and the response reports the refusal with Success = false.
+        // saveSeq works as in UpdateCharacterInventory and also skips only the bag: quests and stats still
+        // commit, and the response reports "superseded" with Success = true.
         Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
             IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false);
+            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false, long? saveSeq = null);
         // Absolute wallet write. expectedRevision is opt-in, mirroring UpdateCharacterInventory: pass the
         // Characters.EconomyRevision the wallet was computed from to have a stale copy rejected instead of
         // undoing a shop transaction that committed in the meantime; pass null for legacy last-write-wins.

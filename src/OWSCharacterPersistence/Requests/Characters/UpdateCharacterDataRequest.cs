@@ -28,6 +28,11 @@ namespace OWSCharacterPersistence.Requests.Characters
         // write most likely to land a stale bag over a shop transaction that just committed.
         public long? ExpectedRevision { get; set; }
 
+        // Order of this caller's bag saves; same contract and same counter as
+        // UpdateCharacterInventoryRequest.SaveSeq. A superseded save skips only CharInventory: quests and
+        // stats are still saved, and the reply is Success with ReasonCode "superseded".
+        public long? SaveSeq { get; set; }
+
         // MapInstanceID of the zone server sending this save. The backend refuses the write if the
         // character has since been handed to a different instance. Omit for legacy callers.
         public int? ZoneInstanceID { get; set; }
@@ -55,10 +60,12 @@ namespace OWSCharacterPersistence.Requests.Characters
                 // guard (ExpectedRevision / RequireExpectedRevision) refuses only the bag, as it did when
                 // these were separate saves: quests and stats are not economy state and still commit.
                 long? expectedRevision = ExpectedRevision >= 0 ? ExpectedRevision : null;
+                long? saveSeq = SaveSeq > 0 ? SaveSeq : null;
                 UpdateCharacterDataResponse result = await charactersRepository.UpdateCharacterData(customerGUID, CharacterName,
-                    CharQuests, CharInventory, CharStats, OwnerToken, ZoneInstanceID, expectedRevision, economyOptions.RequireExpectedRevision);
+                    CharQuests, CharInventory, CharStats, OwnerToken, ZoneInstanceID, expectedRevision, economyOptions.RequireExpectedRevision, saveSeq);
 
                 successAndErrorMessage.NewEconomyRevision = result.NewEconomyRevision;
+                successAndErrorMessage.InventorySaveSeq = result.InventorySaveSeq;
                 successAndErrorMessage.ReasonCode = result.ReasonCode;
 
                 if (result.ReasonCode == "stale_owner")

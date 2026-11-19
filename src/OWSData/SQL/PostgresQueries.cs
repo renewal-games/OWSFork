@@ -575,6 +575,21 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
         public static readonly string InsertCharacterInventoryItem = @"INSERT INTO CharInventoryItems
                 (CustomerGUID, CharInventoryID, ItemIDTag, Quantity, InSlotNumber, CustomData, InstanceId)
                 VALUES (@CustomerGUID, @CharInventoryID, @ItemIDTag, @Quantity, @InSlotNumber, @CustomData, @InstanceId)";
+
+        // Bag save order (Characters.InventorySaveSeq and InventorySaveSeqOwner, AddInventorySaveSeq_2026-11-14.sql).
+        // Both run with the Characters row locked FOR UPDATE by the same transaction, so the values read are the ones
+        // the write is decided against: saves, claims and restore all take that lock before changing any of them.
+        // Only a save that sends a SaveSeq runs them: a save without one touches neither the columns nor these queries.
+        // CurrentOwner is NULL for a character nobody has claimed.
+        public static readonly string GetInventorySaveOrder = @"SELECT C.InventorySaveSeq AS SaveSeq, C.InventorySaveSeqOwner AS SeqOwner,
+                    CO.OwnerToken AS CurrentOwner
+                FROM Characters C
+                LEFT JOIN CharacterOwners CO ON CO.CustomerGUID = C.CustomerGUID AND CO.CharacterID = C.CharacterID
+                WHERE C.CustomerGUID = @CustomerGUID AND C.CharacterID = @CharacterID";
+
+        public static readonly string SetInventorySaveOrder = @"UPDATE Characters
+                SET InventorySaveSeq = @SaveSeq, InventorySaveSeqOwner = @OwnerToken
+                WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID";
         }
 
         #endregion
