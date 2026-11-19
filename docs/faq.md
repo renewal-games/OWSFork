@@ -53,7 +53,7 @@ Go to: http://localhost:5601/ and use the default username / password: elastic /
     How do I login to RabbitMQ?
   </summary>
 
-Go to: http://localhost:15672/ and use the default username / password: dev / test
+RabbitMQ is bound to loopback and the application account has no management access. See [RabbitMQ setup and migration](hosting/rabbitmq.md) for credentials and diagnostics.
 </details>
 
 <details markdown="block">

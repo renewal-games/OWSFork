@@ -61,9 +61,11 @@ cp .env.hetzner-dev.example .env.hetzner-dev
 Edit `.env.hetzner-dev` and set a unique Postgres password. Keep
 `DATABASE_CONNECTION_STRING` in sync with `DATABASE_PASSWORD`.
 
-RabbitMQ uses the existing repo config at `.docker/rabbitmq/rabbitmq.conf`, which
-defaults to `dev` / `test`. The broker ports are bound to `127.0.0.1` on the host
-and are only used internally by OWS services in this profile.
+Set `RABBITMQ_DEFAULT_USER` and a unique `RABBITMQ_DEFAULT_PASS` in `.env.hetzner-dev`;
+Compose refuses to start without both. The application account has no management tags
+and can access only launcher exchanges and queues. Broker ports are loopback-only.
+Existing broker volumes require credential and permission migration; see
+[RabbitMQ setup and migration](rabbitmq.md).
 
 Additional env vars for production hardening (set in `.env.hetzner-dev`):
 
