@@ -73,6 +73,22 @@ namespace OWSTests.CharacterPersistence
             Assert.Equal("stale_owner", Assert.IsType<StaleOwnerResult>(reply).ReasonCode);
         }
 
+        [Theory]
+        [InlineData("")]
+        [InlineData("stale_owner")]
+        public async Task Logout_ForwardsTokenAndReportsRepositoryRefusal(string refusal)
+        {
+            ICharactersRepository repository = FakeRepository.Create(refusal, out FakeRepository fake);
+            var request = new PlayerLogoutRequest { CharacterName = CharName, OwnerToken = Token };
+            request.SetData(repository, new HeaderCustomerGUID());
+            SuccessAndErrorMessage reply = await request.Handle();
+            Assert.Equal(Token, fake.TokenSeen);
+            Assert.Equal(refusal == "", reply.Success);
+            Assert.Equal(refusal, reply.ErrorMessage);
+            if (refusal != "")
+                Assert.Equal("stale_owner", Assert.IsType<StaleOwnerResult>(reply).ReasonCode);
+        }
+
         // These actions declare SuccessAndErrorMessage, so this checks ReasonCode still reaches the zone server.
         [Fact]
         public async Task StaleOwnerReply_ThroughADeclaredBaseType_KeepsItsWireFields()
@@ -167,6 +183,8 @@ namespace OWSTests.CharacterPersistence
             protected override object Invoke(MethodInfo targetMethod, object[] args)
             {
                 TokenSeen = args.OfType<Guid>().Skip(1).Cast<Guid?>().FirstOrDefault();
+                if (targetMethod.Name == nameof(ICharactersRepository.PlayerLogout))
+                    return Task.FromResult(_refusal == "");
                 return Task.FromResult(_refusal);
             }
         }

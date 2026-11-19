@@ -758,28 +758,9 @@ namespace OWSData.Repositories.Implementations.MSSQL
             }
             return true;
         }
-        public async Task PlayerLogout(Guid customerGUID, string characterName)
-        {
-            using (Connection)
-            {
-                var parameters = new DynamicParameters();
-                parameters.Add("@CustomerGUID", customerGUID);
-                parameters.Add("@CharName", characterName);
+        public Task<bool> PlayerLogout(Guid customerGUID, string characterName, Guid? ownerToken = null) =>
+            throw new NotSupportedException("Session-scoped logout requires Postgres.");
 
-                var outputCharacter = await Connection.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterIDByName,
-                    parameters,
-                    commandType: CommandType.Text);
-
-                if (outputCharacter.CharacterId > 0)
-                {
-                    parameters.Add("@CharacterID", outputCharacter.CharacterId);
-
-                    await Connection.ExecuteAsync(GenericQueries.RemoveCharacterFromAllInstances,
-                        parameters,
-                        commandType: CommandType.Text);
-                }
-            }
-        }
         public async Task AddQuestListToDatabase(Guid customerGUID, IEnumerable<AddQuestListToDabase> addQuestListToDabase)
         {
             using (Connection)

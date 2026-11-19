@@ -248,7 +248,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 parameters.Add("@CharName", characterName);
                 parameters.Add("@MapInstanceID", mapInstanceID);
 
-                var outputCharacter = await conn.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterIDByName,
+                var outputCharacter = await conn.QuerySingleOrDefaultAsync<int?>(LockCharacterIdByNameSql,
                     parameters,
                     transaction: transaction,
                     commandType: CommandType.Text);
@@ -258,9 +258,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                     transaction: transaction,
                     commandType: CommandType.Text);
 
-                if (outputCharacter?.CharacterId > 0)
+                if (outputCharacter.HasValue)
                 {
-                    parameters.Add("@CharacterID", outputCharacter.CharacterId);
+                    parameters.Add("@CharacterID", outputCharacter.Value);
                     parameters.Add("@ZoneName", outputZone?.ZoneName);
 
                     await conn.ExecuteAsync(GenericQueries.RemoveCharacterFromAllInstances,
@@ -291,24 +291,28 @@ namespace OWSData.Repositories.Implementations.Postgres
         {
             using IDbConnection conn = CreateConnection();
             conn.Open();
+            using IDbTransaction transaction = conn.BeginTransaction();
 
             var parameters = new DynamicParameters();
             parameters.Add("@CustomerGUID", customerGUID);
             parameters.Add("@CharName", characterName);
             parameters.Add("@MapInstanceID", mapInstanceID);
 
-            var outputCharacter = await conn.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterIDByName,
+            var outputCharacter = await conn.QuerySingleOrDefaultAsync<int?>(LockCharacterIdByNameSql,
                 parameters,
+                transaction: transaction,
                 commandType: CommandType.Text);
 
-            if (outputCharacter?.CharacterId > 0)
+            if (outputCharacter.HasValue)
             {
-                parameters.Add("@CharacterID", outputCharacter.CharacterId);
+                parameters.Add("@CharacterID", outputCharacter.Value);
 
                 await conn.ExecuteAsync(GenericQueries.RemoveCharacterFromInstance,
                     parameters,
+                    transaction: transaction,
                     commandType: CommandType.Text);
             }
+            transaction.Commit();
         }
 
         public async Task<bool> RemoveUnstartedMapInstance(Guid customerGUID, int mapInstanceID)
@@ -626,6 +630,9 @@ namespace OWSData.Repositories.Implementations.Postgres
 
                 try
                 {
+                    await conn.ExecuteAsync(CharacterOwnersRepository.LockCharacterSql,
+                        new { CustomerGUID = customerGUID, CharacterID = outputCharacter.CharacterId }, transaction);
+
                     await conn.ExecuteAsync(PostgresQueries.AcquireMapAllocationLock,
                         parameters,
                         transaction: transaction,
@@ -994,30 +1001,33 @@ namespace OWSData.Repositories.Implementations.Postgres
             return true;
         }
 
-        public async Task PlayerLogout(Guid customerGUID, string characterName)
+        public async Task<bool> PlayerLogout(Guid customerGUID, string characterName, Guid? ownerToken = null)
         {
-            using (Connection)
-            {
-                var parameters = new DynamicParameters();
-                parameters.Add("@CustomerGUID", customerGUID);
-                parameters.Add("@CharName", characterName);
+            using DbConnection conn = CreateConnection();
+            await conn.OpenAsync();
+            using DbTransaction tx = await conn.BeginTransactionAsync();
+            var key = new { CustomerGUID = customerGUID, CharName = characterName, OwnerToken = ownerToken };
+            int? characterID = await conn.QuerySingleOrDefaultAsync<int?>(LockCharacterIdByNameSql, key, tx);
+            // Unknown names remain an idempotent no-op.
+            if (!characterID.HasValue)
+                return true;
 
-                var outputCharacter = await Connection.QuerySingleOrDefaultAsync<Characters>(GenericQueries.GetCharacterIDByName,
-                    parameters,
-                    commandType: CommandType.Text);
+            if (await conn.ExecuteScalarAsync<bool>(CharacterOwnersRepository.StaleByIdSql,
+                new { CustomerGUID = customerGUID, CharacterID = characterID.Value, OwnerToken = ownerToken, AllowPrevious = false }, tx))
+                return false;
 
-                //QuerySingleOrDefaultAsync returns null when the character name is unknown (renamed,
-                //deleted, or a stale name still held by a zone server). Logging out a character that
-                //no longer exists is a no-op, not a 500.
-                if (outputCharacter?.CharacterId > 0)
-                {
-                    parameters.Add("@CharacterID", outputCharacter.CharacterId);
-
-                    await Connection.ExecuteAsync(GenericQueries.RemoveCharacterFromAllInstances,
-                        parameters,
-                        commandType: CommandType.Text);
-                }
-            }
+            // A join reservation can coexist with the source membership before the destination claims ownership.
+            // Only the current owner's map belongs to this logout. Without an owner row there is no session map
+            // to identify safely, so leave memberships alone (including tokenless legacy requests).
+            await conn.ExecuteAsync(@"DELETE FROM CharOnMapInstance CMI USING CharacterOwners CO
+                WHERE CMI.CustomerGUID = @CustomerGUID AND CMI.CharacterID = @CharacterID
+                  AND CO.CustomerGUID = CMI.CustomerGUID AND CO.CharacterID = CMI.CharacterID
+                  AND CO.OwnerToken = @OwnerToken::uuid AND CO.MapInstanceID = CMI.MapInstanceID",
+                new { CustomerGUID = customerGUID, CharacterID = characterID.Value, OwnerToken = ownerToken }, tx);
+            await conn.ExecuteAsync(CharacterOwnersRepository.EndOwnerSessionSql,
+                new { CustomerGUID = customerGUID, CharacterName = characterName, OwnerToken = ownerToken }, tx);
+            await tx.CommitAsync();
+            return true;
         }
 
         public async Task AddAbilityToCharacter(Guid customerGUID, string abilityName, string characterName, int abilityLevel, string charHasAbilitiesCustomJSON)
