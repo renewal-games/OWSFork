@@ -415,7 +415,8 @@ namespace OWSData.Repositories.Implementations.Postgres
         {
             using IDbConnection conn = CreateConnection();
             conn.Open();
-            using IDbTransaction transaction = conn.BeginTransaction();
+            // The locking stale-instance query must recheck a heartbeat committed while it waits.
+            using IDbTransaction transaction = conn.BeginTransaction(IsolationLevel.ReadCommitted);
             try
             {
                 var parameters = new DynamicParameters();

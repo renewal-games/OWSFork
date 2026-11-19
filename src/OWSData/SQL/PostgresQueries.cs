@@ -328,9 +328,13 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 		VALUES (@CustomerGUID, @WorldServerID, @MapID, @Port, 1, @PlayerGroupID, NOW())
 		RETURNING mapinstanceid";
 
+		// Hold these locks through both mapping and instance deletion. At READ COMMITTED a heartbeat
+		// that wins the lock is rechecked before its instance can enter the deletion list.
 		public static readonly string GetAllInactiveMapInstances = @"SELECT MapInstanceID
                 FROM MapInstances
-                WHERE LastUpdateFromServer < CURRENT_TIMESTAMP - (@MapMinutes || ' minutes')::INTERVAL AND CustomerGUID = @CustomerGUID";
+                WHERE LastUpdateFromServer < CURRENT_TIMESTAMP - (@MapMinutes || ' minutes')::INTERVAL AND CustomerGUID = @CustomerGUID
+                ORDER BY MapInstanceID
+                FOR UPDATE";
 
 		public static readonly string GetMapInstancesByWorldServerID = @"SELECT MI.*, M.SoftPlayerCap, M.HardPlayerCap, M.MapName, M.MapMode, M.MinutesToShutdownAfterEmpty,
 		       COALESCE(FLOOR(EXTRACT(EPOCH FROM NOW()::TIMESTAMP - MI.LastServerEmptyDate) / 60), 0)::INT  AS MinutesServerHasBeenEmpty,
