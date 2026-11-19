@@ -183,12 +183,18 @@ namespace OWSData.Repositories.Implementations.Postgres
                 transaction);
         }
 
-        private static async Task<int?> GetPartyId(DbConnection connection, IDbTransaction transaction, Guid customerGUID, Guid partyGuid)
+        // Every party write locks its Party row first and holds it to commit, so two writes to one party run one after the
+        // other. Under READ COMMITTED each later statement reads afresh, so the leader, membership and capacity checks that
+        // follow see what the previous write committed: two adds cannot both take the last slot, and an add cannot slip into
+        // a party that a leave or disband is deleting. A party deleted while we waited reads as not found.
+        // UsersRepository.RemoveCharacter takes the same lock before it touches the character's membership.
+        private static async Task<int?> LockParty(DbConnection connection, IDbTransaction transaction, Guid customerGUID, Guid partyGuid)
         {
             return await connection.QuerySingleOrDefaultAsync<int?>(
                 @"SELECT PartyID
                 FROM Party
-                WHERE CustomerGUID = @CustomerGUID AND PartyGuid = @PartyGuid",
+                WHERE CustomerGUID = @CustomerGUID AND PartyGuid = @PartyGuid
+                FOR UPDATE",
                 new { CustomerGUID = customerGUID, PartyGuid = partyGuid },
                 transaction);
         }
@@ -1666,7 +1672,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     throw new InvalidOperationException("A valid party GUID is required.");
                 }
 
-                int? existingPartyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? existingPartyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (existingPartyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
@@ -1807,7 +1813,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? partyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (partyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
@@ -1955,7 +1961,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? partyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (partyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
@@ -2052,7 +2058,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? partyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (partyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
@@ -2123,7 +2129,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? partyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (partyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
@@ -2198,7 +2204,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? partyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (partyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
@@ -2269,7 +2275,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? partyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (partyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
