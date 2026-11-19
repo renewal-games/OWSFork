@@ -9,6 +9,7 @@ using OWSData.Models.Composites;
 using OWSData.Repositories.Implementations.Postgres;
 using OWSInstanceManagement.Requests.Instance;
 using OWSShared.Implementations;
+using OWSShared.Messages;
 using OWSShared.Options;
 using Xunit;
 
@@ -17,7 +18,7 @@ namespace OWSTests.Database
     /// <summary>
     /// ShutDownServerInstance must not leave a MapInstances row at status 3 (shutting down) when no launcher will
     /// complete the shutdown: an unknown instance fails, the message goes to the launcher that owns the row, and a
-    /// failed publish puts the previous status back.
+    /// certainly unqueued publish puts the previous status back. Ambiguous delivery must retain status 3.
     /// </summary>
     public class InstanceShutdownTests : IClassFixture<PostgresTestDatabases>
     {
@@ -83,6 +84,22 @@ namespace OWSTests.Database
 
             Assert.False(result.Success);
             Assert.Equal(ReadyStatus, await Status(source, customerGUID, zoneInstanceID));
+        }
+
+        [PostgresTheory]
+        [InlineData(SchemaSource.SetupSql)]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task ShutDown_QueuedPublishWithLostConfirmation_KeepsShuttingDownStatus(SchemaSource source)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            int zoneInstanceID = await SeedMapInstance(source, customerGUID, worldServerID: 7, ReadyStatus);
+            var request = new RecordingShutDownRequest { WorldServerID = 7, ZoneInstanceID = zoneInstanceID, ConfirmationFails = true };
+
+            SuccessAndErrorMessage result = await Handle(request, source, customerGUID);
+
+            Assert.False(result.Success);
+            Assert.Equal(new[] { 7 }, request.PublishedTo);
+            Assert.Equal(ShuttingDownStatus, await Status(source, customerGUID, zoneInstanceID));
         }
 
         //#173: the launcher decides an idle shutdown from a player count that can be a monitor tick old. A player routed to
@@ -350,6 +367,7 @@ namespace OWSTests.Database
         private sealed class RecordingShutDownRequest : ShutDownServerInstanceRequest
         {
             public bool PublishFails { get; set; }
+            public bool ConfirmationFails { get; set; }
 
             public List<int> PublishedTo { get; } = new();
 
@@ -357,10 +375,14 @@ namespace OWSTests.Database
             {
                 if (PublishFails)
                 {
-                    throw new InvalidOperationException("RabbitMQ is unreachable.");
+                    throw new LauncherCommandNotDeliveredException("RabbitMQ is unreachable.", certainlyNotQueued: true);
                 }
 
                 PublishedTo.Add(worldServerID);
+                if (ConfirmationFails)
+                {
+                    throw new LauncherCommandNotDeliveredException("Confirmation was lost after queuing.");
+                }
             }
         }
     }

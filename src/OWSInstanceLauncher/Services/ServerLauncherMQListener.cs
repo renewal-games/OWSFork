@@ -441,6 +441,19 @@ namespace OWSInstanceLauncher.Services
                 return;
             }
 
+            //Lookup failures must reach ProcessDelivery's retry handling before any process is stopped.
+            var client = _httpClientFactory.CreateClient("OWSInstanceManagement");
+            using var request = new StringContent(zoneInstanceID.ToString(), Encoding.UTF8, "application/json");
+            using var response = await client.PostAsync("api/Instance/GetZoneInstance", request);
+            response.EnsureSuccessStatusCode();
+            var zoneInstance = JsonSerializer.Deserialize<GetServerInstanceFromPort>(await response.Content.ReadAsStringAsync(),
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (zoneInstance == null || zoneInstance.MapInstanceID != zoneInstanceID || zoneInstance.Status != 3)
+            {
+                Log.Warning($"HandleServerShutDownMessage - Skipping Zone Instance {zoneInstanceID}: its current row is missing or is not shutting down.");
+                return;
+            }
+
             ZoneServerProcess tracked = _zoneServerProcessesRepository.GetZoneServerProcesses().Find(process => process.ZoneInstanceId == zoneInstanceID);
 
             bool completeShutdown = true;
