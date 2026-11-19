@@ -194,7 +194,57 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
             ActualAbilityLevel = EXCLUDED.ActualAbilityLevel,
             CustomData = EXCLUDED.CustomData";
 
-        public const string UpsertCharacterAbilitiesJson = @"
+        // Save order for the per-key stat, quest and ability upserts (issue #247). The character row lock orders these
+        // saves but not their snapshots, so a save built first that reached the lock last used to put back older values.
+        // Each row keeps the version of the save that last wrote it (owner token, the caller's SaveSequence if it sent
+        // one, and when CharacterPersistence received the save), and a save writes a key only if:
+        //  - it has no owner token (only possible while the character has no owner at all: last write wins), or
+        //  - the row has no version yet, or
+        //  - the row was written by the same token and this save is newer: by SaveSequence when both carry one (an
+        //    equal one is a retry, already written), otherwise by receipt time, or
+        //  - the row was written by another token that is not the current owner. The current owner's save wins over the
+        //    replaced owner's; a replaced owner's late save during the handover cannot undo a key the new owner wrote.
+        //    A new token is a new count, so a zone server that restarts (and claims again) starts its sequence afresh.
+        // Each save runs this with the character row locked, which claims take too, so the current owner cannot change
+        // between this check and the write. The version parameters are all null without an owner token, and
+        // @SaveSequence is null when the caller sent none.
+        private static string SaveOrderSet(string row) => $@"
+            SaveOwnerToken = CASE WHEN EXCLUDED.SaveOwnerToken IS NULL THEN {row}.SaveOwnerToken ELSE EXCLUDED.SaveOwnerToken END,
+            SaveSequence   = CASE WHEN EXCLUDED.SaveOwnerToken IS NULL THEN {row}.SaveSequence ELSE EXCLUDED.SaveSequence END,
+            SaveReceivedAt = CASE WHEN EXCLUDED.SaveOwnerToken IS NULL THEN {row}.SaveReceivedAt ELSE EXCLUDED.SaveReceivedAt END
+        WHERE EXCLUDED.SaveOwnerToken IS NULL
+           OR {row}.SaveOwnerToken IS NULL
+           OR ({row}.SaveOwnerToken = EXCLUDED.SaveOwnerToken
+               AND CASE WHEN {row}.SaveSequence IS NOT NULL AND EXCLUDED.SaveSequence IS NOT NULL
+                        THEN {row}.SaveSequence < EXCLUDED.SaveSequence
+                        ELSE COALESCE({row}.SaveReceivedAt < EXCLUDED.SaveReceivedAt, true) END)
+           OR ({row}.SaveOwnerToken <> EXCLUDED.SaveOwnerToken
+               AND {row}.SaveOwnerToken IS DISTINCT FROM (SELECT CO.OwnerToken FROM CharacterOwners CO
+                   WHERE CO.CustomerGUID = {row}.CustomerGUID AND CO.CharacterID = {row}.CharacterID))";
+
+        // Whether this owner token has sent a save with a SaveSequence for this character: its saves are then ordered by
+        // those numbers, and one without a number is refused ("save_sequence_required") rather than ordered by receipt
+        // time against them. Run under the character row lock.
+        public const string OwnerTokenSendsSaveSequences = @"
+        SELECT EXISTS (SELECT 1 FROM CharStats WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                           AND SaveOwnerToken = @SaveOwnerToken::uuid AND SaveSequence IS NOT NULL)
+            OR EXISTS (SELECT 1 FROM CharQuests WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                           AND SaveOwnerToken = @SaveOwnerToken::uuid AND SaveSequence IS NOT NULL)
+            OR EXISTS (SELECT 1 FROM CharAbilities WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                           AND SaveOwnerToken = @SaveOwnerToken::uuid AND SaveSequence IS NOT NULL)";
+
+        // The supplied stats only; omitted ones are kept. Ordered as SaveOrderSet describes.
+        public static readonly string UpsertManyCharacterStatsOrdered = @"
+        INSERT INTO CharStats AS T (CustomerGUID, CharacterID, StatIdentifier, Value, SaveOwnerToken, SaveSequence, SaveReceivedAt)
+        SELECT @CustomerGUID::uuid, @CharacterID, S.StatIdentifier, S.StatValue, @SaveOwnerToken::uuid, @SaveSequence::bigint,
+               @SaveReceivedAt::timestamptz
+        FROM unnest(@StatIdentifiers::varchar[], @StatValues::int[]) AS S(StatIdentifier, StatValue)
+        ON CONFLICT (CustomerGUID, CharacterID, StatIdentifier)
+        DO UPDATE SET
+            Value = EXCLUDED.Value," + SaveOrderSet("T");
+
+        // The supplied abilities only; omitted ones are kept. Ordered as SaveOrderSet describes.
+        public static readonly string UpsertCharacterAbilitiesJson = @"
         WITH abil AS (
             SELECT
                 @CustomerGUID                             ::uuid   AS customerguid,
@@ -202,26 +252,32 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
                 J->>'abilityIdTag'                                  AS abilityidtag,
                 (J->>'currentAbilityLevel')::int4                   AS currentabilitylevel,
                 (J->>'actualAbilityLevel') ::int4                   AS actualabilitylevel,
-                COALESCE(J->>'customData','')                       AS customdata
+                COALESCE(J->>'customData','')                       AS customdata,
+                @SaveOwnerToken                           ::uuid   AS saveownertoken,
+                @SaveSequence                             ::bigint AS savesequence,
+                @SaveReceivedAt                      ::timestamptz AS savereceivedat
             FROM   jsonb_array_elements(@AbilitiesJson::jsonb) J
             JOIN   characters C
                    ON  C.customerguid = @CustomerGUID
                    AND C.charname     = @CharName
         )
-        INSERT INTO charabilities
+        INSERT INTO charabilities AS T
                (customerguid,
                 characterid,
                 abilityidtag,
                 currentabilitylevel,
                 actualabilitylevel,
-                customdata)
+                customdata,
+                saveownertoken,
+                savesequence,
+                savereceivedat)
         SELECT  *
         FROM   abil
         ON CONFLICT (customerguid, characterid, abilityidtag)
         DO UPDATE
            SET currentabilitylevel = EXCLUDED.currentabilitylevel,
                actualabilitylevel  = EXCLUDED.actualabilitylevel,
-               customdata          = EXCLUDED.customdata;";
+               customdata          = EXCLUDED.customdata," + SaveOrderSet("T");
 
         public static readonly string AddQuestToDatabase = @"
         INSERT INTO Quest (
@@ -247,28 +303,34 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 
         // Postgres form of GenericQueries.UpdateCharacterQuest, which is T-SQL (IF EXISTS / UPDATE alias
         // FROM) and errors out here. Upserts on the CharQuests primary key, so repeat saves cannot
-        // duplicate rows.
+        // duplicate rows. Ordered as SaveOrderSet describes.
         public static readonly string UpdateCharacterQuest = @"
-        INSERT INTO CharQuests (
+        INSERT INTO CharQuests AS T (
             CustomerGUID,
             CharacterID,
             QuestIDTag,
             QuestJournalTagContainer,
-            CustomData
+            CustomData,
+            SaveOwnerToken,
+            SaveSequence,
+            SaveReceivedAt
         )
         SELECT
             @CustomerGUID::UUID,
             C.CharacterID,
             @QuestIDTag,
             @QuestJournalTagContainer,
-            @CustomData
+            @CustomData,
+            @SaveOwnerToken::uuid,
+            @SaveSequence::bigint,
+            @SaveReceivedAt::timestamptz
         FROM Characters C
         WHERE C.CharName = @CharName
         AND C.CustomerGUID = @CustomerGUID::UUID
         ON CONFLICT (CustomerGUID, CharacterID, QuestIDTag)
         DO UPDATE SET
             QuestJournalTagContainer = EXCLUDED.QuestJournalTagContainer,
-            CustomData               = EXCLUDED.CustomData";
+            CustomData               = EXCLUDED.CustomData," + SaveOrderSet("T");
 
         #endregion
 

@@ -32,6 +32,14 @@ namespace OWSCharacterPersistence.Requests.Characters
         // character has since been handed to a different instance. Omit for legacy callers.
         public int? ZoneInstanceID { get; set; }
 
+        // Orders CharQuests and CharStats against the token's other stat, quest and ability saves, per key; same
+        // contract as UpdateCharacterStatsRequest.SaveSequence. CharInventory is not affected: ExpectedRevision guards it.
+        // Without it the token's saves are ordered by receipt. A "save_sequence_required" refusal writes nothing.
+        public long? SaveSequence { get; set; }
+
+        // As in UpdateCharacterStatsRequest: when model binding built this request; no body can set it.
+        private readonly DateTime receivedAt = SaveClock.Next();
+
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
         private EconomyOptions economyOptions;
@@ -56,7 +64,8 @@ namespace OWSCharacterPersistence.Requests.Characters
                 // these were separate saves: quests and stats are not economy state and still commit.
                 long? expectedRevision = ExpectedRevision >= 0 ? ExpectedRevision : null;
                 UpdateCharacterDataResponse result = await charactersRepository.UpdateCharacterData(customerGUID, CharacterName,
-                    CharQuests, CharInventory, CharStats, OwnerToken, ZoneInstanceID, expectedRevision, economyOptions.RequireExpectedRevision);
+                    CharQuests, CharInventory, CharStats, OwnerToken, ZoneInstanceID, expectedRevision, economyOptions.RequireExpectedRevision,
+                    new SaveOrder(SaveSequence, receivedAt));
 
                 successAndErrorMessage.NewEconomyRevision = result.NewEconomyRevision;
                 successAndErrorMessage.ReasonCode = result.ReasonCode;

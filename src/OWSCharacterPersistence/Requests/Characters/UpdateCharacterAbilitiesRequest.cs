@@ -18,6 +18,13 @@ namespace OWSCharacterPersistence.Requests.Characters
         string IOwnedCharacterWrite.OwnedCharacterName => CharacterName;
         public List<CharacterAbilityDto> CharacterAbilities { get; set; } = new();
 
+        // Orders this save against the token's other stat, quest and ability saves, per ability; same contract as
+        // UpdateCharacterStatsRequest.SaveSequence. Without it the token's saves are ordered by receipt.
+        public long? SaveSequence { get; set; }
+
+        // As in UpdateCharacterStatsRequest: when model binding built this request; no body can set it.
+        private readonly DateTime _receivedAt = SaveClock.Next();
+
         private ICharactersRepository _repo = default!;
         private IHeaderCustomerGUID _cust = default!;
 
@@ -37,11 +44,18 @@ namespace OWSCharacterPersistence.Requests.Characters
                     _cust.CustomerGUID,
                     CharacterName,
                     json,
-                    OwnerToken);
+                    OwnerToken,
+                    new SaveOrder(SaveSequence, _receivedAt));
 
             if (refusal == "stale_owner")
             {
                 return new StaleOwnerResult();
+            }
+
+            if (refusal == "save_sequence_required")
+            {
+                // Nothing was written: this token sends SaveSequence numbers and this save had none.
+                return new SuccessAndErrorMessage { Success = false, ErrorMessage = refusal };
             }
 
             if (refusal == "character_not_found" && CharacterAbilities.Count > 0)
