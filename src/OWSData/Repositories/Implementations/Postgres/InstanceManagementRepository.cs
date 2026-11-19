@@ -35,7 +35,7 @@ namespace OWSData.Repositories.Implementations.Postgres
         private DbConnection Connection => _scopedConnection.Value ??= new ScopedDbConnection(CreateConnection(), () => _scopedConnection.Value = null);
 
         //An unknown instance comes back as an empty row (MapInstanceID 0). A failed lookup throws instead, so a caller
-        //never mistakes a database error for a deleted instance.
+        //never mistakes a database error for a deleted instance. The row carries its map's MapName and ZoneName.
         public async Task<GetServerInstanceFromPort> GetZoneInstance(Guid customerGUID, int zoneInstanceId)
         {
             using (Connection)
@@ -44,7 +44,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 parameter.Add("@CustomerGUID", customerGUID);
                 parameter.Add("@MapInstanceID", zoneInstanceId);
 
-                return await Connection.QuerySingleOrDefaultAsync<GetServerInstanceFromPort>(GenericQueries.GetMapInstance,
+                return await Connection.QuerySingleOrDefaultAsync<GetServerInstanceFromPort>(PostgresQueries.GetZoneInstance,
                     parameter,
                     commandType: CommandType.Text) ?? new GetServerInstanceFromPort();
             }
