@@ -147,13 +147,13 @@ namespace OWSInstanceManagement.Controllers
         {
             StartInstanceLauncherRequest request = new StartInstanceLauncherRequest();
 
-            var launcherGuid = Request.Headers["X-LauncherGUID"].FirstOrDefault();
-            if (string.IsNullOrEmpty(launcherGuid))
+            if (!Guid.TryParse(Request.Headers["X-LauncherGUID"].FirstOrDefault(), out var launcherGuid)
+                || launcherGuid == Guid.Empty)
             {
-                Log.Error("Http Header X-LauncherGUID is empty!");
+                return BadRequest("A valid X-LauncherGUID header is required.");
             }
 
-            request.SetData(_instanceManagementRepository, launcherGuid, _customerGuid);
+            request.SetData(_instanceManagementRepository, launcherGuid.ToString(), _customerGuid);
 
             return await request.Handle();
         }
@@ -167,13 +167,13 @@ namespace OWSInstanceManagement.Controllers
         [SwaggerResponse(404)]*/
         public async Task<IActionResult> ShutDownInstanceLauncher([FromBody] ShutDownInstanceLauncherRequest request)
         {
-            var launcherGuid = Request.Headers["X-LauncherGUID"].FirstOrDefault();
-            if (string.IsNullOrEmpty(launcherGuid))
+            if (!Guid.TryParse(Request.Headers["X-LauncherGUID"].FirstOrDefault(), out var launcherGuid)
+                || launcherGuid == Guid.Empty)
             {
-                Log.Error("Http Header X-LauncherGUID is empty!");
+                return BadRequest("A valid X-LauncherGUID header is required.");
             }
 
-            request.SetData(_instanceManagementRepository, _customerGuid);
+            request.SetData(_instanceManagementRepository, _customerGuid, launcherGuid);
 
             return await request.Handle();
         }
