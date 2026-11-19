@@ -127,6 +127,25 @@ namespace OWSTests.Grpc
             Assert.Equal(type == ChatType.MessageTypeWhisper ? 0 : 1, c.Written.Count);
         }
 
+        [Theory]
+        [InlineData(260)] // Unreal narrows message_type to uint8: 260 would show as 4, Whisper
+        [InlineData(-1)]
+        [InlineData(5)]
+        public async Task UndeclaredChatType_IsDroppedWithANoticeToTheSender(int rawType)
+        {
+            await using var chat = new ChatHarness();
+            var a = await chat.Connect("A");
+            var b = await chat.Connect("B");
+            await a.Send((ChatType)rawType, "spoofed channel", "B");
+            await chat.Finish();
+
+            Assert.Empty(b.Written);
+            var notice = Assert.Single(a.Written);
+            Assert.Equal("[Server]", notice.PlayerName);
+            Assert.Equal(ChatType.MessageTypeGeneral, notice.MessageType);
+            Assert.Contains("Unknown chat channel", notice.Chat.Text);
+        }
+
         private sealed class ChatHarness : IAsyncDisposable
         {
             public Guid Customer { get; } = Guid.NewGuid();

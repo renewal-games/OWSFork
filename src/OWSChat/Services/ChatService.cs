@@ -171,6 +171,20 @@ namespace OWSChat.Service
             var messageType = incoming.MesssageType;
             var recipientName = incoming.Chat.RecipientName?.Trim();
 
+            // proto3 enums are open: a crafted frame can carry any integer. Unreal clients narrow the type to
+            // uint8 (260 arrives as 4, Whisper), so an undeclared value would reach everyone styled as another
+            // channel. Only route declared channels.
+            if (!Enum.IsDefined(messageType))
+            {
+                sender.Outbox.Writer.TryWrite(new ServerMessage
+                {
+                    MessageType = ChatType.MessageTypeGeneral,
+                    PlayerName = "[Server]",
+                    Chat = new ServerMessageChat { Now = DateTime.UtcNow.ToString("O"), Text = "Unknown chat channel." }
+                });
+                return;
+            }
+
             if (messageType == ChatType.MessageTypeWhisper && string.IsNullOrWhiteSpace(recipientName))
                 return;
 
@@ -244,19 +258,20 @@ namespace OWSChat.Service
 
             foreach (var client in _clients.Values)
             {
-                if (groupMembers != null && (client.CustomerGuid != sender.CustomerGuid || !groupMembers.Contains(client.Name)))
-                    continue;
-
-                if (messageType == ChatType.MessageTypeWhisper)
+                // Every channel names its audience; a channel without a case here reaches no one.
+                bool deliver = messageType switch
                 {
-                    bool toSender = string.Equals(client.Name, sender.Name, StringComparison.Ordinal);
-                    bool toTarget = string.Equals(client.Name, recipientName, StringComparison.Ordinal);
+                    ChatType.MessageTypeGeneral or ChatType.MessageTypeTrade => true,
+                    ChatType.MessageTypeParty or ChatType.MessageTypeGuild =>
+                        client.CustomerGuid == sender.CustomerGuid && groupMembers.Contains(client.Name),
+                    ChatType.MessageTypeWhisper =>
+                        string.Equals(client.Name, sender.Name, StringComparison.Ordinal)
+                        || string.Equals(client.Name, recipientName, StringComparison.Ordinal),
+                    _ => false
+                };
 
-                    if (!toSender && !toTarget)
-                        continue;
-                }
-
-                client.Outbox.Writer.TryWrite(outgoing);
+                if (deliver)
+                    client.Outbox.Writer.TryWrite(outgoing);
             }
         }
 
