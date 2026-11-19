@@ -548,12 +548,41 @@ namespace OWSData.Repositories.Implementations.Postgres
 
                     if (characterId != null)
                     {
-                        var partyMemberships = await connection.QueryAsync(
-                            @"SELECT PartyID, PartyLeader
-                            FROM PartyMember
-                            WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
-                            new { CustomerGUID = customerGUID, CharacterID = characterId.Value },
-                            transaction);
+                        // Lock the character's party rows first, as every party write in CharactersRepository does
+                        // (LockParty), then read the membership again: a party add, leave or leader change running now
+                        // finishes first, so the leader handover and the empty-party delete below see its result. If the
+                        // character moved party while we waited, lock the new one too. Ascending PartyID order.
+                        var lockedPartyIds = new HashSet<int>();
+                        IEnumerable<dynamic> partyMemberships;
+                        while (true)
+                        {
+                            partyMemberships = (await connection.QueryAsync(
+                                @"SELECT PartyID, PartyLeader
+                                FROM PartyMember
+                                WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                                ORDER BY PartyID",
+                                new { CustomerGUID = customerGUID, CharacterID = characterId.Value },
+                                transaction)).ToList();
+
+                            int[] unlockedPartyIds = partyMemberships
+                                .Select(membership => (int)membership.partyid)
+                                .Where(partyId => !lockedPartyIds.Contains(partyId))
+                                .ToArray();
+                            if (unlockedPartyIds.Length == 0)
+                            {
+                                break;
+                            }
+
+                            await connection.ExecuteAsync(
+                                @"SELECT PartyID
+                                FROM Party
+                                WHERE CustomerGUID = @CustomerGUID AND PartyID = ANY(@PartyIDs)
+                                ORDER BY PartyID
+                                FOR UPDATE",
+                                new { CustomerGUID = customerGUID, PartyIDs = unlockedPartyIds },
+                                transaction);
+                            lockedPartyIds.UnionWith(unlockedPartyIds);
+                        }
 
                         foreach (var membership in partyMemberships)
                         {
