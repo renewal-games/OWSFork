@@ -21,12 +21,42 @@ namespace OWSTests.Database
     public class MigrationBaselineTests : IClassFixture<PostgresTestDatabases>
     {
         private const string LoginScript = "SamsaraUpdates/LoginLockAndSessionReplace_2026-11-01.sql";
+        private const string PurgeScript = "SamsaraUpdates/StressBotPurgePartyLocks_2026-11-19.sql";
 
         private readonly PostgresTestDatabases _databases;
 
         public MigrationBaselineTests(PostgresTestDatabases databases)
         {
             _databases = databases;
+        }
+
+        // A database whose PurgeStressBots is the one AddStressBotPurge installed, or that has none: --baseline leaves the
+        // replacement pending, and the next normal run installs the purge that takes the character and party locks.
+        [PostgresTheory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task Baseline_LeavesPurgeScriptPending_WhenPurgeIsOldOrMissing_AndUpgradeAppliesIt(bool oldPurge)
+        {
+            string connectionString = await _databases.CreateDatabaseAsync(SchemaSource.Migrated);
+            Assert.True(await PurgeIsCurrent(connectionString));
+
+            await Execute(connectionString, oldPurge
+                ? Script("SamsaraUpdates/AddStressBotPurge_2026-11-04.sql")
+                : "DROP FUNCTION PurgeStressBots()");
+            Assert.False(await PurgeIsCurrent(connectionString));
+
+            await RunMigrations(connectionString, "--baseline");
+
+            List<string> journal = await Journal(connectionString);
+            Assert.DoesNotContain(PurgeScript, journal);
+            Assert.Equal(PostgresTestDatabases.ManifestScripts().Where(s => s != PurgeScript).OrderBy(s => s), journal.OrderBy(s => s));
+
+            string upgrade = await RunMigrations(connectionString);
+
+            Assert.Contains(PurgeScript, upgrade);
+            Assert.Contains("Applied 1 script(s).", upgrade);
+            Assert.Contains(PurgeScript, await Journal(connectionString));
+            Assert.True(await PurgeIsCurrent(connectionString));
         }
 
         [PostgresFact]
@@ -81,6 +111,15 @@ namespace OWSTests.Database
             Assert.Equal(2, bodies.Count);
             return bodies["steamloginandcreatesession"].Contains("pg_advisory_xact_lock")
                 && bodies.Values.All(body => !body.Contains("DELETE FROM UserSessions", StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>PurgeStressBots exists and locks the bots' characters and their parties.</summary>
+        private static async Task<bool> PurgeIsCurrent(string connectionString)
+        {
+            await using var connection = new NpgsqlConnection(connectionString);
+            string body = await connection.QuerySingleOrDefaultAsync<string>(
+                "SELECT prosrc FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname = 'purgestressbots'");
+            return body != null && body.Contains("FOR UPDATE OF C") && body.Contains("FOR UPDATE OF P");
         }
 
         private static async Task<List<string>> Journal(string connectionString)
