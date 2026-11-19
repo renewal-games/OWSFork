@@ -469,7 +469,8 @@ namespace OWSData.SQL
                 FROM MapInstances MI
                 INNER JOIN Maps M ON M.MapID = MI.MapID AND M.CustomerGUID = MI.CustomerGUID
                 WHERE MI.CustomerGUID = @CustomerGUID
-                  AND MI.MapInstanceID = @MapInstanceID";
+                  AND MI.MapInstanceID = @MapInstanceID
+                  AND MI.Status <> 3";
 
         public static readonly string GetMapInstancesByIpAndPort = @"SELECT M.MapName, M.ZoneName, M.WorldCompContainsFilter, M.WorldCompListFilter, 
                 MI.MapInstanceID, MI.Status, 
