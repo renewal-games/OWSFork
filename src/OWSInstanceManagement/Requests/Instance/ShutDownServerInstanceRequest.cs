@@ -78,11 +78,11 @@ namespace OWSInstanceManagement.Requests.Instance
             }
             catch (Exception ex)
             {
-                //Nobody will complete the shutdown, and status 3 stops the server's heartbeat from updating the row.
-                //Put the previous status back so the instance stays usable and a later shutdown can be retried.
+                //A lost confirmation can follow a queued command. Keep status 3 in that case so a delayed delivery
+                //still sees a shutting-down instance; restore only when the command certainly missed the queue.
                 Log.Error(ex, $"ShutDownServerInstance - Could not publish the shutdown of Zone Instance {ZoneInstanceID} to World Server {zoneInstance.WorldServerID}.");
 
-                if (zoneInstance.Status != 3)
+                if (zoneInstance.Status != 3 && LauncherCommandChannel.CertainlyNotQueued(ex))
                 {
                     await _instanceMangementRepository.SetZoneInstanceStatus(CustomerGUID, ZoneInstanceID, zoneInstance.Status);
                 }
@@ -109,19 +109,13 @@ namespace OWSInstanceManagement.Requests.Instance
                 Password = _rabbitMQOptions.Value.RabbitMQPassword
             };
 
-            using (var connection = factory.CreateConnection())
+            MQShutDownServerMessage serverShutDownMessage = new()
             {
-                using (var channel = connection.CreateModel())
-                {
-                    MQShutDownServerMessage serverShutDownMessage = new()
-                    {
-                        CustomerGUID = CustomerGUID,
-                        ZoneInstanceID = ZoneInstanceID
-                    };
+                CustomerGUID = CustomerGUID,
+                ZoneInstanceID = ZoneInstanceID
+            };
 
-                    LauncherCommandChannel.Publish(channel, LauncherCommandChannel.ShutDownExchange, worldServerID, serverShutDownMessage.Serialize());
-                }
-            }
+            LauncherCommandChannel.ConnectAndPublish(factory, LauncherCommandChannel.ShutDownExchange, worldServerID, serverShutDownMessage.Serialize());
         }
     }
 }
