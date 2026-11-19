@@ -2,6 +2,7 @@
 
 #include "OWSGameMode.h"
 #include "OWSPlugin.h"
+#include "HAL/PlatformMisc.h"
 #include "OWSGameInstance.h"
 #include "OWSPlayerState.h"
 #include <Kismet/GameplayStatics.h>
@@ -68,6 +69,8 @@ void AOWSGameMode::ProcessOWS2POSTRequest(FString ApiModuleToCall, FString ApiTo
 	else if (ApiModuleToCall == "InstanceManagementAPI")
 	{
 		OWS2APIPathToUse = OWS2InstanceManagementAPIPath;
+		// Server-only environment secret; never put it in client config or send it to PublicAPI.
+		Request->SetHeader(TEXT("X-Samsara-Service-Key"), FPlatformMisc::GetEnvironmentVariable(TEXT("OWS_SAMSARA_SERVICE_KEY")));
 	}
 	else if (ApiModuleToCall == "CharacterPersistenceAPI")
 	{
