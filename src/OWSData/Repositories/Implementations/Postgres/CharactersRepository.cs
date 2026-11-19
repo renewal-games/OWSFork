@@ -1498,12 +1498,16 @@ namespace OWSData.Repositories.Implementations.Postgres
                 // back over it: a buyer whose Purchase response was lost keeps its pre-purchase gold
                 // locally, and the next save — the stale-revision resync or just the periodic
                 // currency autosave — refunds the spend while the purchase row stays paid.
+                // A refusal, so Success is false like the bag's stale_revision: a caller that reads only
+                // Success would otherwise take the refusal as a write, adopt NewEconomyRevision, and pass
+                // its next save of the same stale wallet straight through the guard.
                 if (expectedRevision.HasValue && expectedRevision.Value != character.EconomyRevision)
                 {
                     transaction.Rollback();
                     return new UpdateCharacterCurrencyResponse
                     {
-                        Success = true,
+                        Success = false,
+                        ErrorMessage = "stale_revision",
                         ReasonCode = "stale_revision",
                         NewEconomyRevision = character.EconomyRevision,
                         AuthoritativeGold = character.Gold
