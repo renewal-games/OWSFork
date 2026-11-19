@@ -90,6 +90,10 @@ so the zone server must send it rather than omit it. Rollout:
    (autosave timers, logout/disconnect/travel flushes, `TradeActor`), adopts `NewEconomyRevision`,
    and on `stale_revision` resyncs and recomputes rather than resending.
 2. Then set `RequireExpectedRevision` to `true`. Turning it on first rejects every autosave.
+3. Set the same `OWSEconomyConfig:RequireExpectedRevision` on OWSGuild. Guild storage deposits and
+   withdrawals rewrite the bag in the database, and only this guard keeps a zone server's older bag
+   from being saved back over them, so OWSGuild refuses storage transfers (`FailedPrecondition`)
+   while its copy is `false`. Keep the two services' values the same.
 
 `UpdateCharacterCurrency` also refuses negative gold, and gold above `OWSEconomyConfig:MaxGold`
 when that is set (0 = uncapped), with `gold_out_of_range`.
