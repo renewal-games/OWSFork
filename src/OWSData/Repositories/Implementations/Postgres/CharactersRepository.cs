@@ -199,6 +199,25 @@ namespace OWSData.Repositories.Implementations.Postgres
                 transaction);
         }
 
+        // A character gets a party membership only here, in CreatePartyOrAddMember, which locks the row of every character
+        // it puts into a party (FOR KEY SHARE) before it locks or creates a party, and holds the locks to commit. The
+        // membership checks run after, so they see any write that held the lock before. PurgeStressBots holds FOR UPDATE on
+        // the bots' rows from before it reads their parties, so a bot cannot create or join a party the purge has not
+        // seen: the write waits, then finds the character gone. UsersRepository.RemoveCharacter locks its character before
+        // its party too. Character locks always come before party locks, in ascending CharacterID. KEY SHARE does not
+        // block ordinary saves to the character row. Returns the IDs that still exist.
+        private static async Task<HashSet<int>> LockJoiningCharacters(DbConnection connection, IDbTransaction transaction, Guid customerGUID, IEnumerable<int> characterIds)
+        {
+            return (await connection.QueryAsync<int>(
+                @"SELECT CharacterID
+                FROM Characters
+                WHERE CustomerGUID = @CustomerGUID AND CharacterID = ANY(@CharacterIDs)
+                ORDER BY CharacterID
+                FOR KEY SHARE",
+                new { CustomerGUID = customerGUID, CharacterIDs = characterIds.Distinct().OrderBy(id => id).ToArray() },
+                transaction)).ToHashSet();
+        }
+
         // excludePartyId lets a rename keep its own current name; PartyID is a positive serial, so the
         // default 0 excludes nothing.
         private static async Task<bool> IsPartyNameAvailable(DbConnection connection, IDbTransaction transaction, Guid customerGUID, string partyName, int excludePartyId = 0)
@@ -1603,6 +1622,32 @@ namespace OWSData.Repositories.Implementations.Postgres
                     throw new InvalidOperationException("Party actor character was not found.");
                 }
 
+                // Lock every character this request puts into a party, the creator too, before any party (LockJoiningCharacters).
+                var joiningMemberIds = new List<int>();
+                foreach (PartyMemberInfo member in partyRequest.PartyMembers.Where(member => !string.Equals(member.CharName, actorName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    int? memberCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(member.CharGuid), member.CharName);
+                    if (memberCharacterId == null)
+                    {
+                        throw new InvalidOperationException("Party member character was not found.");
+                    }
+
+                    joiningMemberIds.Add(memberCharacterId.Value);
+                }
+
+                bool actorJoins = partyRequest.PartyAction == PartyAction.MessageTypeCreate;
+                HashSet<int> lockedCharacterIds = await LockJoiningCharacters(connection, transaction, customerGUID,
+                    joiningMemberIds.Concat(actorJoins ? new[] { actorCharacterId.Value } : Array.Empty<int>()));
+                if (actorJoins && !lockedCharacterIds.Contains(actorCharacterId.Value))
+                {
+                    throw new InvalidOperationException("Party actor character was not found.");
+                }
+
+                if (joiningMemberIds.Any(id => !lockedCharacterIds.Contains(id)))
+                {
+                    throw new InvalidOperationException("Party member character was not found.");
+                }
+
                 if (partyRequest.PartyAction == PartyAction.MessageTypeCreate)
                 {
                     int existingPartyCount = await connection.QuerySingleAsync<int>(
@@ -1657,9 +1702,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                         new { CustomerGUID = customerGUID, PartyID = partyId, CharacterID = actorCharacterId.Value },
                         transaction);
 
-                    foreach (PartyMemberInfo member in partyRequest.PartyMembers.Where(member => !string.Equals(member.CharName, actorName, StringComparison.OrdinalIgnoreCase)))
+                    foreach (int memberCharacterId in joiningMemberIds)
                     {
-                        await AddPartyMember(connection, transaction, customerGUID, partyId, member);
+                        await AddPartyMember(connection, transaction, customerGUID, partyId, memberCharacterId);
                     }
 
                     IEnumerable<PartyStateRow> createRows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
@@ -1690,9 +1735,9 @@ namespace OWSData.Repositories.Implementations.Postgres
                     throw new InvalidOperationException("Only the party leader can add members.");
                 }
 
-                foreach (PartyMemberInfo member in partyRequest.PartyMembers.Where(member => !string.Equals(member.CharName, actorName, StringComparison.OrdinalIgnoreCase)))
+                foreach (int memberCharacterId in joiningMemberIds)
                 {
-                    await AddPartyMember(connection, transaction, customerGUID, existingPartyId.Value, member);
+                    await AddPartyMember(connection, transaction, customerGUID, existingPartyId.Value, memberCharacterId);
                 }
 
                 IEnumerable<PartyStateRow> addRows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
@@ -1706,17 +1751,12 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        private static async Task AddPartyMember(DbConnection connection, IDbTransaction transaction, Guid customerGUID, int partyId, PartyMemberInfo member)
+        // memberCharacterId is locked by LockJoiningCharacters.
+        private static async Task AddPartyMember(DbConnection connection, IDbTransaction transaction, Guid customerGUID, int partyId, int memberCharacterId)
         {
-            int? memberCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(member.CharGuid), member.CharName);
-            if (memberCharacterId == null)
-            {
-                throw new InvalidOperationException("Party member character was not found.");
-            }
-
             int? existingMemberPartyId = await connection.QuerySingleOrDefaultAsync<int?>(
                 @"SELECT PartyID FROM PartyMember WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
-                new { CustomerGUID = customerGUID, CharacterID = memberCharacterId.Value },
+                new { CustomerGUID = customerGUID, CharacterID = memberCharacterId },
                 transaction);
 
             if (existingMemberPartyId != null)
@@ -1747,7 +1787,7 @@ namespace OWSData.Repositories.Implementations.Postgres
             await connection.ExecuteAsync(
                 @"INSERT INTO PartyMember (CustomerGUID, PartyID, CharacterID, PartyLeader, PartyRole)
                 VALUES (@CustomerGUID, @PartyID, @CharacterID, FALSE, 0)",
-                new { CustomerGUID = customerGUID, PartyID = partyId, CharacterID = memberCharacterId.Value },
+                new { CustomerGUID = customerGUID, PartyID = partyId, CharacterID = memberCharacterId },
                 transaction);
         }
 

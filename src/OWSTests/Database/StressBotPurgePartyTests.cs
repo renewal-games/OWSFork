@@ -14,9 +14,9 @@ using Xunit;
 namespace OWSTests.Database
 {
     /// <summary>
-    /// PurgeStressBots against party writes running at the same time. The purge locks the Party row of every party a bot
-    /// is in before it reads that party's membership, the lock every party writer takes first, and decides which parties
-    /// to delete only after the bots' memberships are gone. Each test fixes the overlap with a row lock held by a gate
+    /// PurgeStressBots against party writes running at the same time. The purge locks the bots' character rows, which a
+    /// party create or add locks for every character it puts into a party, then the Party row of every party a bot is in,
+    /// which every party writer locks first. It decides which parties to delete only after the bots' memberships are gone. Each test fixes the overlap with a row lock held by a gate
     /// connection, on independent connections at READ COMMITTED, so the result does not depend on timing. The purge
     /// exists only in the migrated schema.
     /// </summary>
@@ -64,7 +64,7 @@ namespace OWSTests.Database
             await WaitForLockWaiters(1, purge);
 
             Task<PartyToSend> add = Characters().CreatePartyOrAddMember(customer, AddRequest(partyGuid, "SSBot1", "Real"));
-            await WaitForAddToFinishOrWait(add);
+            await WaitForFinishOrSecondWaiter(add);
             await gateTx.CommitAsync();
             await purge;
             Exception addFailure = (await Outcomes(add))[0];
@@ -78,6 +78,67 @@ namespace OWSTests.Database
             Assert.Equal(1, await Scalar<int>("SELECT COUNT(*)::INT FROM Characters WHERE CustomerGUID = @Customer", new { Customer = customer }));
             InvalidOperationException rejected = Assert.IsType<InvalidOperationException>(addFailure);
             Assert.Equal("Party was not found.", rejected.Message);
+        }
+
+        // A bot in no party creates one with a real member while the purge is held after its leader handover, at the
+        // delete of the bots' memberships. Locking parties alone cannot stop this: the new party was never seen. Before
+        // the fix the create committed, the purge removed nothing of it or only the bot leader, and the real member was
+        // left in a party with no leader. With it the create waits on the bot's character row, which the purge locked
+        // before reading any party, and then finds the bot gone.
+        [PostgresFact]
+        public async Task PartyCreatedByABotDuringPurge_IsRefused_AndLeavesNoPartyWithoutALeader()
+        {
+            Guid customer = Guid.NewGuid();
+            await RegisterBot(Users(), customer, 1);
+            int classId = await SeedClass(customer);
+            await SeedCharacter(customer, BotEmail(1), "SSBot1", classId);
+            await SeedCharacter(customer, BotEmail(1), "SSBot2", classId);
+            await SeedCharacter(customer, null, "Real", classId);
+            // SSBot1 alone in a party: the purge deletes its membership after the handover, which leaves this party alone.
+            await CreateParty(customer, "SSBot1");
+            await AssertReadCommitted();
+
+            await using var gate = new NpgsqlConnection(Db);
+            await gate.OpenAsync();
+            await using NpgsqlTransaction gateTx = await gate.BeginTransactionAsync();
+            Assert.Equal(1, (await gate.QueryAsync<int>(@"SELECT PM.CharacterID FROM PartyMember PM
+                JOIN Characters C ON C.CustomerGUID = PM.CustomerGUID AND C.CharacterID = PM.CharacterID
+                WHERE PM.CustomerGUID = @Customer AND C.CharName = 'SSBot1'
+                FOR UPDATE OF PM", new { Customer = customer }, gateTx)).Count());
+
+            Task<List<(string What, long Removed)>> purge = Purge();
+            await WaitForLockWaiters(1, purge);
+
+            var createRequest = new PartyToSend
+            {
+                CustomerGuid = customer.ToString(),
+                PartyAction = PartyAction.MessageTypeCreate,
+                PartyInfo = new PartyInfo(),
+                PartyMembers =
+                {
+                    new PartyMemberInfo { CharName = "SSBot2", PartyLeader = true },
+                    new PartyMemberInfo { CharName = "Real" }
+                }
+            };
+            Task<PartyToSend> create = Characters().CreatePartyOrAddMember(customer, createRequest);
+            await WaitForFinishOrSecondWaiter(create);
+            await gateTx.CommitAsync();
+            await purge;
+            Exception createFailure = (await Outcomes(create))[0];
+
+            Assert.Equal(0, await Scalar<int>(@"SELECT COUNT(*)::INT FROM PartyMember PM
+                WHERE PM.CustomerGUID = @Customer
+                  AND NOT EXISTS (SELECT 1 FROM Characters C WHERE C.CustomerGUID = PM.CustomerGUID AND C.CharacterID = PM.CharacterID)",
+                new { Customer = customer }));
+            Assert.Equal(0, await Scalar<int>(@"SELECT COUNT(*)::INT FROM Party P
+                WHERE P.CustomerGUID = @Customer
+                  AND NOT EXISTS (SELECT 1 FROM PartyMember PM
+                                  WHERE PM.CustomerGUID = P.CustomerGUID AND PM.PartyID = P.PartyID AND PM.PartyLeader)",
+                new { Customer = customer }));
+            Assert.Equal(0, await Scalar<int>("SELECT COUNT(*)::INT FROM PartyMember WHERE CustomerGUID = @Customer", new { Customer = customer }));
+            Assert.Equal(0, await Scalar<int>("SELECT COUNT(*)::INT FROM Party WHERE CustomerGUID = @Customer", new { Customer = customer }));
+            InvalidOperationException rejected = Assert.IsType<InvalidOperationException>(createFailure);
+            Assert.Equal("Party actor character was not found.", rejected.Message);
         }
 
         // A bot leads a party with two real members. The first real member's character deletion has removed its
@@ -248,20 +309,20 @@ namespace OWSTests.Database
             throw new TimeoutException($"Expected {expected} operation(s) to wait on a lock.");
         }
 
-        // Without the party lock the add has nothing to wait for and commits; with it the add waits behind the purge,
-        // which is the one other waiter. Either way the purge has not moved past the gate yet.
-        private async Task WaitForAddToFinishOrWait(Task add)
+        // Without the purge's locks the party write has nothing to wait for and commits; with them it waits behind the
+        // purge, which is the one other waiter. Either way the purge has not moved past the gate yet.
+        private async Task WaitForFinishOrSecondWaiter(Task write)
         {
             await using var connection = new NpgsqlConnection(Db);
             for (int attempt = 0; attempt < 200; attempt++)
             {
-                if (add.IsCompleted || await LockWaiters(connection) >= 2)
+                if (write.IsCompleted || await LockWaiters(connection) >= 2)
                 {
                     return;
                 }
                 await Task.Delay(50);
             }
-            throw new TimeoutException("The party add neither finished nor waited on a lock.");
+            throw new TimeoutException("The party write neither finished nor waited on a lock.");
         }
 
         private static async Task<Exception[]> Outcomes(params Task[] operations)

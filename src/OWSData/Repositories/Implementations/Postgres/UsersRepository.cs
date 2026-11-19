@@ -535,6 +535,8 @@ namespace OWSData.Repositories.Implementations.Postgres
 
                 try
                 {
+                    // Lock the character before its party, the order CharactersRepository.LockJoiningCharacters and
+                    // PurgeStressBots use, so a party add of this character finishes first or finds it gone.
                     int? characterId = await connection.QuerySingleOrDefaultAsync<int?>(
                         @"SELECT C.CharacterID
                         FROM Characters C
@@ -542,7 +544,8 @@ namespace OWSData.Repositories.Implementations.Postgres
                         WHERE C.CustomerGUID = @CustomerGUID
                             AND US.UserSessionGUID = @UserSessionGUID
                             AND " + PostgresQueries.LiveSessionPredicate + @"
-                            AND C.CharName = @CharacterName",
+                            AND C.CharName = @CharacterName
+                        FOR UPDATE OF C",
                         new { CustomerGUID = customerGUID, UserSessionGUID = userSessionGUID, CharacterName = characterName },
                         transaction);
 

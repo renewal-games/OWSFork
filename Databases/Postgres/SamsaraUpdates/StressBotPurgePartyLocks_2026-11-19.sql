@@ -1,7 +1,8 @@
--- Replaces AddStressBotPurge_2026-11-04's PurgeStressBots so that it takes the party lock every party writer takes.
--- The old version decided which parties to delete from a snapshot taken before it changed anything, without locking
--- them. A party add that committed after that snapshot left its new member, now promoted to leader, in a party the
--- purge then deleted. A real member's character deletion running alongside left a surviving party with no leader.
+-- Replaces AddStressBotPurge_2026-11-04's PurgeStressBots so that it takes the character and party locks every party
+-- writer takes. The old version decided which parties to delete from a snapshot taken before it changed anything,
+-- without locking them. A party add that committed after that snapshot left its new member, now promoted to leader,
+-- in a party the purge then deleted. A real member's character deletion running alongside left a surviving party
+-- with no leader, and so did a party a bot created after the snapshot: the bot leader went, the real member stayed.
 --
 -- PurgeStressBots removes the zone stress test's bot accounts and every row they own or wrote, in one transaction.
 -- The stress test seeds them before a run and purges them after it (ragna-remake
@@ -16,10 +17,12 @@
 -- is left with no members goes. There is no orphan or empty-party sweep beyond that; those touch other owners' rows.
 -- A real buyer's purchase in a bot's shop goes with the shop, as in PurgePIEAccounts.
 --
--- Party rows: before reading any party's membership, the purge locks the Party row of every party a bot is in, mixed
--- ones too, as CharactersRepository.LockParty and UsersRepository.RemoveCharacter do before their party writes. Writes
--- already holding one finish first; later ones wait for this purge to commit and then find the party gone or without
--- its bots. The leader handover and the empty-party delete read membership afresh under those locks.
+-- Locks, characters before parties as every party writer takes them: first the bots' Characters rows, which
+-- CharactersRepository.CreatePartyOrAddMember locks for every character it puts into a party, so no bot creates or
+-- joins a party after that; then the Party row of every party a bot is in, mixed ones too, which
+-- CharactersRepository.LockParty and UsersRepository.RemoveCharacter lock before their party writes. Writes already
+-- holding one finish first; later ones wait for this purge to commit and then find the character or party gone, or
+-- the party without its bots. The leader handover and the empty-party delete read membership afresh under the locks.
 --
 -- Raises, and removes nothing, when a selected account's role is not Player or a Stress account owns a character
 -- whose name is not SSBot<digits>. Tables an older schema lacks are skipped. Returns a row count per step.
@@ -50,10 +53,18 @@ BEGIN
         RAISE EXCEPTION 'PurgeStressBots: refusing; these accounts are not Players: %', _Bad;
     END IF;
 
+    -- The bots' character rows, locked to commit. CharactersRepository.CreatePartyOrAddMember locks every character it
+    -- puts into a party (FOR KEY SHARE) before it locks or creates the party, so from here on no bot gets a new party
+    -- membership: a create or add that already held the lock has committed and is seen below; a later one waits, then
+    -- finds the character gone.
     CREATE TEMP TABLE StressChars ON COMMIT DROP AS
-    SELECT C.CustomerGUID, C.CharacterID, LOWER(C.CharName) AS CharName, S.FirstName
-    FROM Characters C
-             JOIN StressUsers S ON S.CustomerGUID = C.CustomerGUID AND S.UserGUID = C.UserGUID;
+    WITH Locked AS (SELECT C.CustomerGUID, C.CharacterID, C.CharName, S.FirstName
+                    FROM Characters C
+                             JOIN StressUsers S ON S.CustomerGUID = C.CustomerGUID AND S.UserGUID = C.UserGUID
+                    ORDER BY C.CustomerGUID, C.CharacterID
+                    FOR UPDATE OF C)
+    SELECT CustomerGUID, CharacterID, LOWER(CharName) AS CharName, FirstName
+    FROM Locked;
 
     SELECT string_agg(CharName, ', ') INTO _Bad
     FROM StressChars
@@ -92,11 +103,11 @@ BEGIN
     WHERE O.OpType IN ('CreateShop', 'CloseShop')
       AND SamsaraTryJsonb(O.ResultJson) ->> 'PlayerShopID' IN (SELECT PlayerShopID::TEXT FROM StressShops);
 
-    -- Every party a bot is in, locked, in ascending (CustomerGUID, PartyID). Which of them end up empty is decided by
-    -- the Party step below, after the bots' memberships are gone, not here: a member can still join or leave until the
-    -- lock is held. A party deleted while we waited is skipped. A bot that joined another party meanwhile brings that
-    -- party in on the next pass; a lock taken out of order there can deadlock with a party writer, which Postgres
-    -- breaks by failing one side, and a failed purge removes nothing and can be run again.
+    -- Every party a bot is in, locked, in ascending (CustomerGUID, PartyID), after the character locks as every party
+    -- writer orders them. Which of them end up empty is decided by the Party step below, after the bots' memberships
+    -- are gone, not here: a real member can still join or leave until the lock is held. A party deleted while we
+    -- waited is skipped. With the bots' characters locked their memberships can only shrink, so one pass finds them
+    -- all; the loop repeats until a pass finds nothing new, in case one did not.
     CREATE TEMP TABLE StressParties ON COMMIT DROP AS
     SELECT CustomerGUID, PartyID FROM Party WHERE FALSE;
 
@@ -150,11 +161,13 @@ BEGIN
         ['PlayerGroupCharacters', 'PlayerGroupCharacters', $q$DELETE FROM PlayerGroupCharacters WHERE (CustomerGUID, CharacterID) IN (SELECT CustomerGUID, CharacterID FROM StressChars)$q$],
         ['PlayerGroupMember', 'PlayerGroupMember', $q$DELETE FROM PlayerGroupMember WHERE (CustomerGUID, CharacterID) IN (SELECT CustomerGUID, CharacterID FROM StressChars)$q$],
         ['GuildMember', 'GuildMember', $q$DELETE FROM GuildMember WHERE (CustomerGUID, CharacterID) IN (SELECT CustomerGUID, CharacterID FROM StressChars)$q$],
+        -- Only in the parties locked above, which hold every bot membership.
         ['PartyMember', 'PartyMember leaders handed over', $q$UPDATE PartyMember M
             SET PartyLeader = (M.CharacterID = H.NextLeader),
                 PartyRole   = CASE WHEN M.CharacterID = H.NextLeader THEN 2 ELSE 0 END
             FROM (SELECT L.CustomerGUID, L.PartyID, MIN(O.CharacterID) AS NextLeader
                   FROM PartyMember L
+                           JOIN StressParties S ON S.CustomerGUID = L.CustomerGUID AND S.PartyID = L.PartyID
                            JOIN StressChars B ON B.CustomerGUID = L.CustomerGUID AND B.CharacterID = L.CharacterID
                            JOIN PartyMember O ON O.CustomerGUID = L.CustomerGUID AND O.PartyID = L.PartyID
                   WHERE L.PartyLeader

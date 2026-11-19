@@ -194,7 +194,14 @@ namespace OWSDatabaseMigrations
                 "    AND proname = 'steamloginandcreatesession' AND prosrc LIKE '%pg_advisory_xact_lock%') " +
                 "AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'public'::regnamespace " +
                 "    AND proname IN ('playerloginandcreatesession', 'steamloginandcreatesession') " +
-                "    AND prosrc ~* 'DELETE\\s+FROM\\s+UserSessions')"
+                "    AND prosrc ~* 'DELETE\\s+FROM\\s+UserSessions')",
+
+            // Only the function body changes. The older PurgeStressBots locks neither the bots' characters nor their
+            // parties, so a party write running alongside a purge can leave a member in a deleted party or a party
+            // with no leader.
+            ["SamsaraUpdates/StressBotPurgePartyLocks_2026-11-19.sql"] =
+                "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'public'::regnamespace " +
+                "    AND proname = 'purgestressbots' AND prosrc LIKE '%FOR UPDATE OF C%' AND prosrc LIKE '%FOR UPDATE OF P%')"
         };
 
         private static bool IsInPlace(NpgsqlConnection connection, string check)
