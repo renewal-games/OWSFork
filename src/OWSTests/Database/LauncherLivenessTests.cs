@@ -200,6 +200,48 @@ namespace OWSTests.Database
             Assert.Equal(1, await ReservationRows(source, customerGUID, instanceID));
         }
 
+        [PostgresTheory]
+        [InlineData(SchemaSource.SetupSql)]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task BackendWorker_ReapsStaleRowsWithoutLauncherOrJoin(SchemaSource source)
+        {
+            Guid customer = Guid.NewGuid();
+            int map = await SeedMap(source, customer, ZoneName);
+            int server = await SeedWorldServer(source, customer, "NOW() - INTERVAL '10 minutes'");
+            int stale = await SeedMapInstance(source, customer, map, server, 7778, ReadyStatus);
+            int live = await SeedMapInstance(source, customer, map, server, 7779, ReadyStatus);
+            await Reserve(source, customer, await SeedCharacter(source, customer, "Stale"), stale);
+            await Reserve(source, customer, await SeedCharacter(source, customer, "Live"), live);
+            await using (var connection = Connection(source))
+            {
+                await connection.ExecuteAsync(@"
+                    INSERT INTO Customers (CustomerGUID, CustomerName, CustomerEmail) VALUES (@Customer, 'Cleanup test', 'cleanup@example.test');
+                    UPDATE MapInstances SET LastUpdateFromServer = NOW() - INTERVAL '10 minutes'
+                    WHERE CustomerGUID = @Customer AND MapInstanceID = @Stale;", new { Customer = customer, Stale = stale });
+            }
+
+            using var container = new SimpleInjector.Container();
+            container.Options.DefaultScopedLifestyle = new SimpleInjector.Lifestyles.AsyncScopedLifestyle();
+            container.RegisterInstance<Microsoft.Extensions.Options.IOptions<StorageOptions>>(Microsoft.Extensions.Options.Options.Create(Storage(source)));
+            container.Register<OWSData.Repositories.Interfaces.ICharactersRepository, CharactersRepository>(SimpleInjector.Lifestyle.Scoped);
+            container.Register<OWSData.Repositories.Interfaces.IConsoleQueriesRepository, ConsoleQueriesRepository>(SimpleInjector.Lifestyle.Scoped);
+            using var worker = new OWSInstanceManagement.Services.InstanceCleanupWorker(container);
+            await worker.StartAsync(System.Threading.CancellationToken.None);
+            try
+            {
+                using var timeout = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(10));
+                while (await InstanceRows(source, customer, stale) != 0)
+                    await Task.Delay(20, timeout.Token);
+                Assert.Equal(0, await ReservationRows(source, customer, stale));
+                Assert.Equal(1, await InstanceRows(source, customer, live));
+                Assert.Equal(1, await ReservationRows(source, customer, live));
+            }
+            finally
+            {
+                await worker.StopAsync(System.Threading.CancellationToken.None);
+            }
+        }
+
         private StorageOptions Storage(SchemaSource source) =>
             new() { OWSDBBackend = "postgres", OWSDBConnectionString = _databases.ConnectionString(source) };
 
