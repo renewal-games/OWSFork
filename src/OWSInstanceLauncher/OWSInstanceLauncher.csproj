@@ -24,6 +24,9 @@
     <PackageReference Include="NuGet.Protocol" Version="6.12.5" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="OWSTests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\OWSData\OWSData.csproj" />
     <ProjectReference Include="..\OWSShared\OWSShared.csproj" />
   </ItemGroup>

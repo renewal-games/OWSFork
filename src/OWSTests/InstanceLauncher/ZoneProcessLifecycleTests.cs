@@ -22,8 +22,8 @@ using Xunit;
 namespace OWSTests.InstanceLauncher
 {
     /// <summary>
-    /// Drives the real listener against real child processes. RabbitMQ is pointed at a closed port, which the listener logs
-    /// and continues past, so the handlers are called directly.
+    /// Drives the real listener against real child processes. The listener only connects to RabbitMQ from DoWork, which
+    /// these tests never call, so the handlers are called directly.
     /// </summary>
     public sealed class ZoneProcessLifecycleTests : IDisposable
     {

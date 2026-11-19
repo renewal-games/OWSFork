@@ -16,6 +16,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Serilog;
 
@@ -36,7 +37,6 @@ namespace OWSInstanceLauncher.Services
         private readonly Guid _launcherGUID;
         private readonly IWritableOptions<OWSInstanceLauncherOptions> _owsInstanceLauncherOptions;
         private readonly IOptions<APIPathOptions> _owsAPIPathOptions;
-        private readonly IOptions<RabbitMQOptions> _rabbitMQOptions;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IZoneServerProcessesRepository _zoneServerProcessesRepository;
         private readonly IOWSInstanceLauncherDataRepository _owsInstanceLauncherDataRepository;
@@ -47,12 +47,25 @@ namespace OWSInstanceLauncher.Services
         private readonly int _StartingInstancePort;
         private readonly string _ServerRegion;
 
+        private readonly IConnectionFactory _connectionFactory;
+        //Held while connecting and starting the consumers, so two DoWork calls can never both register consumers.
+        private readonly object _consumerSetupLock = new object();
+        private bool _consumersStarted;
+
         public ServerLauncherMQListener(IWritableOptions<OWSInstanceLauncherOptions> owsInstanceLauncherOptions, IOptions<APIPathOptions> owsAPIPathOptions, IOptions<RabbitMQOptions> rabbitMQOptions, IHttpClientFactory httpClientFactory, IZoneServerProcessesRepository zoneServerProcessesRepository,
             IOWSInstanceLauncherDataRepository owsInstanceLauncherDataRepository)
+            : this(owsInstanceLauncherOptions, owsAPIPathOptions, httpClientFactory, zoneServerProcessesRepository, owsInstanceLauncherDataRepository,
+                  CreateConnectionFactory(rabbitMQOptions.Value))
         {
+        }
+
+        //Not public: SimpleInjector builds the listener through the single public constructor. Tests pass a fake broker here.
+        internal ServerLauncherMQListener(IWritableOptions<OWSInstanceLauncherOptions> owsInstanceLauncherOptions, IOptions<APIPathOptions> owsAPIPathOptions, IHttpClientFactory httpClientFactory, IZoneServerProcessesRepository zoneServerProcessesRepository,
+            IOWSInstanceLauncherDataRepository owsInstanceLauncherDataRepository, IConnectionFactory connectionFactory)
+        {
+            _connectionFactory = connectionFactory;
             _owsInstanceLauncherOptions = owsInstanceLauncherOptions;
             _owsAPIPathOptions = owsAPIPathOptions;
-            _rabbitMQOptions = rabbitMQOptions;
             _httpClientFactory = httpClientFactory;
             _zoneServerProcessesRepository = zoneServerProcessesRepository;
             _owsInstanceLauncherDataRepository = owsInstanceLauncherDataRepository;
@@ -77,7 +90,20 @@ namespace OWSInstanceLauncher.Services
 
             _worldServerId = GetWorldServerID();
 
-            InitRabbitMQ();
+            //RabbitMQ is connected from DoWork, not here: DoWork is retried until it succeeds, so a broker that is down
+            //when the launcher starts is picked up once it is back instead of leaving the launcher deaf until a restart.
+        }
+
+        private static IConnectionFactory CreateConnectionFactory(RabbitMQOptions rabbitMQOptions)
+        {
+            return new ConnectionFactory()
+            {
+                HostName = rabbitMQOptions.RabbitMQHostName,
+                Port = rabbitMQOptions.RabbitMQPort,
+                UserName = rabbitMQOptions.RabbitMQUserName,
+                Password = rabbitMQOptions.RabbitMQPassword,
+                DispatchConsumersAsync = true
+            };
         }
 
         public void RegisterLauncher()
@@ -117,31 +143,15 @@ namespace OWSInstanceLauncher.Services
             return worldServerID;
         }
 
+        //Throws if RabbitMQ can't be reached or the queues can't be declared; the caller closes whatever was opened.
         private void InitRabbitMQ()
         {
             Log.Information("Attempting to Register OWS Instance Launcher with RabbitMQ ServerSpinUp Queue...");
 
-            var factory = new ConnectionFactory()
-            {
-                HostName = _rabbitMQOptions.Value.RabbitMQHostName,
-                Port = _rabbitMQOptions.Value.RabbitMQPort,
-                UserName = _rabbitMQOptions.Value.RabbitMQUserName,
-                Password = _rabbitMQOptions.Value.RabbitMQPassword,
-                DispatchConsumersAsync = true
-            };
+            // create connection
+            connection = _connectionFactory.CreateConnection();
 
-            // create connection  
-            try
-            {
-                connection = factory.CreateConnection();
-            }
-            catch (Exception ex)
-            {
-                Log.Error($"Error connecting to RabbitMQ.  Check that your can access RabbitMQ from your browser by going to: http://host.docker.internal:15672/  Use default username / password: dev / test.  If the page doesn't load check your Windows HOSTs file for the three entries that Docker Desktop is supposed to add on installation.  If the page does load, but you can't login, you probably have another copy of RabbitMQ already running.  Disable your copy of RabbitMQ and try again.  Error message: {ex.Message}");
-                return;
-            }
-
-            // create channel for server spin up  
+            // create channel for server spin up
             serverSpinUpChannel = connection.CreateModel();
 
             //A named, durable queue per World Server instead of an exclusive auto-delete one: commands this launcher
@@ -158,10 +168,11 @@ namespace OWSInstanceLauncher.Services
 
 
             connection.ConnectionShutdown += RabbitMQ_ConnectionShutdown;
-
-            Log.Information("Registered OWS Instance Launcher with RabbitMQ ServerSpinUp Queue Success!");
         }
 
+        //Run by TimedHostedService, which calls it again every 10 seconds until a call returns without throwing. So a failed
+        //connect throws: the launcher keeps trying until RabbitMQ is reachable. Once connected, RabbitMQ.Client's automatic
+        //recovery restores the connection, channels and consumers after a later drop, so this only has to succeed once.
         //protected override Task ExecuteAsync(CancellationToken stoppingToken)
         public void DoWork()
         {
@@ -171,6 +182,57 @@ namespace OWSInstanceLauncher.Services
                 return;
             }
 
+            //A connect can take longer than the timer interval, so the next call may arrive while one is still running. It
+            //must throw rather than return: returning counts as success and stops the retries.
+            if (!Monitor.TryEnter(_consumerSetupLock))
+            {
+                throw new InvalidOperationException("Still connecting to RabbitMQ.");
+            }
+
+            try
+            {
+                if (_consumersStarted)
+                {
+                    return;
+                }
+
+                try
+                {
+                    InitRabbitMQ();
+                    StartConsumers();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"Error connecting to RabbitMQ. This launcher receives no spin-up or shut-down commands until it connects; it will keep retrying.  Check that your can access RabbitMQ from your browser by going to: http://host.docker.internal:15672/  Use default username / password: dev / test.  If the page doesn't load check your Windows HOSTs file for the three entries that Docker Desktop is supposed to add on installation.  If the page does load, but you can't login, you probably have another copy of RabbitMQ already running.  Disable your copy of RabbitMQ and try again.  Error message: {ex.Message}");
+                    //Start the next attempt from nothing, so a half-finished one can't leave a consumer behind to be doubled.
+                    CloseRabbitMQ();
+                    throw;
+                }
+
+                _consumersStarted = true;
+                Log.Information("Registered OWS Instance Launcher with RabbitMQ ServerSpinUp Queue Success!");
+            }
+            finally
+            {
+                Monitor.Exit(_consumerSetupLock);
+            }
+        }
+
+        private void CloseRabbitMQ()
+        {
+            if (connection != null)
+            {
+                //Abort, not Close: it doesn't throw on a connection that is already broken, and its channels and consumers go with it.
+                RunShutDownStep("aborting the RabbitMQ connection", connection.Abort);
+            }
+
+            connection = null;
+            serverSpinUpChannel = null;
+            serverShutDownChannel = null;
+        }
+
+        private void StartConsumers()
+        {
             //Server Spin Up
             var serverSpinUpConsumer = new AsyncEventingBasicConsumer(serverSpinUpChannel);
 
@@ -217,8 +279,6 @@ namespace OWSInstanceLauncher.Services
             serverShutDownChannel.BasicConsume(queue: serverShutDownQueueName,
                                          autoAck: false,
                                          consumer: serverShutDownConsumer);
-
-            //return Task.CompletedTask;
         }
 
         //Acks a command only after its handler finished, so a launcher that dies mid-handling leaves it in the queue to be
