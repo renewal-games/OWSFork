@@ -212,6 +212,44 @@ namespace OWSTests.Database
             Assert.Equal(0, otherCustomersView.MapInstanceID);
         }
 
+        //#245: a managed zone server boots by looking up its own instance and needs a nonempty ZoneName back, so the row
+        //carries its map's names. Maps is keyed by (CustomerGUID, MapID), so another customer's map with the same MapID
+        //must not be read.
+        [PostgresTheory]
+        [InlineData(SchemaSource.SetupSql)]
+        [InlineData(SchemaSource.Migrated)]
+        public async Task GetZoneInstance_ReturnsItsMapsZoneAndMapName(SchemaSource source)
+        {
+            Guid customerGUID = Guid.NewGuid();
+            await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
+            int mapID = await connection.ExecuteScalarAsync<int>(
+                @"INSERT INTO Maps (CustomerGUID, MapName, Width, Height, ZoneName)
+                  VALUES (@CustomerGUID, '/Game/Maps/L_Lookup', 1, 1, 'LookupZone')
+                  RETURNING MapID",
+                new { CustomerGUID = customerGUID });
+            await connection.ExecuteAsync(
+                @"INSERT INTO Maps (CustomerGUID, MapID, MapName, Width, Height, ZoneName)
+                  VALUES (@CustomerGUID, @MapID, '/Game/Maps/L_OtherCustomer', 1, 1, 'OtherCustomerZone')",
+                new { CustomerGUID = Guid.NewGuid(), MapID = mapID });
+            int zoneInstanceID = await connection.ExecuteScalarAsync<int>(
+                @"INSERT INTO MapInstances (CustomerGUID, WorldServerID, MapID, Port, Status, LastUpdateFromServer)
+                  VALUES (@CustomerGUID, 7, @MapID, 7781, 2, NOW())
+                  RETURNING MapInstanceID",
+                new { CustomerGUID = customerGUID, MapID = mapID });
+
+            var row = await Repository(source).GetZoneInstance(customerGUID, zoneInstanceID);
+            var unknown = await Repository(source).GetZoneInstance(customerGUID, zoneInstanceID + 100000);
+
+            Assert.Equal(zoneInstanceID, row.MapInstanceID);
+            Assert.Equal(7, row.WorldServerID);
+            Assert.Equal(7781, row.Port);
+            Assert.Equal(2, row.Status);
+            Assert.Equal("LookupZone", row.ZoneName);
+            Assert.Equal("/Game/Maps/L_Lookup", row.MapName);
+            Assert.Equal(0, unknown.MapInstanceID);
+            Assert.Null(unknown.ZoneName);
+        }
+
         //A zone server asks for its own row by IP and port. Anything but exactly one match is an empty row, so an IP that two
         //world servers share must not hand one zone server the other's instance.
         [PostgresTheory]
