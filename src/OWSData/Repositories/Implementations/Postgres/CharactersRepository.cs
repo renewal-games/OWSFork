@@ -911,20 +911,33 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        public Task<string> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken, int? callerZoneInstanceId = null) =>
+        public Task<string> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
+            int? callerZoneInstanceId = null, long? saveSequence = null) =>
             WriteAsCharacterOwner(customerGUID, characterName, ownerToken, callerZoneInstanceId, (conn, tx, characterID) =>
-            {
-                var statIds = updateCharacterStats.Select(s => s.StatIdentifier).ToArray();
-                var statVals = updateCharacterStats.Select(s => s.Value).ToArray();
+                UpsertStats(conn, tx, customerGUID, characterID, updateCharacterStats, ownerToken, saveSequence));
 
-                var p = new DynamicParameters();
-                p.Add("@CustomerGUID", customerGUID);
-                p.Add("@CharName", characterName);
-                p.Add("@StatIdentifiers", statIds, dbType: DbType.Object, direction: ParameterDirection.Input);
-                p.Add("@StatValues", statVals, dbType: DbType.Object, direction: ParameterDirection.Input);
+        private static Task UpsertStats(DbConnection conn, DbTransaction tx, Guid customerGUID, int characterID,
+            IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken, long? saveSequence)
+        {
+            var p = new DynamicParameters();
+            p.Add("@CustomerGUID", customerGUID);
+            p.Add("@CharacterID", characterID);
+            p.Add("@StatIdentifiers", updateCharacterStats.Select(s => s.StatIdentifier).ToArray(), dbType: DbType.Object, direction: ParameterDirection.Input);
+            p.Add("@StatValues", updateCharacterStats.Select(s => s.Value).ToArray(), dbType: DbType.Object, direction: ParameterDirection.Input);
+            AddSaveOrder(p, ownerToken, saveSequence);
 
-                return conn.ExecuteAsync(GenericQueries.UpsertManyCharacterStats, p, transaction: tx, commandType: CommandType.Text);
-            });
+            return conn.ExecuteAsync(PostgresQueries.UpsertManyCharacterStatsOrdered, p, transaction: tx, commandType: CommandType.Text);
+        }
+
+        // The version a stat, quest or ability save stamps on the keys it writes (PostgresQueries.SaveOrderSet). A sequence
+        // counts only together with the owner token whose saves it orders, so without a token, or without a positive
+        // sequence (a client that leaves the field at 0), the save is unordered: last write wins, as before.
+        private static void AddSaveOrder(DynamicParameters p, Guid? ownerToken, long? saveSequence)
+        {
+            bool ordered = ownerToken.HasValue && saveSequence > 0;
+            p.Add("@SaveOwnerToken", ordered ? ownerToken : null, DbType.Guid);
+            p.Add("@SaveSequence", ordered ? saveSequence : null, DbType.Int64);
+        }
 
         private const string LockCharacterIdByNameSql = @"SELECT CharacterID FROM Characters
                 WHERE CustomerGUID = @CustomerGUID AND CharName = @CharName
@@ -1295,7 +1308,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
             IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false)
+            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false, long? saveSequence = null)
         {
             // A missing section is refused, not skipped: the inventory write deletes the bag before
             // inserting, so a null CharInventory would read as "empty bag" and wipe it.
@@ -1363,17 +1376,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     bagRefusal = "stale_revision";
                 }
 
-                foreach (UpdateCharacterQuest quest in updateCharacterQuests)
-                {
-                    var p = new DynamicParameters();
-                    p.Add("@CustomerGUID", customerGUID);
-                    p.Add("@CharName", characterName);
-                    p.Add("@QuestIDTag", quest.QuestIDTag);
-                    p.Add("@QuestJournalTagContainer", quest.QuestJournalTagContainer);
-                    p.Add("@CustomData", quest.CustomData);
-
-                    await conn.ExecuteAsync(PostgresQueries.UpdateCharacterQuest, p, transaction: tx, commandType: CommandType.Text);
-                }
+                await UpsertQuests(conn, tx, customerGUID, characterName, updateCharacterQuests, ownerToken, saveSequence);
 
                 long newRevision = character.EconomyRevision;
                 if (bagRefusal == null)
@@ -1406,13 +1409,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     }
                 }
 
-                var statParameters = new DynamicParameters();
-                statParameters.Add("@CustomerGUID", customerGUID);
-                statParameters.Add("@CharName", characterName);
-                statParameters.Add("@StatIdentifiers", updateCharacterStats.Select(s => s.StatIdentifier).ToArray(), dbType: DbType.Object, direction: ParameterDirection.Input);
-                statParameters.Add("@StatValues", updateCharacterStats.Select(s => s.Value).ToArray(), dbType: DbType.Object, direction: ParameterDirection.Input);
-
-                await conn.ExecuteAsync(GenericQueries.UpsertManyCharacterStats, statParameters, transaction: tx, commandType: CommandType.Text);
+                await UpsertStats(conn, tx, customerGUID, character.CharacterID, updateCharacterStats, ownerToken, saveSequence);
 
                 await tx.CommitAsync();
                 return new UpdateCharacterDataResponse
@@ -1540,13 +1537,14 @@ namespace OWSData.Repositories.Implementations.Postgres
                     transaction: tx, commandType: CommandType.Text);
             });
 
-        public Task<string> UpdateCharacterAbilities(Guid customerGUID, string charName, string abilitiesJson, Guid? ownerToken) =>
+        public Task<string> UpdateCharacterAbilities(Guid customerGUID, string charName, string abilitiesJson, Guid? ownerToken, long? saveSequence = null) =>
             WriteAsCharacterOwner(customerGUID, charName, ownerToken, null, (conn, tx, characterID) =>
             {
                 var p = new DynamicParameters();
                 p.Add("@CustomerGUID", customerGUID);
                 p.Add("@CharName", charName);
                 p.Add("@AbilitiesJson", abilitiesJson);
+                AddSaveOrder(p, ownerToken, saveSequence);
 
                 return conn.ExecuteAsync(
                     PostgresQueries.UpsertCharacterAbilitiesJson,
@@ -1554,21 +1552,27 @@ namespace OWSData.Repositories.Implementations.Postgres
                     transaction: tx, commandType: CommandType.Text);
             });
 
-        public Task<string> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, Guid? ownerToken, int? callerZoneInstanceId = null) =>
-            WriteAsCharacterOwner(customerGUID, characterName, ownerToken, callerZoneInstanceId, async (conn, tx, characterID) =>
-            {
-                foreach (UpdateCharacterQuest Quest in updateCharacterQuests)
-                {
-                    var p = new DynamicParameters();
-                    p.Add("@CustomerGUID", customerGUID);
-                    p.Add("@CharName", characterName);
-                    p.Add("@QuestIDTag", Quest.QuestIDTag);
-                    p.Add("@QuestJournalTagContainer", Quest.QuestJournalTagContainer);
-                    p.Add("@CustomData", Quest.CustomData);
+        public Task<string> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, Guid? ownerToken,
+            int? callerZoneInstanceId = null, long? saveSequence = null) =>
+            WriteAsCharacterOwner(customerGUID, characterName, ownerToken, callerZoneInstanceId, (conn, tx, characterID) =>
+                UpsertQuests(conn, tx, customerGUID, characterName, updateCharacterQuests, ownerToken, saveSequence));
 
-                    await conn.ExecuteAsync(PostgresQueries.UpdateCharacterQuest, p, transaction: tx);
-                }
-            });
+        private static async Task UpsertQuests(DbConnection conn, DbTransaction tx, Guid customerGUID, string characterName,
+            IEnumerable<UpdateCharacterQuest> updateCharacterQuests, Guid? ownerToken, long? saveSequence)
+        {
+            foreach (UpdateCharacterQuest quest in updateCharacterQuests)
+            {
+                var p = new DynamicParameters();
+                p.Add("@CustomerGUID", customerGUID);
+                p.Add("@CharName", characterName);
+                p.Add("@QuestIDTag", quest.QuestIDTag);
+                p.Add("@QuestJournalTagContainer", quest.QuestJournalTagContainer);
+                p.Add("@CustomData", quest.CustomData);
+                AddSaveOrder(p, ownerToken, saveSequence);
+
+                await conn.ExecuteAsync(PostgresQueries.UpdateCharacterQuest, p, transaction: tx, commandType: CommandType.Text);
+            }
+        }
 
         public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest)
         {

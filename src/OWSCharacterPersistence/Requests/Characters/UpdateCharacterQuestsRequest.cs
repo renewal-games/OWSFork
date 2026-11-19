@@ -23,6 +23,10 @@ namespace OWSCharacterPersistence.Requests.Characters
         // the player just left cannot overwrite the destination's newer state. Omit for legacy callers.
         public int? ZoneInstanceID { get; set; }
 
+        // Orders this save against the token's other stat, quest and ability saves, per quest; same contract as
+        // UpdateCharacterStatsRequest.SaveSequence. Omit (or send 0) for legacy last-write-wins.
+        public long? SaveSequence { get; set; }
+
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
 
@@ -39,7 +43,7 @@ namespace OWSCharacterPersistence.Requests.Characters
 
             try
             {
-                string refusal = await charactersRepository.UpdateCharacterQuests(customerGUID, CharacterName, CharacterQuests, OwnerToken, ZoneInstanceID);
+                string refusal = await charactersRepository.UpdateCharacterQuests(customerGUID, CharacterName, CharacterQuests, OwnerToken, ZoneInstanceID, SaveSequence);
                 if (refusal == "stale_owner")
                 {
                     return new StaleOwnerResult();

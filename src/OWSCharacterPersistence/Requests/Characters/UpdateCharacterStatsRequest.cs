@@ -23,6 +23,13 @@ namespace OWSCharacterPersistence.Requests.Characters
         // the player just left cannot overwrite the destination's newer state. Omit for legacy callers.
         public int? ZoneInstanceID { get; set; }
 
+        // Where this snapshot falls in the owner token's save order: take the next number when the snapshot is built,
+        // from one counter shared by the stats, quests, abilities and UpdateCharacterData saves, and send the same
+        // number again on a retry. A stat whose stored value came from a higher or equal number of the same token is
+        // left alone, so a save that reached the database late cannot put back older values. Requires OwnerToken.
+        // Omit (or send 0) for legacy last-write-wins. See ICharactersRepository.UpdateCharacterStats.
+        public long? SaveSequence { get; set; }
+
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
 
@@ -39,7 +46,7 @@ namespace OWSCharacterPersistence.Requests.Characters
 
             try
             {
-                string refusal = await charactersRepository.UpdateCharacterStats(customerGUID, CharacterName, CharacterStats, OwnerToken, ZoneInstanceID);
+                string refusal = await charactersRepository.UpdateCharacterStats(customerGUID, CharacterName, CharacterStats, OwnerToken, ZoneInstanceID, SaveSequence);
                 if (refusal == "stale_owner")
                 {
                     return new StaleOwnerResult();

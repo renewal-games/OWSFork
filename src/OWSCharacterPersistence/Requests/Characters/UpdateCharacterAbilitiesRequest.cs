@@ -18,6 +18,10 @@ namespace OWSCharacterPersistence.Requests.Characters
         string IOwnedCharacterWrite.OwnedCharacterName => CharacterName;
         public List<CharacterAbilityDto> CharacterAbilities { get; set; } = new();
 
+        // Orders this save against the token's other stat, quest and ability saves, per ability; same contract as
+        // UpdateCharacterStatsRequest.SaveSequence. Omit (or send 0) for legacy last-write-wins.
+        public long? SaveSequence { get; set; }
+
         private ICharactersRepository _repo = default!;
         private IHeaderCustomerGUID _cust = default!;
 
@@ -37,7 +41,8 @@ namespace OWSCharacterPersistence.Requests.Characters
                     _cust.CustomerGUID,
                     CharacterName,
                     json,
-                    OwnerToken);
+                    OwnerToken,
+                    SaveSequence);
 
             if (refusal == "stale_owner")
             {
