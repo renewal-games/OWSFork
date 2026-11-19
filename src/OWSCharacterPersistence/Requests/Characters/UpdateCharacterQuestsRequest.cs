@@ -24,8 +24,11 @@ namespace OWSCharacterPersistence.Requests.Characters
         public int? ZoneInstanceID { get; set; }
 
         // Orders this save against the token's other stat, quest and ability saves, per quest; same contract as
-        // UpdateCharacterStatsRequest.SaveSequence. Omit (or send 0) for legacy last-write-wins.
+        // UpdateCharacterStatsRequest.SaveSequence. Without it the token's saves are ordered by receipt.
         public long? SaveSequence { get; set; }
+
+        // As in UpdateCharacterStatsRequest: when model binding built this request; no body can set it.
+        private readonly DateTime receivedAt = SaveClock.Next();
 
         private Guid customerGUID;
         private ICharactersRepository charactersRepository;
@@ -43,10 +46,18 @@ namespace OWSCharacterPersistence.Requests.Characters
 
             try
             {
-                string refusal = await charactersRepository.UpdateCharacterQuests(customerGUID, CharacterName, CharacterQuests, OwnerToken, ZoneInstanceID, SaveSequence);
+                string refusal = await charactersRepository.UpdateCharacterQuests(customerGUID, CharacterName, CharacterQuests, OwnerToken, ZoneInstanceID,
+                    new SaveOrder(SaveSequence, receivedAt));
                 if (refusal == "stale_owner")
                 {
                     return new StaleOwnerResult();
+                }
+
+                if (refusal == "save_sequence_required")
+                {
+                    // Nothing was written: this token sends SaveSequence numbers and this save had none.
+                    successAndErrorMessage.Success = false;
+                    successAndErrorMessage.ErrorMessage = refusal;
                 }
 
                 if (refusal == "stale_zone")

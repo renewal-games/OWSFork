@@ -196,29 +196,48 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 
         // Save order for the per-key stat, quest and ability upserts (issue #247). The character row lock orders these
         // saves but not their snapshots, so a save built first that reached the lock last used to put back older values.
-        // Each row keeps the owner token and SaveSequence of the save that last wrote it, and a save writes a key only if:
-        //  - it carries no sequence (legacy callers: last write wins, the stored version is kept), or
+        // Each row keeps the version of the save that last wrote it (owner token, the caller's SaveSequence if it sent
+        // one, and when CharacterPersistence received the save), and a save writes a key only if:
+        //  - it has no owner token (only possible while the character has no owner at all: last write wins), or
         //  - the row has no version yet, or
-        //  - the row was written by the same token with a lower sequence (an equal one is a retry: already written), or
+        //  - the row was written by the same token and this save is newer: by SaveSequence when both carry one (an
+        //    equal one is a retry, already written), otherwise by receipt time, or
         //  - the row was written by another token that is not the current owner. The current owner's save wins over the
         //    replaced owner's; a replaced owner's late save during the handover cannot undo a key the new owner wrote.
         //    A new token is a new count, so a zone server that restarts (and claims again) starts its sequence afresh.
         // Each save runs this with the character row locked, which claims take too, so the current owner cannot change
-        // between this check and the write. @SaveOwnerToken and @SaveSequence are both null or both set.
+        // between this check and the write. The version parameters are all null without an owner token, and
+        // @SaveSequence is null when the caller sent none.
         private static string SaveOrderSet(string row) => $@"
-            SaveOwnerToken = CASE WHEN EXCLUDED.SaveSequence IS NULL THEN {row}.SaveOwnerToken ELSE EXCLUDED.SaveOwnerToken END,
-            SaveSequence   = CASE WHEN EXCLUDED.SaveSequence IS NULL THEN {row}.SaveSequence ELSE EXCLUDED.SaveSequence END
-        WHERE EXCLUDED.SaveSequence IS NULL
-           OR {row}.SaveSequence IS NULL
-           OR ({row}.SaveOwnerToken = EXCLUDED.SaveOwnerToken AND {row}.SaveSequence < EXCLUDED.SaveSequence)
+            SaveOwnerToken = CASE WHEN EXCLUDED.SaveOwnerToken IS NULL THEN {row}.SaveOwnerToken ELSE EXCLUDED.SaveOwnerToken END,
+            SaveSequence   = CASE WHEN EXCLUDED.SaveOwnerToken IS NULL THEN {row}.SaveSequence ELSE EXCLUDED.SaveSequence END,
+            SaveReceivedAt = CASE WHEN EXCLUDED.SaveOwnerToken IS NULL THEN {row}.SaveReceivedAt ELSE EXCLUDED.SaveReceivedAt END
+        WHERE EXCLUDED.SaveOwnerToken IS NULL
+           OR {row}.SaveOwnerToken IS NULL
+           OR ({row}.SaveOwnerToken = EXCLUDED.SaveOwnerToken
+               AND CASE WHEN {row}.SaveSequence IS NOT NULL AND EXCLUDED.SaveSequence IS NOT NULL
+                        THEN {row}.SaveSequence < EXCLUDED.SaveSequence
+                        ELSE COALESCE({row}.SaveReceivedAt < EXCLUDED.SaveReceivedAt, true) END)
            OR ({row}.SaveOwnerToken <> EXCLUDED.SaveOwnerToken
                AND {row}.SaveOwnerToken IS DISTINCT FROM (SELECT CO.OwnerToken FROM CharacterOwners CO
                    WHERE CO.CustomerGUID = {row}.CustomerGUID AND CO.CharacterID = {row}.CharacterID))";
 
+        // Whether this owner token has sent a save with a SaveSequence for this character: its saves are then ordered by
+        // those numbers, and one without a number is refused ("save_sequence_required") rather than ordered by receipt
+        // time against them. Run under the character row lock.
+        public const string OwnerTokenSendsSaveSequences = @"
+        SELECT EXISTS (SELECT 1 FROM CharStats WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                           AND SaveOwnerToken = @SaveOwnerToken::uuid AND SaveSequence IS NOT NULL)
+            OR EXISTS (SELECT 1 FROM CharQuests WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                           AND SaveOwnerToken = @SaveOwnerToken::uuid AND SaveSequence IS NOT NULL)
+            OR EXISTS (SELECT 1 FROM CharAbilities WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                           AND SaveOwnerToken = @SaveOwnerToken::uuid AND SaveSequence IS NOT NULL)";
+
         // The supplied stats only; omitted ones are kept. Ordered as SaveOrderSet describes.
         public static readonly string UpsertManyCharacterStatsOrdered = @"
-        INSERT INTO CharStats AS T (CustomerGUID, CharacterID, StatIdentifier, Value, SaveOwnerToken, SaveSequence)
-        SELECT @CustomerGUID::uuid, @CharacterID, S.StatIdentifier, S.StatValue, @SaveOwnerToken::uuid, @SaveSequence::bigint
+        INSERT INTO CharStats AS T (CustomerGUID, CharacterID, StatIdentifier, Value, SaveOwnerToken, SaveSequence, SaveReceivedAt)
+        SELECT @CustomerGUID::uuid, @CharacterID, S.StatIdentifier, S.StatValue, @SaveOwnerToken::uuid, @SaveSequence::bigint,
+               @SaveReceivedAt::timestamptz
         FROM unnest(@StatIdentifiers::varchar[], @StatValues::int[]) AS S(StatIdentifier, StatValue)
         ON CONFLICT (CustomerGUID, CharacterID, StatIdentifier)
         DO UPDATE SET
@@ -235,7 +254,8 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
                 (J->>'actualAbilityLevel') ::int4                   AS actualabilitylevel,
                 COALESCE(J->>'customData','')                       AS customdata,
                 @SaveOwnerToken                           ::uuid   AS saveownertoken,
-                @SaveSequence                             ::bigint AS savesequence
+                @SaveSequence                             ::bigint AS savesequence,
+                @SaveReceivedAt                      ::timestamptz AS savereceivedat
             FROM   jsonb_array_elements(@AbilitiesJson::jsonb) J
             JOIN   characters C
                    ON  C.customerguid = @CustomerGUID
@@ -249,7 +269,8 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
                 actualabilitylevel,
                 customdata,
                 saveownertoken,
-                savesequence)
+                savesequence,
+                savereceivedat)
         SELECT  *
         FROM   abil
         ON CONFLICT (customerguid, characterid, abilityidtag)
@@ -291,7 +312,8 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
             QuestJournalTagContainer,
             CustomData,
             SaveOwnerToken,
-            SaveSequence
+            SaveSequence,
+            SaveReceivedAt
         )
         SELECT
             @CustomerGUID::UUID,
@@ -300,7 +322,8 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
             @QuestJournalTagContainer,
             @CustomData,
             @SaveOwnerToken::uuid,
-            @SaveSequence::bigint
+            @SaveSequence::bigint,
+            @SaveReceivedAt::timestamptz
         FROM Characters C
         WHERE C.CharName = @CharName
         AND C.CustomerGUID = @CustomerGUID::UUID

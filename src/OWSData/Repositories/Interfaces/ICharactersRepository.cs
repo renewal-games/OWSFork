@@ -38,17 +38,18 @@ namespace OWSData.Repositories.Interfaces
         // callerZoneInstanceId is the MapInstanceID of the zone server issuing the save. When supplied,
         // the write is refused if the character has since been handed to a different instance. Returns
         // false when refused. Null keeps the legacy last-write-wins behaviour.
-        // saveSequence orders the stat, quest and ability saves of one owner token by when their snapshots were taken:
-        // each key keeps the version of the save that last wrote it, and a save with a lower or equal sequence from the
-        // same token leaves that key alone (an equal one is a retry), so a save that reached the database late cannot
-        // put back older values. Keys a save does not carry are kept, as before. The current owner's saves win over a
-        // replaced owner's, whatever the numbers. Null, zero or a negative value, or a null ownerToken, keeps the legacy
-        // last-write-wins behaviour. The sequence must grow with snapshot time across every one of these saves the
-        // token sends, standalone and UpdateCharacterData alike, and a retry must reuse its original number.
+        // saveOrder orders the stat, quest and ability saves of one owner token (issue #247): each key keeps the version
+        // of the save that last wrote it, and an older save from the same token leaves that key alone, so a save that
+        // reached the character row lock late cannot put back older values. Keys a save does not carry are kept.
+        // "Older" is by SaveOrder.Sequence when both saves carry one (an equal one is a retry), else by
+        // SaveOrder.ReceivedAt, when CharacterPersistence received the request; null stamps the save at the call. The
+        // current owner's saves win over a replaced owner's, whatever the order. A null ownerToken (only possible while
+        // the character has no owner) stays last-write-wins. Once a token has sent a Sequence for the character, a save
+        // of it without one is refused with "save_sequence_required" and writes nothing (Postgres).
         Task<string> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? saveSequence = null);
+            int? callerZoneInstanceId = null, SaveOrder saveOrder = null);
         Task<string> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? saveSequence = null);
+            int? callerZoneInstanceId = null, SaveOrder saveOrder = null);
         // Whole-bag rewrite. expectedRevision is opt-in: pass the Characters.EconomyRevision the bag
         // was computed from to have a stale snapshot rejected instead of clobbering a shop
         // transaction that committed in the meantime; pass null for legacy last-write-wins.
@@ -64,10 +65,11 @@ namespace OWSData.Repositories.Interfaces
         // expectedRevision works as in UpdateCharacterInventory, and requireExpectedRevision refuses a
         // revision-less bag with "revision_required". Either revision refusal skips only the bag: quests
         // and stats still commit (together), and the response reports the refusal with Success = false.
-        // saveSequence orders the quests and stats as in UpdateCharacterStats; it does not affect the bag.
+        // saveOrder orders the quests and stats as in UpdateCharacterStats; it does not affect the bag. A
+        // "save_sequence_required" refusal writes none of the three sections.
         Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
             IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false, long? saveSequence = null);
+            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false, SaveOrder saveOrder = null);
         // Absolute wallet write. expectedRevision is opt-in, mirroring UpdateCharacterInventory: pass the
         // Characters.EconomyRevision the wallet was computed from to have a stale copy rejected instead of
         // undoing a shop transaction that committed in the meantime; pass null for legacy last-write-wins.
@@ -77,7 +79,7 @@ namespace OWSData.Repositories.Interfaces
         Task<UpdateCharacterCurrencyResponse> UpdateCharacterCurrency(Guid customerGUID, string characterName, int gold, Guid? ownerToken, long? expectedRevision = null);
         Task<string> UpdateCharacterClass(Guid customerGUID, string characterName, string className, Guid? ownerToken);
         /// <summary>Upserts the abilities in <paramref name="characterAbilities"/> (a camelCase JSON array).</summary>
-        Task<string> UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities, Guid? ownerToken, long? saveSequence = null);
+        Task<string> UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities, Guid? ownerToken, SaveOrder saveOrder = null);
         // False when nothing was written: the character is unknown, or (Postgres) it has an owner and ownerToken is
         // neither that owner nor the one a running handover replaced. The ownership check is part of the write.
         Task<bool> UpdatePosition(Guid customerGUID, string characterName, string mapName, float X, float Y, float Z, float RX, float RY, float RZ, Guid? ownerToken = null);

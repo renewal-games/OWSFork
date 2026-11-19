@@ -25,9 +25,9 @@ namespace OWSData.Health
             ("loginqueue", (string)null),           // AddSamsaraManagement2_2026-10-22.sql, read by every login
             ("loginfailures", (string)null),        // LoginBackoff_2026-10-30.sql, read by every password login
             ("worldservers", "lastheartbeat"),      // AddWorldServerHeartbeat_2026-11-09.sql, read by every zone spin-up
-            ("charstats", "savesequence"),          // AddCharacterSaveOrdering_2026-11-19.sql, written by every stats save
-            ("charquests", "savesequence"),         // AddCharacterSaveOrdering_2026-11-19.sql, written by every quest save
-            ("charabilities", "savesequence")       // AddCharacterSaveOrdering_2026-11-19.sql, written by every ability save
+            ("charstats", "savereceivedat"),        // AddCharacterSaveOrdering_2026-11-19.sql, written by every stats save
+            ("charquests", "savereceivedat"),       // AddCharacterSaveOrdering_2026-11-19.sql, written by every quest save
+            ("charabilities", "savereceivedat")     // AddCharacterSaveOrdering_2026-11-19.sql, written by every ability save
         };
 
         /// <summary>Indexes the code relies on, such as the target of an ON CONFLICT upsert.</summary>

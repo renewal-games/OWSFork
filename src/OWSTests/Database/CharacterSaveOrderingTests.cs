@@ -19,8 +19,9 @@ namespace OWSTests.Database
     /// the writes but not the snapshots: a save built first (A) that reaches the lock after a newer one (B) has committed
     /// used to put back A's older values, with the same valid owner token and zone. These saves are A arriving late,
     /// whether it was slow to reach the database, a timed-out request that still went through, or a retry. Each key now
-    /// keeps the (owner token, SaveSequence) of the save that wrote it, so A loses on the keys B wrote and still writes
-    /// the keys B did not carry. Issue #247. Migrated schema only: setup.sql alone has none of these tables.
+    /// keeps the version of the save that wrote it (owner token, the caller's SaveSequence if any, and when the request
+    /// was received), so A loses on the keys B wrote and still writes the keys B did not carry. Issue #247. Migrated
+    /// schema only: setup.sql alone has none of these tables.
     /// </summary>
     public class CharacterSaveOrderingTests : IClassFixture<PostgresTestDatabases>
     {
@@ -70,19 +71,113 @@ namespace OWSTests.Database
             Assert.Equal(11, await Stat(customerGUID, "Strength"));
         }
 
+        // Today's zone server sends no SaveSequence. Its saves are ordered by when this service received them: A was
+        // received (its request built) first, B second; B reaches the lock and commits first, then A arrives.
         [PostgresFact]
-        public async Task SavesWithoutASequence_StayLastWriteWins()
+        public async Task TodaysClient_StatsSaveReceivedFirstButWrittenLast_KeepsTheNewerValue()
+        {
+            (Guid customerGUID, Guid token) = await SeedOwnedCharacter();
+
+            UpdateCharacterStatsRequest a = Stats(customerGUID, token, null, ("Strength", 10), ("Agility", 3));
+            UpdateCharacterStatsRequest b = Stats(customerGUID, token, null, ("Strength", 11));
+            await AssertSaved(b);
+            await AssertSaved(a);
+
+            Assert.Equal(11, await Stat(customerGUID, "Strength"));
+            Assert.Equal(3, await Stat(customerGUID, "Agility"));
+        }
+
+        [PostgresFact]
+        public async Task TodaysClient_QuestAndAbilitySavesReceivedFirstButWrittenLast_KeepTheNewerValues()
+        {
+            (Guid customerGUID, Guid token) = await SeedOwnedCharacter();
+
+            UpdateCharacterQuestsRequest questsA = Quests(customerGUID, token, null, ("Quest.Main", "step1"), ("Quest.Side", "side1"));
+            UpdateCharacterAbilitiesRequest abilitiesA = Abilities(customerGUID, token, null, ("Ability.Fireball", 4), ("Ability.Frost", 1));
+            UpdateCharacterQuestsRequest questsB = Quests(customerGUID, token, null, ("Quest.Main", "step2"));
+            UpdateCharacterAbilitiesRequest abilitiesB = Abilities(customerGUID, token, null, ("Ability.Fireball", 5));
+            await AssertSaved(questsB);
+            await AssertSaved(abilitiesB);
+            await AssertSaved(questsA);
+            await AssertSaved(abilitiesA);
+
+            Assert.Equal("step2", await Journal(customerGUID, "Quest.Main"));
+            Assert.Equal("side1", await Journal(customerGUID, "Quest.Side"));
+            Assert.Equal(5, await AbilityLevel(customerGUID, "Ability.Fireball"));
+            Assert.Equal(1, await AbilityLevel(customerGUID, "Ability.Frost"));
+        }
+
+        [PostgresFact]
+        public async Task TodaysClient_SavesInReceiptOrder_AllLand()
         {
             (Guid customerGUID, Guid token) = await SeedOwnedCharacter();
 
             await AssertSaved(Stats(customerGUID, token, null, ("Strength", 11)));
             await AssertSaved(Stats(customerGUID, token, null, ("Strength", 10)));
-            Assert.Equal(10, await Stat(customerGUID, "Strength"));
-
-            // 0 is what a client sends when it leaves the field at its default: unordered too, not "sequence 0".
             await AssertSaved(Stats(customerGUID, token, 0, ("Strength", 12)));
-            await AssertSaved(Stats(customerGUID, token, 0, ("Strength", 13)));
-            Assert.Equal(13, await Stat(customerGUID, "Strength"));
+
+            Assert.Equal(12, await Stat(customerGUID, "Strength"));
+        }
+
+        // A token that has sent a SaveSequence cannot slip an unnumbered save in among its numbered ones.
+        [PostgresFact]
+        public async Task AfterATokenSendsASequence_ItsSavesWithoutOneAreRefusedAndWriteNothing()
+        {
+            (Guid customerGUID, Guid token) = await SeedOwnedCharacter();
+            await AssertSaved(Stats(customerGUID, token, 1, ("Strength", 10)));
+
+            await AssertRequired(await Stats(customerGUID, token, null, ("Strength", 1), ("Agility", 1)).Handle());
+            await AssertRequired(await Quests(customerGUID, token, null, ("Quest.Main", "unordered")).Handle());
+            await AssertRequired(await Abilities(customerGUID, token, null, ("Ability.Fireball", 1)).Handle());
+            UpdateCharacterDataResponse combined = await CharacterData(customerGUID, token, null, ("Strength", 1), ("Quest.Main", "unordered")).Handle();
+            Assert.False(combined.Success);
+            Assert.Equal("save_sequence_required", combined.ReasonCode);
+
+            Assert.Equal(10, await Stat(customerGUID, "Strength"));
+            Assert.Null(await Stat(customerGUID, "Agility"));
+            Assert.Null(await Journal(customerGUID, "Quest.Main"));
+            Assert.Null(await AbilityLevel(customerGUID, "Ability.Fireball"));
+
+            // The rule is per token: the next owner may still save without numbers.
+            Guid newToken = (await Owners().ClaimByName(customerGUID, CharName, OwningZone)).OwnerToken;
+            await AssertSaved(Stats(customerGUID, newToken, null, ("Strength", 12)));
+            Assert.Equal(12, await Stat(customerGUID, "Strength"));
+
+            static Task AssertRequired(SuccessAndErrorMessage reply)
+            {
+                Assert.False(reply.Success);
+                Assert.Equal("save_sequence_required", reply.ErrorMessage);
+                return Task.CompletedTask;
+            }
+        }
+
+        [PostgresFact]
+        public async Task TodaysClient_ReplacedOwnersLateSaveCannotUndoTheNewOwnersWrite()
+        {
+            (Guid customerGUID, Guid oldToken) = await SeedOwnedCharacter();
+            await AssertSaved(Stats(customerGUID, oldToken, null, ("Strength", 5)));
+            UpdateCharacterStatsRequest late = Stats(customerGUID, oldToken, null, ("Strength", 4), ("Agility", 9));
+
+            Guid newToken = (await Owners().ClaimByName(customerGUID, CharName, OwningZone)).OwnerToken;
+            await AssertSaved(Stats(customerGUID, newToken, null, ("Strength", 6)));
+            await AssertSaved(late);
+
+            Assert.Equal(6, await Stat(customerGUID, "Strength"));
+            Assert.Equal(9, await Stat(customerGUID, "Agility"));
+        }
+
+        // Without an owner token (possible only while the character has no owner, as for legacy builds) nothing is
+        // versioned: the last write wins, as before.
+        [PostgresFact]
+        public async Task OwnerlessSaves_StayLastWriteWins()
+        {
+            Guid customerGUID = await SeedCharacter();
+
+            UpdateCharacterStatsRequest a = Stats(customerGUID, null, null, ("Strength", 10));
+            await AssertSaved(Stats(customerGUID, null, null, ("Strength", 11)));
+            await AssertSaved(a);
+
+            Assert.Equal(10, await Stat(customerGUID, "Strength"));
         }
 
         [PostgresFact]
@@ -186,7 +281,8 @@ namespace OWSTests.Database
             Assert.Equal("", result.ErrorMessage ?? "");
         }
 
-        private UpdateCharacterStatsRequest Stats(Guid customerGUID, Guid token, long? sequence, params (string Stat, int Value)[] stats)
+        // Each request is stamped as received when it is built, as model binding builds it.
+        private UpdateCharacterStatsRequest Stats(Guid customerGUID, Guid? token, long? sequence, params (string Stat, int Value)[] stats)
         {
             var request = new UpdateCharacterStatsRequest
             {
@@ -227,7 +323,7 @@ namespace OWSTests.Database
             return request;
         }
 
-        private UpdateCharacterDataRequest CharacterData(Guid customerGUID, Guid token, long sequence, (string Stat, int Value) stat, (string Quest, string Journal) quest)
+        private UpdateCharacterDataRequest CharacterData(Guid customerGUID, Guid token, long? sequence, (string Stat, int Value) stat, (string Quest, string Journal) quest)
         {
             var request = new UpdateCharacterDataRequest
             {
@@ -252,6 +348,15 @@ namespace OWSTests.Database
         // A character in OwningZone with an empty bag, claimed by a zone server; returns the owner token.
         private async Task<(Guid CustomerGUID, Guid Token)> SeedOwnedCharacter()
         {
+            Guid customerGUID = await SeedCharacter();
+            ClaimCharacterResult claim = await Owners().ClaimByName(customerGUID, CharName, OwningZone);
+            Assert.True(claim.Success, claim.ErrorMessage);
+            return (customerGUID, claim.OwnerToken);
+        }
+
+        // A character in OwningZone with an empty bag and no owner.
+        private async Task<Guid> SeedCharacter()
+        {
             Guid customerGUID = Guid.NewGuid();
             await using (var connection = new NpgsqlConnection(_databases.ConnectionString(Source)))
             {
@@ -268,9 +373,7 @@ namespace OWSTests.Database
                     new { CustomerGUID = customerGUID, CharName, OwningZone });
             }
 
-            ClaimCharacterResult claim = await Owners().ClaimByName(customerGUID, CharName, OwningZone);
-            Assert.True(claim.Success, claim.ErrorMessage);
-            return (customerGUID, claim.OwnerToken);
+            return customerGUID;
         }
 
         private async Task EndHandover(Guid customerGUID)

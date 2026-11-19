@@ -570,20 +570,21 @@ namespace OWSData.Repositories.Implementations.MSSQL
         // MSSQL is not a deployment target (Postgres only), so the zone-ownership guard is not
         // implemented here. The parameter is accepted and ignored rather than refused: refusing would
         // block every save instead of only the stale ones.
-        // Save ordering (saveSequence) is Postgres only too, but it is refused rather than ignored: ignoring it would
-        // let the stale save it exists to stop through while the caller believes it is protected.
-        private static void RefuseSaveSequence(long? saveSequence)
+        // Save ordering (saveOrder) is Postgres only too: these saves stay last-write-wins here, as the zone guard
+        // stays unchecked. A caller's explicit SaveSequence is refused rather than ignored, since ignoring it would let
+        // the stale save it exists to stop through while the caller believes it is protected.
+        private static void RefuseSaveSequence(SaveOrder saveOrder)
         {
-            if (saveSequence > 0)
+            if (saveOrder?.Sequence != null)
             {
                 throw new NotSupportedException("Ordered stat, quest and ability saves (SaveSequence) are only implemented for Postgres.");
             }
         }
 
         public async Task<string> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? saveSequence = null)
+            int? callerZoneInstanceId = null, SaveOrder saveOrder = null)
         {
-            RefuseSaveSequence(saveSequence);
+            RefuseSaveSequence(saveOrder);
             using (Connection)
             {
                 var statIds = updateCharacterStats.Select(s => s.StatIdentifier).ToArray();
@@ -600,9 +601,9 @@ namespace OWSData.Repositories.Implementations.MSSQL
             }
         }
         public async Task<string> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? saveSequence = null)
+            int? callerZoneInstanceId = null, SaveOrder saveOrder = null)
         {
-            RefuseSaveSequence(saveSequence);
+            RefuseSaveSequence(saveOrder);
             using (Connection)
             {
                 foreach (UpdateCharacterQuest Quest in updateCharacterQuests)
@@ -623,7 +624,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
         }
         public Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
             IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false, long? saveSequence = null)
+            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false, SaveOrder saveOrder = null)
         {
             throw new NotSupportedException("UpdateCharacterData's single-transaction save is only implemented for Postgres.");
         }
@@ -1161,7 +1162,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
             return guildInfo;
         }
 
-        public Task<string> UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities, Guid? ownerToken, long? saveSequence = null)
+        public Task<string> UpdateCharacterAbilities(Guid customerGUID, string characterName, string characterAbilities, Guid? ownerToken, SaveOrder saveOrder = null)
         {
             throw new NotImplementedException();
         }

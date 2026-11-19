@@ -867,9 +867,10 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         // A standalone zone save. The character row stays locked through the write, as in UpdateCharacterInventory, so a
         // save that passed the controller's check cannot land after a claim or a restore that replaced the owner.
-        // Null when written, else why not: "character_not_found", "stale_owner" or "stale_zone".
+        // Null when written, else why not: "character_not_found", "stale_owner", "stale_zone" or, for an ordered save
+        // (saveOrder set), "save_sequence_required".
         private async Task<string> WriteAsCharacterOwner(Guid customerGUID, string characterName, Guid? ownerToken, int? callerZoneInstanceId,
-            Func<DbConnection, DbTransaction, int, Task> write)
+            Func<DbConnection, DbTransaction, int, Task> write, SaveOrder saveOrder = null)
         {
             using DbConnection conn = CreateConnection();
             await conn.OpenAsync();
@@ -893,6 +894,10 @@ namespace OWSData.Repositories.Implementations.Postgres
                 {
                     refusal = "stale_zone";
                 }
+                else if (saveOrder != null && await IsMissingSaveSequenceUnderLock(conn, tx, customerGUID, characterID.Value, ownerToken, saveOrder))
+                {
+                    refusal = "save_sequence_required";
+                }
 
                 if (refusal != null)
                 {
@@ -912,31 +917,52 @@ namespace OWSData.Repositories.Implementations.Postgres
         }
 
         public Task<string> UpdateCharacterStats(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? saveSequence = null) =>
-            WriteAsCharacterOwner(customerGUID, characterName, ownerToken, callerZoneInstanceId, (conn, tx, characterID) =>
-                UpsertStats(conn, tx, customerGUID, characterID, updateCharacterStats, ownerToken, saveSequence));
+            int? callerZoneInstanceId = null, SaveOrder saveOrder = null)
+        {
+            saveOrder ??= SaveOrder.Now();
+            return WriteAsCharacterOwner(customerGUID, characterName, ownerToken, callerZoneInstanceId, (conn, tx, characterID) =>
+                UpsertStats(conn, tx, customerGUID, characterID, updateCharacterStats, ownerToken, saveOrder), saveOrder);
+        }
 
         private static Task UpsertStats(DbConnection conn, DbTransaction tx, Guid customerGUID, int characterID,
-            IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken, long? saveSequence)
+            IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken, SaveOrder saveOrder)
         {
             var p = new DynamicParameters();
             p.Add("@CustomerGUID", customerGUID);
             p.Add("@CharacterID", characterID);
             p.Add("@StatIdentifiers", updateCharacterStats.Select(s => s.StatIdentifier).ToArray(), dbType: DbType.Object, direction: ParameterDirection.Input);
             p.Add("@StatValues", updateCharacterStats.Select(s => s.Value).ToArray(), dbType: DbType.Object, direction: ParameterDirection.Input);
-            AddSaveOrder(p, ownerToken, saveSequence);
+            AddSaveOrder(p, ownerToken, saveOrder);
 
             return conn.ExecuteAsync(PostgresQueries.UpsertManyCharacterStatsOrdered, p, transaction: tx, commandType: CommandType.Text);
         }
 
-        // The version a stat, quest or ability save stamps on the keys it writes (PostgresQueries.SaveOrderSet). A sequence
-        // counts only together with the owner token whose saves it orders, so without a token, or without a positive
-        // sequence (a client that leaves the field at 0), the save is unordered: last write wins, as before.
-        private static void AddSaveOrder(DynamicParameters p, Guid? ownerToken, long? saveSequence)
+        // The version a stat, quest or ability save stamps on the keys it writes (PostgresQueries.SaveOrderSet). A version
+        // belongs to an owner token, so a save without one (possible only while the character has no owner) writes none
+        // and is last-write-wins. With a token, the save is ordered by its SaveSequence if it sent one, else by receipt.
+        private static void AddSaveOrder(DynamicParameters p, Guid? ownerToken, SaveOrder saveOrder)
         {
-            bool ordered = ownerToken.HasValue && saveSequence > 0;
-            p.Add("@SaveOwnerToken", ordered ? ownerToken : null, DbType.Guid);
-            p.Add("@SaveSequence", ordered ? saveSequence : null, DbType.Int64);
+            bool versioned = ownerToken.HasValue;
+            p.Add("@SaveOwnerToken", versioned ? ownerToken : null, DbType.Guid);
+            p.Add("@SaveSequence", versioned ? saveOrder.Sequence : null, DbType.Int64);
+            // timestamptz: Npgsql 8 takes a zero-offset DateTimeOffset as DbType.DateTimeOffset (DbType.DateTime would be
+            // timestamp without time zone, which refuses UTC values).
+            p.Add("@SaveReceivedAt", versioned ? new DateTimeOffset(saveOrder.ReceivedAt, TimeSpan.Zero) : null, DbType.DateTimeOffset);
+        }
+
+        // A token that has sent SaveSequence numbers must keep sending them: one of its saves without a number cannot be
+        // placed among them, so it is refused instead of being ordered by receipt time behind their backs.
+        private static async Task<bool> IsMissingSaveSequenceUnderLock(DbConnection conn, DbTransaction tx, Guid customerGUID, int characterID,
+            Guid? ownerToken, SaveOrder saveOrder)
+        {
+            if (!ownerToken.HasValue || saveOrder.Sequence.HasValue)
+            {
+                return false;
+            }
+
+            return await conn.ExecuteScalarAsync<bool>(PostgresQueries.OwnerTokenSendsSaveSequences,
+                new { CustomerGUID = customerGUID, CharacterID = characterID, SaveOwnerToken = ownerToken },
+                transaction: tx, commandType: CommandType.Text);
         }
 
         private const string LockCharacterIdByNameSql = @"SELECT CharacterID FROM Characters
@@ -1308,8 +1334,10 @@ namespace OWSData.Repositories.Implementations.Postgres
 
         public async Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
             IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false, long? saveSequence = null)
+            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false, SaveOrder saveOrder = null)
         {
+            saveOrder ??= SaveOrder.Now();
+
             // A missing section is refused, not skipped: the inventory write deletes the bag before
             // inserting, so a null CharInventory would read as "empty bag" and wipe it.
             if (updateCharacterQuests == null || updateCharacterInventory == null || updateCharacterStats == null)
@@ -1366,6 +1394,13 @@ namespace OWSData.Repositories.Implementations.Postgres
                     }
                 }
 
+                // As in the standalone saves: once this token sends SaveSequence numbers, a save without one writes nothing.
+                if (await IsMissingSaveSequenceUnderLock(conn, tx, customerGUID, character.CharacterID, ownerToken, saveOrder))
+                {
+                    await tx.RollbackAsync();
+                    return CharacterDataFail("save_sequence_required");
+                }
+
                 string bagRefusal = null;
                 if (expectedRevision == null && requireExpectedRevision)
                 {
@@ -1376,7 +1411,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     bagRefusal = "stale_revision";
                 }
 
-                await UpsertQuests(conn, tx, customerGUID, characterName, updateCharacterQuests, ownerToken, saveSequence);
+                await UpsertQuests(conn, tx, customerGUID, characterName, updateCharacterQuests, ownerToken, saveOrder);
 
                 long newRevision = character.EconomyRevision;
                 if (bagRefusal == null)
@@ -1409,7 +1444,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     }
                 }
 
-                await UpsertStats(conn, tx, customerGUID, character.CharacterID, updateCharacterStats, ownerToken, saveSequence);
+                await UpsertStats(conn, tx, customerGUID, character.CharacterID, updateCharacterStats, ownerToken, saveOrder);
 
                 await tx.CommitAsync();
                 return new UpdateCharacterDataResponse
@@ -1537,28 +1572,34 @@ namespace OWSData.Repositories.Implementations.Postgres
                     transaction: tx, commandType: CommandType.Text);
             });
 
-        public Task<string> UpdateCharacterAbilities(Guid customerGUID, string charName, string abilitiesJson, Guid? ownerToken, long? saveSequence = null) =>
-            WriteAsCharacterOwner(customerGUID, charName, ownerToken, null, (conn, tx, characterID) =>
+        public Task<string> UpdateCharacterAbilities(Guid customerGUID, string charName, string abilitiesJson, Guid? ownerToken, SaveOrder saveOrder = null)
+        {
+            saveOrder ??= SaveOrder.Now();
+            return WriteAsCharacterOwner(customerGUID, charName, ownerToken, null, (conn, tx, characterID) =>
             {
                 var p = new DynamicParameters();
                 p.Add("@CustomerGUID", customerGUID);
                 p.Add("@CharName", charName);
                 p.Add("@AbilitiesJson", abilitiesJson);
-                AddSaveOrder(p, ownerToken, saveSequence);
+                AddSaveOrder(p, ownerToken, saveOrder);
 
                 return conn.ExecuteAsync(
                     PostgresQueries.UpsertCharacterAbilitiesJson,
                     p,
                     transaction: tx, commandType: CommandType.Text);
-            });
+            }, saveOrder);
+        }
 
         public Task<string> UpdateCharacterQuests(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? saveSequence = null) =>
-            WriteAsCharacterOwner(customerGUID, characterName, ownerToken, callerZoneInstanceId, (conn, tx, characterID) =>
-                UpsertQuests(conn, tx, customerGUID, characterName, updateCharacterQuests, ownerToken, saveSequence));
+            int? callerZoneInstanceId = null, SaveOrder saveOrder = null)
+        {
+            saveOrder ??= SaveOrder.Now();
+            return WriteAsCharacterOwner(customerGUID, characterName, ownerToken, callerZoneInstanceId, (conn, tx, characterID) =>
+                UpsertQuests(conn, tx, customerGUID, characterName, updateCharacterQuests, ownerToken, saveOrder), saveOrder);
+        }
 
         private static async Task UpsertQuests(DbConnection conn, DbTransaction tx, Guid customerGUID, string characterName,
-            IEnumerable<UpdateCharacterQuest> updateCharacterQuests, Guid? ownerToken, long? saveSequence)
+            IEnumerable<UpdateCharacterQuest> updateCharacterQuests, Guid? ownerToken, SaveOrder saveOrder)
         {
             foreach (UpdateCharacterQuest quest in updateCharacterQuests)
             {
@@ -1568,7 +1609,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 p.Add("@QuestIDTag", quest.QuestIDTag);
                 p.Add("@QuestJournalTagContainer", quest.QuestJournalTagContainer);
                 p.Add("@CustomData", quest.CustomData);
-                AddSaveOrder(p, ownerToken, saveSequence);
+                AddSaveOrder(p, ownerToken, saveOrder);
 
                 await conn.ExecuteAsync(PostgresQueries.UpdateCharacterQuest, p, transaction: tx, commandType: CommandType.Text);
             }
