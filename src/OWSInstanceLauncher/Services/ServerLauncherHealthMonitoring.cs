@@ -31,7 +31,8 @@ namespace OWSInstanceLauncher.Services
         //odd response can't take down a healthy zone server.
         public const int OrphanProcessMissesBeforeKill = 3;
 
-        //Consecutive successful lists each tracked zone instance has been missing from. Only touched by DoWork, which the timer runs one at a time.
+        //Consecutive successful lists each tracked zone instance has been missing from. Only touched by DoWork; TimedHostedService skips a tick while
+        //the previous run is still going, so DoWork never runs concurrently with itself.
         private readonly Dictionary<int, int> _orphanMissCounts = new Dictionary<int, int>();
 
         public ServerLauncherHealthMonitoring(IOptions<OWSInstanceLauncherOptions> OWSInstanceLauncherOptions, IHttpClientFactory httpClientFactory, IZoneServerProcessesRepository zoneServerProcessesRepository,
