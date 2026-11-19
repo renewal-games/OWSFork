@@ -1,10 +1,13 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using ChatServiceApp.Protos;
 using Grpc.Core;
+using Microsoft.Extensions.Options;
 using OWSData.Models.Composites;
 using OWSData.Models.StoredProcs;
 using OWSData.Repositories.Interfaces;
@@ -14,7 +17,9 @@ namespace OWSChat.Service
 {
     public class ChatService : ChatApp.ChatAppBase
     {
-        private static readonly TimeSpan MuteRecheckInterval = TimeSpan.FromSeconds(30);
+        private readonly TimeSpan _recheckInterval;
+        private static readonly TimeSpan LookupTimeout = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan MinimumWait = TimeSpan.FromMilliseconds(1);
 
         private sealed class Client
         {
@@ -22,7 +27,8 @@ namespace OWSChat.Service
             public Guid? CustomerGuid;
             public Guid? UserGuid;
             public Sanction Mute;
-            public DateTime MuteCheckedAt = DateTime.MinValue;
+            public Guid SessionGuid;
+            public DateTime? ExpiresAt;
             public Channel<ServerMessage> Outbox = Channel.CreateBounded<ServerMessage>(new BoundedChannelOptions(128)
             {
                 SingleReader = true,
@@ -40,12 +46,15 @@ namespace OWSChat.Service
         private readonly IChatMembershipRepository _membershipRepository;
 
         public ChatService(IUsersRepository usersRepository, ISanctionsRepository sanctionsRepository, ChatLogWriter chatLog,
-            IChatMembershipRepository membershipRepository)
+            IChatMembershipRepository membershipRepository, IOptions<ChatSessionOptions> options = null)
         {
             _usersRepository = usersRepository;
             _sanctionsRepository = sanctionsRepository;
             _chatLog = chatLog;
             _membershipRepository = membershipRepository;
+            _recheckInterval = (options?.Value ?? new ChatSessionOptions()).RecheckInterval;
+            if (_recheckInterval <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(options));
         }
 
         public override async Task Chat(
@@ -86,19 +95,30 @@ namespace OWSChat.Service
             {
                 Name = sessionCharacterName ?? first.PlayerName.Trim(),
                 CustomerGuid = session != null ? customerGuid : null,
-                UserGuid = session?.UserGuid
+                UserGuid = session?.UserGuid,
+                ExpiresAt = session?.ExpiresAt
             };
+            if (session != null)
+            {
+                GrpcSessionAuth.TryReadCredentials(context, out _, out me.SessionGuid);
+                await ValidateSession(me, context.CancellationToken);
+            }
             _clients.TryAdd(responseStream, me);
 
             // Per-connection message rate limit; over-limit messages are dropped, not broadcast.
             GrpcStreamGuard.MessageRateLimiter rateLimiter = GrpcStreamGuard.CreateMessageRateLimiter();
 
+            using var stop = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
+            Task validationLoop = session == null ? Task.CompletedTask : Revalidate(me, stop);
             var writerLoop = Task.Run(async () =>
             {
                 try
                 {
-                    await foreach (var msg in me.Outbox.Reader.ReadAllAsync(context.CancellationToken))
-                        await responseStream.WriteAsync(msg);
+                    await foreach (var msg in me.Outbox.Reader.ReadAllAsync(stop.Token))
+                    {
+                        stop.Token.ThrowIfCancellationRequested();
+                        await responseStream.WriteAsync(msg).WaitAsync(stop.Token);
+                    }
                 }
                 catch
                 {
@@ -108,19 +128,27 @@ namespace OWSChat.Service
 
             try
             {
-                await foreach (var incoming in requestStream.ReadAllAsync(context.CancellationToken))
+                await foreach (var incoming in requestStream.ReadAllAsync(stop.Token))
                 {
+                    stop.Token.ThrowIfCancellationRequested();
                     if (!rateLimiter.Allow())
                         continue;
 
-                    await BroadcastFrom(incoming, me);
+                    await BroadcastFrom(incoming, me, stop.Token);
                 }
+            }
+            catch (OperationCanceledException) when (validationLoop.IsFaulted)
+            {
+                await validationLoop;
             }
             finally
             {
                 _clients.TryRemove(responseStream, out _);
                 me.Outbox.Writer.TryComplete();
                 await writerLoop;
+                stop.Cancel();
+                try { await validationLoop; }
+                catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
             }
         }
 
@@ -130,36 +158,81 @@ namespace OWSChat.Service
                 return (null, Guid.Empty);
 
             var session = await _usersRepository.GetUserSession(customerGuid, userSessionGuid);
-            if (session == null || !session.UserGuid.HasValue)
+            if (session == null || !session.UserGuid.HasValue || session.ExpiresAt <= DateTime.UtcNow)
                 return (null, Guid.Empty);
 
             return (session, customerGuid);
         }
 
-        /// <summary>The sender's active mute, re-read from AccountSanctions at most every 30 s.</summary>
-        private async Task<Sanction> GetActiveMute(Client sender)
+        private async Task ValidateSession(Client client, CancellationToken cancellationToken)
         {
-            if (!sender.UserGuid.HasValue || !sender.CustomerGuid.HasValue)
-                return null;
+            var session = await _usersRepository.GetUserSession(client.CustomerGuid.Value, client.SessionGuid)
+                .WaitAsync(LookupTimeout, cancellationToken);
+            if (session == null || session.ExpiresAt <= DateTime.UtcNow || session.UserGuid != client.UserGuid ||
+                !string.Equals(session.SelectedCharacterName?.Trim(), client.Name, StringComparison.Ordinal))
+                throw new RpcException(new Status(StatusCode.Unauthenticated, "Invalid session for chat."));
 
-            if (DateTime.UtcNow - sender.MuteCheckedAt > MuteRecheckInterval)
+            var sanctions = await _sanctionsRepository.GetActive(client.CustomerGuid.Value, client.UserGuid.Value)
+                .WaitAsync(LookupTimeout, cancellationToken);
+            if (sanctions.Ban != null)
+                throw new RpcException(new Status(StatusCode.Unauthenticated, "Invalid session for chat."));
+            client.ExpiresAt = session.ExpiresAt;
+            client.Mute = sanctions.Mute;
+        }
+
+        // Runs independently of incoming messages so idle listeners lose access as well.
+        private async Task Revalidate(Client client, CancellationTokenSource stop)
+        {
+            int failures = 0;
+            try
             {
-                try
+                // The lookup cadence runs on a monotonic clock and the session deadline on the wall clock.
+                // A timer can fire slightly before the deadline it was set for, so a wait that ends early
+                // just waits again (at least 1 ms, since Task.Delay truncates sub-millisecond delays to 0)
+                // and spends no lookup before the interval is really up.
+                var sinceLookup = Stopwatch.StartNew();
+                while (true)
                 {
-                    sender.Mute = (await _sanctionsRepository.GetActive(sender.CustomerGuid.Value, sender.UserGuid.Value)).Mute;
-                    sender.MuteCheckedAt = DateTime.UtcNow;
-                }
-                catch (Exception)
-                {
-                    // Keep the last known state; the next message retries.
+                    var untilExpiry = client.ExpiresAt.HasValue ? client.ExpiresAt.Value - DateTime.UtcNow : TimeSpan.MaxValue;
+                    if (untilExpiry <= TimeSpan.Zero)
+                        throw new RpcException(new Status(StatusCode.Unauthenticated, "Chat session expired."));
+
+                    var untilLookup = _recheckInterval - sinceLookup.Elapsed;
+                    if (untilLookup > TimeSpan.Zero)
+                    {
+                        var delay = untilExpiry < untilLookup ? untilExpiry : untilLookup;
+                        await Task.Delay(delay < MinimumWait ? MinimumWait : delay, stop.Token);
+                        continue;
+                    }
+
+                    sinceLookup.Restart();
+                    try
+                    {
+                        await ValidateSession(client, stop.Token);
+                        failures = 0;
+                    }
+                    catch (Exception ex) when (ex is not RpcException && ex is not OperationCanceledException)
+                    {
+                        // Bound access during a lookup outage; a hung lookup also counts as a failure.
+                        if (++failures >= 3)
+                            throw new RpcException(new Status(StatusCode.Unauthenticated, "Unable to verify chat session."));
+                    }
                 }
             }
+            catch
+            {
+                stop.Cancel();
+                throw;
+            }
+        }
 
+        private static Sanction GetActiveMute(Client sender)
+        {
             Sanction mute = sender.Mute;
             return mute != null && (!mute.ExpiresAt.HasValue || mute.ExpiresAt.Value > DateTime.UtcNow) ? mute : null;
         }
 
-        private async Task BroadcastFrom(ClientMessage incoming, Client sender)
+        private async Task BroadcastFrom(ClientMessage incoming, Client sender, CancellationToken cancellationToken)
         {
             if (incoming.Chat == null)
                 return;
@@ -174,7 +247,7 @@ namespace OWSChat.Service
             if (messageType == ChatType.MessageTypeWhisper && string.IsNullOrWhiteSpace(recipientName))
                 return;
 
-            Sanction mute = await GetActiveMute(sender);
+            Sanction mute = GetActiveMute(sender);
             if (mute != null)
             {
                 LogChat(sender, messageType, recipientName, text, dropped: true);
@@ -230,6 +303,7 @@ namespace OWSChat.Service
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             LogChat(sender, messageType, recipientName, text, dropped: false);
             var outgoing = new ServerMessage
             {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -9,6 +10,7 @@ using ChatServiceApp.Protos;
 using Grpc.Core;
 using OWSChat.Service;
 using OWSData.Models.StoredProcs;
+using OWSData.Models.Composites;
 using OWSData.Repositories.Interfaces;
 using OWSShared.Grpc;
 using Xunit;
@@ -127,21 +129,88 @@ namespace OWSTests.Grpc
             Assert.Equal(type == ChatType.MessageTypeWhisper ? 0 : 1, c.Written.Count);
         }
 
+        [Theory]
+        [InlineData("deleted")]
+        [InlineData("ban")]
+        [InlineData("character")]
+        [InlineData("user")]
+        [InlineData("expired")]
+        public async Task Stream_RevalidatesIdleClients_AndStopsSendingAndReceiving(string change)
+        {
+            await using var chat = new ChatHarness(TimeSpan.FromMilliseconds(50));
+            var a = await chat.Connect("A");
+            var b = await chat.Connect("B");
+            await a.Send(ChatType.MessageTypeGeneral, "before");
+            await a.FirstWritten.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await b.FirstWritten.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var session = chat.Sessions.Sessions[a.SessionGuid];
+            a.ExpectUnauthenticated = true;
+            switch (change)
+            {
+                case "deleted": chat.Sessions.Sessions.TryRemove(a.SessionGuid, out _); break;
+                case "ban": chat.Sanctions.BannedUser = session.UserGuid; break;
+                case "character": chat.Sessions.Sessions[a.SessionGuid] = new GetUserSession { UserGuid = session.UserGuid, SelectedCharacterName = "Other" }; break;
+                case "user": chat.Sessions.Sessions[a.SessionGuid] = new GetUserSession { UserGuid = Guid.NewGuid(), SelectedCharacterName = "A" }; break;
+                case "expired": chat.Sessions.Sessions[a.SessionGuid] = new GetUserSession { UserGuid = session.UserGuid, SelectedCharacterName = "A", ExpiresAt = DateTime.UtcNow.AddSeconds(-1) }; break;
+            }
+            var error = await Assert.ThrowsAsync<RpcException>(() => a.Running.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(StatusCode.Unauthenticated, error.StatusCode);
+            // A queued frame after revocation cannot reach B; B's later broadcast cannot reach A.
+            _ = a.Queue(new ClientMessage { Chat = new ClientMessageChat { Text = "after" } });
+            await b.Send(ChatType.MessageTypeGeneral, "from B");
+            await chat.Finish();
+            Assert.Equal("before", Assert.Single(a.Written).Chat.Text);
+            Assert.Equal(new[] { "before", "from B" }, b.Written.Select(m => m.Chat.Text));
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Stream_ClosesAfterRepeatedLookupFailures(bool sanctionsFail)
+        {
+            await using var chat = new ChatHarness(TimeSpan.FromMilliseconds(20));
+            var a = await chat.Connect("A");
+            a.ExpectUnauthenticated = true;
+            if (sanctionsFail) chat.Sanctions.Failure = true;
+            else chat.Sessions.Failure = true;
+            var error = await Assert.ThrowsAsync<RpcException>(() => a.Running.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(StatusCode.Unauthenticated, error.StatusCode);
+            Assert.Equal(3, sanctionsFail ? chat.Sanctions.FailedLookups : chat.Sessions.FailedLookups);
+        }
+
+        [Fact]
+        public async Task Stream_ClosesAtKnownExpiry_EvenWhenLookupsFail()
+        {
+            await using var chat = new ChatHarness();
+            var a = await chat.Connect("A", expiresAt: DateTime.UtcNow.AddMilliseconds(200));
+            a.ExpectUnauthenticated = true;
+            chat.Sessions.Failure = true;
+            var error = await Assert.ThrowsAsync<RpcException>(() => a.Running.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(StatusCode.Unauthenticated, error.StatusCode);
+            Assert.Equal(0, chat.Sessions.FailedLookups);
+        }
+
         private sealed class ChatHarness : IAsyncDisposable
         {
+            private readonly TimeSpan _interval;
+            public ChatHarness(TimeSpan? interval = null) => _interval = interval ?? TimeSpan.FromSeconds(30);
             public Guid Customer { get; } = Guid.NewGuid();
             public MembershipRepository Membership { get; } = new();
             private readonly List<Connection> _connections = new();
             private readonly IUsersRepository _users = DispatchProxy.Create<IUsersRepository, SessionRepository>();
+            public SessionRepository Sessions => (SessionRepository)(object)_users;
+            private readonly ISanctionsRepository _sanctions = DispatchProxy.Create<ISanctionsRepository, SanctionsRepository>();
+            public SanctionsRepository Sanctions => (SanctionsRepository)(object)_sanctions;
 
-            public async Task<Connection> Connect(string name, Guid? customer = null)
+            public async Task<Connection> Connect(string name, Guid? customer = null, DateTime? expiresAt = null)
             {
                 Guid session = Guid.NewGuid();
-                ((SessionRepository)(object)_users).Sessions[session] = new GetUserSession { SelectedCharacterName = name, UserGuid = Guid.NewGuid() };
-                var connection = new Connection();
+                ((SessionRepository)(object)_users).Sessions[session] = new GetUserSession { SelectedCharacterName = name, UserGuid = Guid.NewGuid(), ExpiresAt = expiresAt };
+                var connection = new Connection { SessionGuid = session };
                 _connections.Add(connection);
                 Task identified = connection.Queue(new ClientMessage { PlayerName = "Spoofed" });
-                connection.Running = new ChatService(_users, null, new ChatLogWriter(null), Membership)
+                connection.Running = new ChatService(_users, _sanctions, new ChatLogWriter(null), Membership,
+                    Microsoft.Extensions.Options.Options.Create(new ChatSessionOptions { RecheckInterval = _interval }))
                     .Chat(connection, connection, new CallContext(customer ?? Customer, session));
                 await identified.WaitAsync(TimeSpan.FromSeconds(5));
                 return connection;
@@ -151,7 +220,13 @@ namespace OWSTests.Grpc
             {
                 foreach (var connection in _connections)
                     connection.Complete();
-                await Task.WhenAll(_connections.Select(c => c.Running)).WaitAsync(TimeSpan.FromSeconds(10));
+                foreach (var connection in _connections)
+                {
+                    if (connection.ExpectUnauthenticated)
+                        Assert.Equal(StatusCode.Unauthenticated, (await Assert.ThrowsAsync<RpcException>(() => connection.Running.WaitAsync(TimeSpan.FromSeconds(10)))).StatusCode);
+                    else
+                        await connection.Running.WaitAsync(TimeSpan.FromSeconds(10));
+                }
             }
 
             public async ValueTask DisposeAsync() => await Finish();
@@ -173,9 +248,36 @@ namespace OWSTests.Grpc
 
         public class SessionRepository : DispatchProxy
         {
-            public Dictionary<Guid, GetUserSession> Sessions { get; } = new();
-            protected override object Invoke(MethodInfo method, object[] args) => method.Name == nameof(IUsersRepository.GetUserSession)
-                ? Task.FromResult(Sessions[(Guid)args[1]]) : throw new NotSupportedException(method.Name);
+            public ConcurrentDictionary<Guid, GetUserSession> Sessions { get; } = new();
+            public volatile bool Failure;
+            public int FailedLookups;
+            protected override object Invoke(MethodInfo method, object[] args)
+            {
+                if (method.Name != nameof(IUsersRepository.GetUserSession)) throw new NotSupportedException(method.Name);
+                if (Failure)
+                {
+                    Interlocked.Increment(ref FailedLookups);
+                    throw new InvalidOperationException("database unavailable");
+                }
+                return Task.FromResult(Sessions.GetValueOrDefault((Guid)args[1]));
+            }
+        }
+
+        public class SanctionsRepository : DispatchProxy
+        {
+            public Guid? BannedUser;
+            public volatile bool Failure;
+            public int FailedLookups;
+            protected override object Invoke(MethodInfo method, object[] args)
+            {
+                if (method.Name != nameof(ISanctionsRepository.GetActive)) throw new NotSupportedException(method.Name);
+                if (Failure)
+                {
+                    Interlocked.Increment(ref FailedLookups);
+                    throw new InvalidOperationException("database unavailable");
+                }
+                return Task.FromResult(new ActiveSanctions { Ban = BannedUser == (Guid)args[1] ? new Sanction() : null });
+            }
         }
 
         // Acknowledge each frame on the next MoveNext, after Chat has processed it. Completing all
@@ -185,7 +287,10 @@ namespace OWSTests.Grpc
             private readonly Channel<(ClientMessage Message, TaskCompletionSource Processed)> _input = Channel.CreateUnbounded<(ClientMessage, TaskCompletionSource)>();
             private TaskCompletionSource _processed;
             public List<ServerMessage> Written { get; } = new();
+            public TaskCompletionSource FirstWritten { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
             public Task Running { get; set; } = Task.CompletedTask;
+            public Guid SessionGuid { get; set; }
+            public bool ExpectUnauthenticated { get; set; }
             public ClientMessage Current { get; private set; }
             public WriteOptions WriteOptions { get; set; }
             public Task Queue(ClientMessage message)
@@ -211,6 +316,7 @@ namespace OWSTests.Grpc
             public Task WriteAsync(ServerMessage message)
             {
                 Written.Add(message);
+                FirstWritten.TrySetResult();
                 return Task.CompletedTask;
             }
         }
