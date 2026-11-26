@@ -21,6 +21,7 @@ namespace OWSParty.Service
         public static ConcurrentDictionary<string, ClientInfo> _partyClients = new ConcurrentDictionary<string, ClientInfo>(StringComparer.OrdinalIgnoreCase);
 
         private const string SnapshotHeader = "party-snapshot-v1";
+        private const string FormRecoveryHeader = "party-form-recovery-v1";
         private const string MutationIdHeader = "party-mutation-id";
         private const string RegistrationHeader = "party-mutation-registration";
         private const string InviteeRegistrationHeader = "party-invitee-registration";
@@ -66,6 +67,11 @@ namespace OWSParty.Service
             Guid? mutationId = ReadGuidHeader(context, MutationIdHeader);
             Guid? registration = ReadGuidHeader(context, RegistrationHeader);
             bool usesSnapshots = context.RequestHeaders.FirstOrDefault(entry => entry.Key == SnapshotHeader)?.Value == "1";
+            bool recoversForms = context.RequestHeaders.FirstOrDefault(entry => entry.Key == FormRecoveryHeader)?.Value == "1";
+            if (recoversForms && !registration.HasValue)
+            {
+                ThrowInvalidArgument("Party form recovery requires a registration.");
+            }
             if ((mutationId.HasValue || registration.HasValue) && !usesSnapshots)
             {
                 ThrowInvalidArgument("Party mutation recovery requires snapshot support.");
@@ -134,6 +140,20 @@ namespace OWSParty.Service
                 else if (party != null && party.PartyMembers.Count != 0)
                 {
                     await responseStream.WriteAsync(party);
+                }
+
+                if (recoversForms)
+                {
+                    foreach (Guid canceled in await _charactersRepository.GetCanceledPartyFormCreates(
+                        parsedCustomerGuid, userName, registration.Value))
+                    {
+                        await responseStream.WriteAsync(new PartyToSend
+                        {
+                            CustomerGuid = parsedCustomerGuid.ToString(),
+                            PartyAction = PartyAction.MessageTypeFormCanceled,
+                            PartyInfo = new PartyInfo { PartyGuid = canceled.ToString() }
+                        });
+                    }
                 }
 
                 clientInfo.ReleaseSnapshotWriter();
@@ -205,9 +225,24 @@ namespace OWSParty.Service
             {
                 ThrowInvalidArgument("Party registration requires a mutation ID and an acting participant.");
             }
-            if (mutationId.HasValue && request.PartyAction is not (PartyAction.MessageTypeCreate or PartyAction.MessageTypeAdd))
+            bool isFormControl = request.PartyAction is PartyAction.MessageTypeFormPrepare or PartyAction.MessageTypeFormAcknowledge;
+            bool requiresFormIntent = context.RequestHeaders.FirstOrDefault(entry => entry.Key == FormRecoveryHeader)?.Value == "1";
+            if (requiresFormIntent && request.PartyAction != PartyAction.MessageTypeCreate)
             {
-                ThrowInvalidArgument("Party mutation IDs apply to create and add.");
+                ThrowInvalidArgument("A party form intent applies to create.");
+            }
+            if (isFormControl || requiresFormIntent)
+            {
+                if (!mutationId.HasValue || !actorRegistration.HasValue || inviteeRegistration.HasValue
+                    || request.PartyMembers.Count != 1 || !request.PartyMembers[0].PartyLeader)
+                {
+                    ThrowInvalidArgument("Party form recovery requires one registered participant and a mutation ID.");
+                }
+            }
+            if (!isFormControl && mutationId.HasValue
+                && request.PartyAction is not (PartyAction.MessageTypeCreate or PartyAction.MessageTypeAdd))
+            {
+                ThrowInvalidArgument("Party mutation IDs apply to create, add, and form recovery.");
             }
 
             if (GrpcSessionAuth.IsRequired || mutationId.HasValue)
@@ -237,7 +272,18 @@ namespace OWSParty.Service
 
                 case PartyAction.MessageTypeCreate:
                 case PartyAction.MessageTypeAdd:
-                    await ExecutePartyAction(request.PartyAction, () => HandleCreateOrAdd(request, mutationId, actorRegistration, inviteeRegistration));
+                    await ExecutePartyAction(request.PartyAction,
+                        () => HandleCreateOrAdd(request, mutationId, actorRegistration, inviteeRegistration, requiresFormIntent));
+                    break;
+
+                case PartyAction.MessageTypeFormPrepare:
+                    await ExecutePartyAction(request.PartyAction, () => _charactersRepository.PreparePartyFormCreate(
+                        ValidateCustomerGuid(request), request.PartyMembers[0].CharName, actorRegistration.Value, mutationId.Value));
+                    break;
+
+                case PartyAction.MessageTypeFormAcknowledge:
+                    await ExecutePartyAction(request.PartyAction, () => _charactersRepository.AcknowledgePartyFormCancellation(
+                        ValidateCustomerGuid(request), request.PartyMembers[0].CharName, actorRegistration.Value, mutationId.Value));
                     break;
 
                 case PartyAction.MessageTypeKick:
@@ -283,7 +329,8 @@ namespace OWSParty.Service
             await client.WriteAsync(request);
         }
 
-        private async Task HandleCreateOrAdd(PartyToSend request, Guid? mutationId, Guid? actorRegistration, Guid? inviteeRegistration)
+        private async Task HandleCreateOrAdd(PartyToSend request, Guid? mutationId, Guid? actorRegistration,
+            Guid? inviteeRegistration, bool requiresFormIntent)
         {
             Guid customerGuid = ValidateCustomerGuid(request);
 
@@ -300,7 +347,7 @@ namespace OWSParty.Service
             CreatePartyOrAddMemberRequest createPartyOrAddMemberRequest = new CreatePartyOrAddMemberRequest();
             createPartyOrAddMemberRequest.SetData(_charactersRepository, _customerGuid, request);
 
-            PartyToSend partyInformation = await createPartyOrAddMemberRequest.Handle(mutationId, actorRegistration, inviteeRegistration);
+            PartyToSend partyInformation = await createPartyOrAddMemberRequest.Handle(mutationId, actorRegistration, inviteeRegistration, requiresFormIntent);
             if (partyInformation != null)
             {
                 await BroadcastToMembers(partyInformation.PartyMembers, partyInformation);

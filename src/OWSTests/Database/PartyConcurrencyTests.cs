@@ -148,6 +148,102 @@ namespace OWSTests.Database
         }
 
         [PostgresFact]
+        public async Task PreparedForm_ReplacementFindsCancellationUntilItAcknowledges()
+        {
+            Guid customer = Guid.NewGuid();
+            Guid former = Guid.NewGuid();
+            Guid current = Guid.NewGuid();
+            Guid mutation = Guid.NewGuid();
+            await SeedCharacters(customer, null, "Leader");
+            CharactersRepository characters = Characters();
+            await characters.RegisterPartyMutationParticipant(customer, "Leader", former, default);
+            await characters.PreparePartyFormCreate(customer, "Leader", former, mutation);
+            await characters.PreparePartyFormCreate(customer, "Leader", former, mutation);
+            await characters.AcknowledgePartyFormCancellation(customer, "Leader", former, mutation);
+            Assert.Empty(await characters.GetCanceledPartyFormCreates(customer, "Leader", former));
+
+            await characters.RegisterPartyMutationParticipant(customer, "Leader", current, default);
+            Assert.Empty(await characters.GetCanceledPartyFormCreates(customer, "Leader", former));
+            Assert.Empty((await characters.GetInitialPartySettings(customer, "Leader")).PartyMembers);
+            Assert.Equal(mutation, Assert.Single(await characters.GetCanceledPartyFormCreates(customer, "Leader", current)));
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                characters.PreparePartyFormCreate(customer, "Leader", former, Guid.NewGuid()));
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => characters.CreatePartyOrAddMember(
+                customer, FormCreateRequest(customer), mutation, former, requiresFormIntent: true));
+            Assert.Equal("A party mutation participant has a newer registration.", error.Message);
+
+            await characters.RegisterPartyMutationParticipant(customer, "Leader", current, default);
+            Assert.Equal(mutation, Assert.Single(await characters.GetCanceledPartyFormCreates(customer, "Leader", current)));
+            await characters.AcknowledgePartyFormCancellation(customer, "Leader", current, mutation);
+            await characters.AcknowledgePartyFormCancellation(customer, "Leader", current, mutation);
+            Assert.Empty(await characters.GetCanceledPartyFormCreates(customer, "Leader", current));
+            Assert.False(await characters.ResolvePartyMutation(customer, mutation, "Leader"));
+        }
+
+        [PostgresFact]
+        public async Task PreparedForm_ReplacementWaitsForAnInFlightCommitAndFindsNoCancellation()
+        {
+            Guid customer = Guid.NewGuid();
+            Guid former = Guid.NewGuid();
+            Guid current = Guid.NewGuid();
+            Guid mutation = Guid.NewGuid();
+            await SeedCharacters(customer, null, "Leader");
+            CharactersRepository characters = Characters();
+            await characters.RegisterPartyMutationParticipant(customer, "Leader", former, default);
+            await characters.PreparePartyFormCreate(customer, "Leader", former, mutation);
+
+            await using var gate = new NpgsqlConnection(Db);
+            await gate.OpenAsync();
+            await using NpgsqlTransaction gateTx = await gate.BeginTransactionAsync();
+            await gate.ExecuteAsync("LOCK TABLE PartyMember IN SHARE MODE", transaction: gateTx);
+
+            var create = characters.CreatePartyOrAddMember(customer, FormCreateRequest(customer),
+                mutation, former, requiresFormIntent: true);
+            await WaitForLockWaiters(1, create);
+            var replacement = characters.RegisterPartyMutationParticipant(customer, "Leader", current, default);
+            await WaitForLockWaiters(2, create, replacement);
+            await gateTx.CommitAsync();
+
+            Assert.Single((await create).PartyMembers);
+            Assert.True(await replacement > 0);
+            Assert.Single((await characters.GetInitialPartySettings(customer, "Leader")).PartyMembers);
+            Assert.Empty(await characters.GetCanceledPartyFormCreates(customer, "Leader", current));
+        }
+
+        [PostgresFact]
+        public async Task PreparedForm_RecoveryFencesALatePrepareOrCreate()
+        {
+            Guid customer = Guid.NewGuid();
+            Guid token = Guid.NewGuid();
+            Guid mutation = Guid.NewGuid();
+            await SeedCharacters(customer, null, "Leader");
+            CharactersRepository characters = Characters();
+            await characters.RegisterPartyMutationParticipant(customer, "Leader", token, default);
+
+            var unprepared = await Assert.ThrowsAsync<InvalidOperationException>(() => characters.CreatePartyOrAddMember(
+                customer, FormCreateRequest(customer), mutation, token, requiresFormIntent: true));
+            Assert.Equal("Party form create was not prepared.", unprepared.Message);
+            await characters.PreparePartyFormCreate(customer, "Leader", token, mutation);
+            Assert.False(await characters.ResolvePartyMutation(customer, mutation, "Leader"));
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                characters.PreparePartyFormCreate(customer, "Leader", token, mutation));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => characters.CreatePartyOrAddMember(
+                customer, FormCreateRequest(customer), mutation, token, requiresFormIntent: true));
+            Assert.Equal(mutation, Assert.Single(await characters.GetCanceledPartyFormCreates(customer, "Leader", token)));
+            await characters.AcknowledgePartyFormCancellation(customer, "Leader", token, mutation);
+            Assert.Empty(await characters.GetCanceledPartyFormCreates(customer, "Leader", token));
+            Assert.Empty((await characters.GetInitialPartySettings(customer, "Leader")).PartyMembers);
+        }
+
+        private static PartyToSend FormCreateRequest(Guid customer) => new PartyToSend
+        {
+            CustomerGuid = customer.ToString(),
+            PartyAction = PartyAction.MessageTypeCreate,
+            PartyInfo = new PartyInfo(),
+            PartyMembers = { new PartyMemberInfo { CharName = "Leader", PartyLeader = true } }
+        };
+
+        [PostgresFact]
         public async Task ReplacementRegistration_WaitsForAnInFlightWriteBeforeReadingTheRoster()
         {
             Guid customer = Guid.NewGuid();

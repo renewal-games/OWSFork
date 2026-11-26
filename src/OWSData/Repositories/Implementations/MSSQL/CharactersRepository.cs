@@ -828,10 +828,19 @@ namespace OWSData.Repositories.Implementations.MSSQL
         public Task<long> RegisterPartyMutationParticipant(Guid customerGUID, string characterName, Guid registrationId, CancellationToken cancellationToken)
             => throw new NotSupportedException("Party mutation registration requires PostgreSQL.");
 
+        public Task PreparePartyFormCreate(Guid customerGUID, string characterName, Guid registrationId, Guid mutationId)
+            => throw new NotSupportedException("Party form recovery requires PostgreSQL.");
+
+        public Task<IEnumerable<Guid>> GetCanceledPartyFormCreates(Guid customerGUID, string characterName, Guid registrationId)
+            => throw new NotSupportedException("Party form recovery requires PostgreSQL.");
+
+        public Task AcknowledgePartyFormCancellation(Guid customerGUID, string characterName, Guid registrationId, Guid mutationId)
+            => throw new NotSupportedException("Party form recovery requires PostgreSQL.");
+
         public Task<bool> ResolvePartyMutation(Guid customerGUID, Guid mutationId, string characterName)
             => throw new NotSupportedException("Party mutation receipts require PostgreSQL.");
 
-        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null, Guid? actorRegistration = null, Guid? inviteeRegistration = null)
+        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null, Guid? actorRegistration = null, Guid? inviteeRegistration = null, bool requiresFormIntent = false)
         {
             if (mutationId.HasValue)
             {

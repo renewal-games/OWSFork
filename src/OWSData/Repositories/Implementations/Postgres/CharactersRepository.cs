@@ -1664,7 +1664,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 }
             });
 
-        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null, Guid? actorRegistration = null, Guid? inviteeRegistration = null)
+        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null, Guid? actorRegistration = null, Guid? inviteeRegistration = null, bool requiresFormIntent = false)
         {
             if (partyRequest == null)
             {
@@ -1742,6 +1742,16 @@ namespace OWSData.Repositories.Implementations.Postgres
 
                 if (partyRequest.PartyAction == PartyAction.MessageTypeCreate)
                 {
+                    if (requiresFormIntent && await connection.ExecuteAsync(
+                        @"DELETE FROM PartyFormCreateIntent
+                          WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                            AND MutationId = @MutationId AND RegistrationId = @RegistrationId",
+                        new { CustomerGUID = customerGUID, CharacterID = actorCharacterId.Value, MutationId = mutationId, RegistrationId = actorRegistration },
+                        transaction) != 1)
+                    {
+                        throw new InvalidOperationException("Party form create was not prepared.");
+                    }
+
                     int existingPartyCount = await connection.QuerySingleAsync<int>(
                         @"SELECT COUNT(*) FROM PartyMember WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID",
                         new { CustomerGUID = customerGUID, CharacterID = actorCharacterId.Value },
@@ -1938,6 +1948,86 @@ namespace OWSData.Repositories.Implementations.Postgres
                   WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
                   ORDER BY RegistrationOrder DESC LIMIT 1",
                 new { CustomerGUID = customerGUID, CharacterID = characterId }, transaction);
+
+        public async Task PreparePartyFormCreate(Guid customerGUID, string characterName, Guid registrationId, Guid mutationId)
+        {
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync();
+            using IDbTransaction transaction = connection.BeginTransaction();
+            int characterId = await GetCharacterId(connection, transaction, customerGUID, null, characterName)
+                ?? throw new InvalidOperationException("Party character was not found.");
+
+            await LockPartyMutation(connection, transaction, customerGUID, mutationId);
+            await LockPartyMutationParticipant(connection, transaction, characterId);
+            if (await ReadPartyMutationRegistration(connection, transaction, customerGUID, characterId) != registrationId
+                || (await GetPartyMutationReceipt(connection, transaction, customerGUID, mutationId, characterId)).HasValue)
+            {
+                throw new InvalidOperationException("Party form create is no longer valid.");
+            }
+
+            int recorded = await connection.ExecuteAsync(
+                @"INSERT INTO PartyFormCreateIntent (CustomerGUID, CharacterID, MutationId, RegistrationId)
+                  VALUES (@CustomerGUID, @CharacterID, @MutationId, @RegistrationId)
+                  ON CONFLICT (CustomerGUID, CharacterID, MutationId) DO UPDATE SET RegistrationId = EXCLUDED.RegistrationId
+                  WHERE PartyFormCreateIntent.RegistrationId = EXCLUDED.RegistrationId",
+                new { CustomerGUID = customerGUID, CharacterID = characterId, MutationId = mutationId, RegistrationId = registrationId },
+                transaction);
+            if (recorded != 1)
+            {
+                throw new InvalidOperationException("Party form create belongs to another registration.");
+            }
+            transaction.Commit();
+        }
+
+        public async Task<IEnumerable<Guid>> GetCanceledPartyFormCreates(Guid customerGUID, string characterName, Guid registrationId)
+        {
+            using DbConnection connection = CreateConnection();
+            return await connection.QueryAsync<Guid>(
+                @"SELECT intent.MutationId
+                  FROM PartyFormCreateIntent intent
+                  INNER JOIN Characters c ON c.CustomerGUID = intent.CustomerGUID AND c.CharacterID = intent.CharacterID
+                  WHERE intent.CustomerGUID = @CustomerGUID AND LOWER(c.CharName) = LOWER(@CharacterName)
+                    AND @RegistrationId = (
+                        SELECT RegistrationId FROM PartyMutationRegistration
+                        WHERE CustomerGUID = intent.CustomerGUID AND CharacterID = intent.CharacterID
+                        ORDER BY RegistrationOrder DESC LIMIT 1
+                    )
+                    AND (intent.RegistrationId <> @RegistrationId OR EXISTS (
+                        SELECT 1 FROM PartyMutationReceipt receipt
+                        WHERE receipt.CustomerGUID = intent.CustomerGUID AND receipt.CharacterID = intent.CharacterID
+                          AND receipt.MutationId = intent.MutationId AND NOT receipt.Committed
+                    ))",
+                new { CustomerGUID = customerGUID, CharacterName = characterName, RegistrationId = registrationId });
+        }
+
+        public async Task AcknowledgePartyFormCancellation(Guid customerGUID, string characterName, Guid registrationId, Guid mutationId)
+        {
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync();
+            using IDbTransaction transaction = connection.BeginTransaction();
+            int characterId = await GetCharacterId(connection, transaction, customerGUID, null, characterName)
+                ?? throw new InvalidOperationException("Party character was not found.");
+
+            await LockPartyMutation(connection, transaction, customerGUID, mutationId);
+            await LockPartyMutationParticipant(connection, transaction, characterId);
+            if (await ReadPartyMutationRegistration(connection, transaction, customerGUID, characterId) != registrationId)
+            {
+                throw new InvalidOperationException("Party form acknowledgment needs the current registration.");
+            }
+
+            bool? committed = await GetPartyMutationReceipt(connection, transaction, customerGUID, mutationId, characterId);
+            int removed = await connection.ExecuteAsync(
+                @"DELETE FROM PartyFormCreateIntent
+                  WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID AND MutationId = @MutationId
+                    AND (RegistrationId <> @RegistrationId OR @Canceled)",
+                new { CustomerGUID = customerGUID, CharacterID = characterId, MutationId = mutationId,
+                    RegistrationId = registrationId, Canceled = committed == false }, transaction);
+            if (removed == 1 && !committed.HasValue)
+            {
+                await RecordPartyMutationReceipt(connection, transaction, customerGUID, mutationId, characterId, false);
+            }
+            transaction.Commit();
+        }
 
         public async Task<bool> ResolvePartyMutation(Guid customerGUID, Guid mutationId, string characterName)
         {

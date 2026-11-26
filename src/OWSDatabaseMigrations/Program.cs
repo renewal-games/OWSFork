@@ -178,6 +178,9 @@ namespace OWSDatabaseMigrations
         // List only scripts that are safe to run on a database that has the rest of the schema.
         private static readonly IReadOnlyDictionary<string, string> BaselineChecks = new Dictionary<string, string>
         {
+            ["SamsaraUpdates/PartyFormCreateIntent_2026-11-26.sql"] =
+                "SELECT to_regclass('public.partyformcreateintent') IS NOT NULL",
+
             ["SamsaraUpdates/PartyMutationRegistration_2026-11-26.sql"] =
                 "SELECT to_regclass('public.partymutationregistration') IS NOT NULL " +
                 "AND to_regclass('public.ix_partymutationregistration_current') IS NOT NULL",

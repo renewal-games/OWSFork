@@ -86,8 +86,11 @@ namespace OWSData.Repositories.Interfaces
         Task AddQuestListToDatabase(Guid customerGUID, IEnumerable<AddQuestListToDabase> addQuestListToDabase);
         Task<IEnumerable<GetQuestsFromDb>> GetQuestsFromDatabase(Guid customerGUID);
 
-        Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null, Guid? actorRegistration = null, Guid? inviteeRegistration = null);
+        Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null, Guid? actorRegistration = null, Guid? inviteeRegistration = null, bool requiresFormIntent = false);
         Task<long> RegisterPartyMutationParticipant(Guid customerGUID, string characterName, Guid registrationId, CancellationToken cancellationToken);
+        Task PreparePartyFormCreate(Guid customerGUID, string characterName, Guid registrationId, Guid mutationId);
+        Task<IEnumerable<Guid>> GetCanceledPartyFormCreates(Guid customerGUID, string characterName, Guid registrationId);
+        Task AcknowledgePartyFormCancellation(Guid customerGUID, string characterName, Guid registrationId, Guid mutationId);
         Task<bool> ResolvePartyMutation(Guid customerGUID, Guid mutationId, string characterName);
         Task<PartyToSend> GetInitialPartySettings(Guid customerGUID, string charName);
 
