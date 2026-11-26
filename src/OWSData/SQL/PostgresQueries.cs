@@ -324,6 +324,14 @@ ON CONFLICT ON CONSTRAINT ak_zoneservers
 				WHERE CustomerGUID = @CustomerGUID
 				  AND MapInstanceID = @MapInstanceID";
 
+		//GetZoneInstance: the instance row plus its map's names, which the UE plugin's zone-server boot reads (it needs ZoneName).
+		//LEFT JOIN so an instance whose Maps row is missing still comes back, as it did when this read MapInstances alone.
+		public static readonly string GetZoneInstance = @"SELECT MI.*, M.MapName, M.ZoneName, M.WorldCompContainsFilter, M.WorldCompListFilter
+				FROM MapInstances MI
+				LEFT JOIN Maps M ON M.MapID = MI.MapID AND M.CustomerGUID = MI.CustomerGUID
+				WHERE MI.CustomerGUID = @CustomerGUID
+				  AND MI.MapInstanceID = @MapInstanceID";
+
 		public static readonly string AddMapInstance = @"INSERT INTO MapInstances (CustomerGUID, WorldServerID, MapID, Port, Status, PlayerGroupID, LastUpdateFromServer)
 		VALUES (@CustomerGUID, @WorldServerID, @MapID, @Port, 1, @PlayerGroupID, NOW())
 		RETURNING mapinstanceid";
