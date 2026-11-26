@@ -1,5 +1,9 @@
 version: 2
 
+# This repository is a fork, and GitHub keeps version updates off on forks until they are
+# enabled under Settings > Advanced Security > Dependabot version updates; this file alone does
+# nothing until then. .github/workflows/dependabot-watch.yml fails when an ecosystem below has
+# not run in the past week.
 updates:
   # NuGet packages for every project in src/OWS.sln. Minor and patch updates arrive as one
   # grouped weekly PR; each major update gets its own PR so it can be reviewed on its own.
