@@ -143,6 +143,11 @@ namespace OWSTests.Grpc
                     Written.Add(message);
                 return Task.CompletedTask;
             }
+            public Task WriteAsync(T message, CancellationToken cancellationToken)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return WriteAsync(message);
+            }
         }
 
         /// <summary>A call with no request headers: the client sent no customerguid/usersessionguid.</summary>
