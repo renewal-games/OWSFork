@@ -22,6 +22,8 @@ namespace OWSParty.Service
 
         private const string SnapshotHeader = "party-snapshot-v1";
         private const string MutationIdHeader = "party-mutation-id";
+        private const string RegistrationHeader = "party-mutation-registration";
+        private const string InviteeRegistrationHeader = "party-invitee-registration";
 
         private readonly ICharactersRepository _charactersRepository;
         private readonly IUsersRepository _usersRepository;
@@ -61,14 +63,15 @@ namespace OWSParty.Service
                 return;
             }
 
-            Guid? mutationId = ReadMutationId(context);
+            Guid? mutationId = ReadGuidHeader(context, MutationIdHeader);
+            Guid? registration = ReadGuidHeader(context, RegistrationHeader);
             bool usesSnapshots = context.RequestHeaders.FirstOrDefault(entry => entry.Key == SnapshotHeader)?.Value == "1";
-            if (mutationId.HasValue && !usesSnapshots)
+            if ((mutationId.HasValue || registration.HasValue) && !usesSnapshots)
             {
                 ThrowInvalidArgument("Party mutation recovery requires snapshot support.");
             }
 
-            if (GrpcSessionAuth.IsRequired || mutationId.HasValue)
+            if (GrpcSessionAuth.IsRequired || mutationId.HasValue || registration.HasValue)
             {
                 userName = await GetAuthorizedCharacter(context, parsedCustomerGuid, userName);
                 if (userName == null)
@@ -78,15 +81,32 @@ namespace OWSParty.Service
                 }
             }
 
+            long registrationOrder = 0;
+            if (registration.HasValue)
+            {
+                registrationOrder = await _charactersRepository.RegisterPartyMutationParticipant(
+                    parsedCustomerGuid, userName, registration.Value, context.CancellationToken);
+                if (registrationOrder == 0)
+                {
+                    throw new RpcException(new Status(StatusCode.FailedPrecondition, "A newer party registration is active."));
+                }
+            }
+
             var clientInfo = new ClientInfo
             {
+                RegistrationOrder = registrationOrder,
                 Id = id,
                 UserName = userName,
                 ServerStreamWriter = responseStream,
                 ReadCurrentRoster = usesSnapshots ? () => _charactersRepository.GetInitialPartySettings(parsedCustomerGuid, userName) : null
             };
             context.CancellationToken.ThrowIfCancellationRequested();
-            _partyClients[userName] = clientInfo;
+            ClientInfo active = _partyClients.AddOrUpdate(userName, clientInfo, (_, current) =>
+                registrationOrder != 0 && current.RegistrationOrder > registrationOrder ? current : clientInfo);
+            if (active != clientInfo)
+            {
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, "A newer party registration is active."));
+            }
 
             try
             {
@@ -154,16 +174,16 @@ namespace OWSParty.Service
             return string.Equals(selectedName, userName, StringComparison.OrdinalIgnoreCase) ? selectedName : null;
         }
 
-        private static Guid? ReadMutationId(ServerCallContext context)
+        private static Guid? ReadGuidHeader(ServerCallContext context, string header)
         {
-            string value = context.RequestHeaders.FirstOrDefault(entry => entry.Key == MutationIdHeader)?.Value;
+            string value = context.RequestHeaders.FirstOrDefault(entry => entry.Key == header)?.Value;
             if (value == null)
             {
                 return null;
             }
             if (!Guid.TryParse(value, out Guid id) || id == Guid.Empty)
             {
-                ThrowInvalidArgument("A valid party mutation ID is required.");
+                ThrowInvalidArgument($"A valid GUID is required in {header}.");
             }
             return id;
         }
@@ -178,7 +198,13 @@ namespace OWSParty.Service
             // Same gate as RegisterParty: when session auth is on, the character acting in the request
             // body must be the session's selected character, so a caller can't kick, dismiss or invite
             // on someone else's behalf by naming them.
-            Guid? mutationId = ReadMutationId(context);
+            Guid? mutationId = ReadGuidHeader(context, MutationIdHeader);
+            Guid? actorRegistration = ReadGuidHeader(context, RegistrationHeader);
+            Guid? inviteeRegistration = ReadGuidHeader(context, InviteeRegistrationHeader);
+            if ((!mutationId.HasValue && actorRegistration.HasValue) || (!actorRegistration.HasValue && inviteeRegistration.HasValue))
+            {
+                ThrowInvalidArgument("Party registration requires a mutation ID and an acting participant.");
+            }
             if (mutationId.HasValue && request.PartyAction is not (PartyAction.MessageTypeCreate or PartyAction.MessageTypeAdd))
             {
                 ThrowInvalidArgument("Party mutation IDs apply to create and add.");
@@ -211,7 +237,7 @@ namespace OWSParty.Service
 
                 case PartyAction.MessageTypeCreate:
                 case PartyAction.MessageTypeAdd:
-                    await ExecutePartyAction(request.PartyAction, () => HandleCreateOrAdd(request, mutationId));
+                    await ExecutePartyAction(request.PartyAction, () => HandleCreateOrAdd(request, mutationId, actorRegistration, inviteeRegistration));
                     break;
 
                 case PartyAction.MessageTypeKick:
@@ -257,7 +283,7 @@ namespace OWSParty.Service
             await client.WriteAsync(request);
         }
 
-        private async Task HandleCreateOrAdd(PartyToSend request, Guid? mutationId)
+        private async Task HandleCreateOrAdd(PartyToSend request, Guid? mutationId, Guid? actorRegistration, Guid? inviteeRegistration)
         {
             Guid customerGuid = ValidateCustomerGuid(request);
 
@@ -274,7 +300,7 @@ namespace OWSParty.Service
             CreatePartyOrAddMemberRequest createPartyOrAddMemberRequest = new CreatePartyOrAddMemberRequest();
             createPartyOrAddMemberRequest.SetData(_charactersRepository, _customerGuid, request);
 
-            PartyToSend partyInformation = await createPartyOrAddMemberRequest.Handle(mutationId);
+            PartyToSend partyInformation = await createPartyOrAddMemberRequest.Handle(mutationId, actorRegistration, inviteeRegistration);
             if (partyInformation != null)
             {
                 await BroadcastToMembers(partyInformation.PartyMembers, partyInformation);
@@ -682,6 +708,7 @@ namespace OWSParty.Service
 
     public class ClientInfo
     {
+        public long RegistrationOrder { get; init; }
         public string Id { get; set; }
         public string UserName { get; set; }
         public IServerStreamWriter<PartyToSend> ServerStreamWriter { get; set; }

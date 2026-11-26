@@ -1664,7 +1664,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 }
             });
 
-        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null)
+        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null, Guid? actorRegistration = null, Guid? inviteeRegistration = null)
         {
             if (partyRequest == null)
             {
@@ -1718,6 +1718,24 @@ namespace OWSData.Repositories.Implementations.Postgres
                         if (committed == false)
                         {
                             throw new InvalidOperationException("Party mutation was canceled.");
+                        }
+                    }
+                }
+
+                if (actorRegistration.HasValue)
+                {
+                    if (!mutationId.HasValue || targets.Length != (inviteeRegistration.HasValue ? 1 : 0))
+                    {
+                        throw new InvalidOperationException("Party mutation registration is required for each participant.");
+                    }
+
+                    foreach (int memberId in memberIds.OrderBy(id => id))
+                    {
+                        await LockPartyMutationParticipant(connection, transaction, memberId);
+                        Guid? current = await ReadPartyMutationRegistration(connection, transaction, customerGUID, memberId);
+                        if (current != (memberId == actorCharacterId.Value ? actorRegistration : inviteeRegistration))
+                        {
+                            throw new InvalidOperationException("A party mutation participant has a newer registration.");
                         }
                     }
                 }
@@ -1875,6 +1893,51 @@ namespace OWSData.Repositories.Implementations.Postgres
                 new { CustomerGUID = customerGUID, PartyID = partyId, CharacterID = memberCharacterId.Value },
                 transaction);
         }
+
+        public async Task<long> RegisterPartyMutationParticipant(Guid customerGUID, string characterName, Guid registrationId,
+            CancellationToken cancellationToken)
+        {
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            using IDbTransaction transaction = connection.BeginTransaction();
+            int? characterId = await GetCharacterId(connection, transaction, customerGUID, null, characterName);
+            if (!characterId.HasValue)
+            {
+                throw new InvalidOperationException("Party registration character was not found.");
+            }
+
+            await LockPartyMutationParticipant(connection, transaction, characterId.Value, cancellationToken);
+            var parameters = new { CustomerGUID = customerGUID, CharacterID = characterId.Value, RegistrationId = registrationId };
+            await connection.ExecuteAsync(new CommandDefinition(
+                @"INSERT INTO PartyMutationRegistration (CustomerGUID, CharacterID, RegistrationId)
+                  VALUES (@CustomerGUID, @CharacterID, @RegistrationId)
+                  ON CONFLICT (CustomerGUID, CharacterID, RegistrationId) DO NOTHING",
+                parameters, transaction, cancellationToken: cancellationToken));
+            long? sequence = await connection.QuerySingleOrDefaultAsync<long?>(new CommandDefinition(
+                @"SELECT RegistrationOrder FROM (
+                      SELECT RegistrationOrder, RegistrationId FROM PartyMutationRegistration
+                      WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                      ORDER BY RegistrationOrder DESC LIMIT 1
+                  ) current_registration WHERE RegistrationId = @RegistrationId",
+                parameters, transaction, cancellationToken: cancellationToken));
+            cancellationToken.ThrowIfCancellationRequested();
+            transaction.Commit();
+            return sequence ?? 0;
+        }
+
+        private static Task LockPartyMutationParticipant(DbConnection connection, IDbTransaction transaction, int characterId,
+            CancellationToken cancellationToken = default)
+            => connection.ExecuteAsync(new CommandDefinition(
+                "SELECT pg_advisory_xact_lock(1346458196, @CharacterID)",
+                new { CharacterID = characterId }, transaction, cancellationToken: cancellationToken));
+
+        private static Task<Guid?> ReadPartyMutationRegistration(DbConnection connection, IDbTransaction transaction,
+            Guid customerGUID, int characterId)
+            => connection.QuerySingleOrDefaultAsync<Guid?>(
+                @"SELECT RegistrationId FROM PartyMutationRegistration
+                  WHERE CustomerGUID = @CustomerGUID AND CharacterID = @CharacterID
+                  ORDER BY RegistrationOrder DESC LIMIT 1",
+                new { CustomerGUID = customerGUID, CharacterID = characterId }, transaction);
 
         public async Task<bool> ResolvePartyMutation(Guid customerGUID, Guid mutationId, string characterName)
         {

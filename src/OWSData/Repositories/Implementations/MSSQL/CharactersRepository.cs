@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Data;
 using System.Data.SqlClient;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Dapper.Transaction;
 using Microsoft.Extensions.Logging;
@@ -824,10 +825,13 @@ namespace OWSData.Repositories.Implementations.MSSQL
 
             return QuestsFromDb;
         }
+        public Task<long> RegisterPartyMutationParticipant(Guid customerGUID, string characterName, Guid registrationId, CancellationToken cancellationToken)
+            => throw new NotSupportedException("Party mutation registration requires PostgreSQL.");
+
         public Task<bool> ResolvePartyMutation(Guid customerGUID, Guid mutationId, string characterName)
             => throw new NotSupportedException("Party mutation receipts require PostgreSQL.");
 
-        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null)
+        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null, Guid? actorRegistration = null, Guid? inviteeRegistration = null)
         {
             if (mutationId.HasValue)
             {

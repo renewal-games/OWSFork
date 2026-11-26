@@ -60,3 +60,4 @@ SamsaraUpdates/RaiseMapPlayerCaps_2026-11-06.sql
 SamsaraUpdates/AddWorldServerHeartbeat_2026-11-09.sql
 SamsaraUpdates/AddInventorySaveSeq_2026-11-14.sql
 SamsaraUpdates/PartyMutationReceipts_2026-11-26.sql
+SamsaraUpdates/PartyMutationRegistration_2026-11-26.sql
