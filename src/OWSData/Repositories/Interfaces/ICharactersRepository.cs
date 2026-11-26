@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using GuildServiceApp.Protos;
 using OWSData.Models.Composites;
@@ -85,7 +86,8 @@ namespace OWSData.Repositories.Interfaces
         Task AddQuestListToDatabase(Guid customerGUID, IEnumerable<AddQuestListToDabase> addQuestListToDabase);
         Task<IEnumerable<GetQuestsFromDb>> GetQuestsFromDatabase(Guid customerGUID);
 
-        Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null);
+        Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null, Guid? actorRegistration = null, Guid? inviteeRegistration = null);
+        Task<long> RegisterPartyMutationParticipant(Guid customerGUID, string characterName, Guid registrationId, CancellationToken cancellationToken);
         Task<bool> ResolvePartyMutation(Guid customerGUID, Guid mutationId, string characterName);
         Task<PartyToSend> GetInitialPartySettings(Guid customerGUID, string charName);
 

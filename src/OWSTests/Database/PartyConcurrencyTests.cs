@@ -116,6 +116,88 @@ namespace OWSTests.Database
             Assert.Equal(1, await MemberCount(customer, partyGuid));
         }
 
+        [PostgresFact]
+        public async Task ReplacementRegistration_RejectsADelayedCreateAndCannotBeSupersededByARetry()
+        {
+            Guid customer = Guid.NewGuid();
+            Guid former = Guid.NewGuid();
+            Guid current = Guid.NewGuid();
+            await SeedCharacters(customer, null, "Leader");
+            CharactersRepository characters = Characters();
+            Assert.True(await characters.RegisterPartyMutationParticipant(customer, "Leader", former, default) > 0);
+            long order = await characters.RegisterPartyMutationParticipant(customer, "Leader", current, default);
+            Assert.True(order > 0);
+            Assert.Equal(0L, await characters.RegisterPartyMutationParticipant(customer, "Leader", former, default));
+            Assert.Equal(order, await characters.RegisterPartyMutationParticipant(customer, "Leader", current, default));
+
+            var request = new PartyToSend
+            {
+                CustomerGuid = customer.ToString(),
+                PartyAction = PartyAction.MessageTypeCreate,
+                PartyInfo = new PartyInfo(),
+                PartyMembers = { new PartyMemberInfo { CharName = "Leader", PartyLeader = true } }
+            };
+
+            Guid formerMutation = Guid.NewGuid();
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                characters.CreatePartyOrAddMember(customer, request, formerMutation, former));
+            Assert.Equal("A party mutation participant has a newer registration.", error.Message);
+            Assert.False(await characters.ResolvePartyMutation(customer, formerMutation, "Leader"));
+            Assert.Empty((await characters.GetInitialPartySettings(customer, "Leader")).PartyMembers);
+            Assert.Single((await characters.CreatePartyOrAddMember(customer, request, Guid.NewGuid(), current)).PartyMembers);
+        }
+
+        [PostgresFact]
+        public async Task ReplacementRegistration_WaitsForAnInFlightWriteBeforeReadingTheRoster()
+        {
+            Guid customer = Guid.NewGuid();
+            Guid actor = Guid.NewGuid();
+            Guid invitee = Guid.NewGuid();
+            await SeedCharacters(customer, null, "Leader", "Target");
+            Guid partyGuid = await CreateParty(customer, "Leader");
+            CharactersRepository characters = Characters();
+            await characters.RegisterPartyMutationParticipant(customer, "Leader", actor, default);
+            await characters.RegisterPartyMutationParticipant(customer, "Target", invitee, default);
+
+            await using var gate = new NpgsqlConnection(Db);
+            await gate.OpenAsync();
+            await using NpgsqlTransaction gateTx = await gate.BeginTransactionAsync();
+            await gate.ExecuteAsync("LOCK TABLE PartyMember IN SHARE MODE", transaction: gateTx);
+
+            var add = characters.CreatePartyOrAddMember(customer, AddRequest(partyGuid, "Leader", "Target"),
+                Guid.NewGuid(), actor, invitee);
+            await WaitForLockWaiters(1, add);
+            var replacement = characters.RegisterPartyMutationParticipant(customer, "Target", Guid.NewGuid(), default);
+            await WaitForLockWaiters(2, add, replacement);
+            await gateTx.CommitAsync();
+
+            await add;
+            Assert.True(await replacement > 0);
+            PartyToSend roster = await characters.GetInitialPartySettings(customer, "Target");
+            Assert.Equal(partyGuid.ToString(), roster.PartyInfo.PartyGuid);
+            Assert.Equal(2, roster.PartyMembers.Count);
+        }
+
+        [PostgresFact]
+        public async Task ReplacementInviteeRegistration_RejectsADelayedAdd()
+        {
+            Guid customer = Guid.NewGuid();
+            Guid actor = Guid.NewGuid();
+            Guid formerInvitee = Guid.NewGuid();
+            await SeedCharacters(customer, null, "Leader", "Target");
+            Guid partyGuid = await CreateParty(customer, "Leader");
+            CharactersRepository characters = Characters();
+            await characters.RegisterPartyMutationParticipant(customer, "Leader", actor, default);
+            await characters.RegisterPartyMutationParticipant(customer, "Target", formerInvitee, default);
+            await characters.RegisterPartyMutationParticipant(customer, "Target", Guid.NewGuid(), default);
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                characters.CreatePartyOrAddMember(customer, AddRequest(partyGuid, "Leader", "Target"),
+                    Guid.NewGuid(), actor, formerInvitee));
+            Assert.Equal("A party mutation participant has a newer registration.", error.Message);
+            Assert.Equal(1, await MemberCount(customer, partyGuid));
+        }
+
         // An add holds the party lock and has inserted its member but not committed when the leader disbands. Without
         // the lock the disband deletes the members it can see, then deletes the party once the add commits, leaving the
         // added member in a party that no longer exists. With it the disband waits and removes that member too.
