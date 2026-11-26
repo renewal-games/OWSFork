@@ -484,8 +484,8 @@ sealed class HarnessOptions
     public string MarkerDirectory { get; init; } = "";
     public string RabbitHost { get; init; } = "localhost";
     public int RabbitPort { get; init; } = 5672;
-    public string RabbitUser { get; init; } = "dev";
-    public string RabbitPassword { get; init; } = "test";
+    public string RabbitUser { get; init; } = "";
+    public string RabbitPassword { get; init; } = "";
     public int TimeoutSeconds { get; init; } = 90;
     public bool UseExistingServices { get; init; }
     public bool KeepStartedServices { get; init; }
@@ -556,8 +556,8 @@ sealed class HarnessOptions
             MarkerDirectory = markerDirectory,
             RabbitHost = Get(values, "rabbit-host", "localhost"),
             RabbitPort = int.Parse(Get(values, "rabbit-port", "5672")),
-            RabbitUser = Get(values, "rabbit-user", "dev"),
-            RabbitPassword = Get(values, "rabbit-password", "test"),
+            RabbitUser = Get(values, "rabbit-user", Environment.GetEnvironmentVariable("RABBITMQ_DEFAULT_USER") ?? ""),
+            RabbitPassword = Get(values, "rabbit-password", Environment.GetEnvironmentVariable("RABBITMQ_DEFAULT_PASS") ?? ""),
             TimeoutSeconds = int.Parse(Get(values, "timeout-seconds", "90")),
             UseExistingServices = bool.Parse(Get(values, "use-existing-services", "false")),
             KeepStartedServices = bool.Parse(Get(values, "keep-started-services", "false")),

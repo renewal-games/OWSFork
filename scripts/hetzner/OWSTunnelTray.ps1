@@ -184,8 +184,8 @@ function Get-LauncherConfigSnippet {
 "RabbitMQOptions": {
   "RabbitMQHostName": "127.0.0.1",
   "RabbitMQPort": $RabbitLocalPort,
-  "RabbitMQUserName": "dev",
-  "RabbitMQPassword": "test"
+  "RabbitMQUserName": "<application user from broker environment>",
+  "RabbitMQPassword": "<password from broker environment>"
 },
 "OWSAPIPathConfig": {
   "InternalPublicApiURL": "http://$Server`:$PublicApiPort/",
