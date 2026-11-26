@@ -52,6 +52,38 @@ namespace OWSTests.InstanceLauncher
             Assert.Empty(_processes.GetZoneServerProcesses());
         }
 
+        [Theory]
+        [InlineData(1, 2)] //Ready instance.
+        [InlineData(1, 1)] //Starting instance.
+        [InlineData(0, 0)] //Missing row.
+        [InlineData(2, 3)] //Different instance.
+        public async Task ShutDown_WithoutAMatchingShuttingDownRow_PreservesTheProcess(int rowId, int status)
+        {
+            Process server = StartLongRunningProcess();
+            _processes.AddZoneServerProcess(TrackedAs(1, server, ProcessStartStamp.Read(server)));
+            _http.ShutdownRow = new { MapInstanceID = rowId, Status = status };
+
+            await Listener().HandleServerShutDownMessage(CustomerGuid, 1);
+
+            Assert.False(server.HasExited);
+            Assert.Single(_processes.GetZoneServerProcesses());
+            AssertNoRowWasCleanedUp();
+        }
+
+        [Fact]
+        public async Task ShutDown_WhenTheRowLookupFails_PreservesTheProcessAndThrowsForRetry()
+        {
+            Process server = StartLongRunningProcess();
+            _processes.AddZoneServerProcess(TrackedAs(1, server, ProcessStartStamp.Read(server)));
+            _http.FailPathsEndingWith = "GetZoneInstance";
+
+            await Assert.ThrowsAsync<HttpRequestException>(() => Listener().HandleServerShutDownMessage(CustomerGuid, 1));
+
+            Assert.False(server.HasExited);
+            Assert.Single(_processes.GetZoneServerProcesses());
+            AssertNoRowWasCleanedUp();
+        }
+
         [Fact]
         public async Task ShutDown_LeavesAProcessWithNoRecordedStampRunning()
         {
@@ -514,6 +546,8 @@ namespace OWSTests.InstanceLauncher
 
             public string FailPathsEndingWith { get; set; }
 
+            public object ShutdownRow { get; set; } = new { MapInstanceID = 1, Status = 3 };
+
             public List<string> Calls
             {
                 get
@@ -536,6 +570,14 @@ namespace OWSTests.InstanceLauncher
                 if (FailPathsEndingWith != null && path.EndsWith(FailPathsEndingWith))
                 {
                     throw new HttpRequestException("Instance Management is down.");
+                }
+
+                if (path.EndsWith("GetZoneInstance"))
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(JsonSerializer.Serialize(ShutdownRow), Encoding.UTF8, "application/json")
+                    };
                 }
 
                 if (path.EndsWith("GetZoneInstanceForSpinUp"))
