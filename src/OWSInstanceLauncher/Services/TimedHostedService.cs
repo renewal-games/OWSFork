@@ -3,6 +3,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using SimpleInjector.Lifestyles;
+using Serilog;
 
 
 namespace OWSInstanceLauncher.Services
@@ -13,6 +14,8 @@ namespace OWSInstanceLauncher.Services
         private readonly Settings settings;
         //private readonly ILogger logger;
         private readonly Timer timer;
+        //1 while a callback is running the action; overlapping ticks see it and skip.
+        private int running;
 
         public TimedHostedService(SimpleInjector.Container container, Settings settings/*, ILogger logger*/)
         {
@@ -33,6 +36,15 @@ namespace OWSInstanceLauncher.Services
 
         private void DoWork()
         {
+            //The timer starts a new callback every period even while the last one is still running, and the jobs are
+            //singletons with unsynchronized state (e.g. the health monitor's orphan miss counts). A tick that arrives
+            //while a run is in progress is skipped; the next tick after the run finishes runs normally.
+            if (Interlocked.CompareExchange(ref this.running, 1, 0) != 0)
+            {
+                Log.Warning("{Job} is still running from an earlier tick; skipping this tick.", typeof(TService).Name);
+                return;
+            }
+
             try
             {
                 using (AsyncScopedLifestyle.BeginScope(this.container))
@@ -47,7 +59,11 @@ namespace OWSInstanceLauncher.Services
             }
             catch (Exception ex)
             {
-                //this.logger.LogError(ex, ex.Message);
+                Log.Error(ex, "{Job} failed: {Message}", typeof(TService).Name, ex.Message);
+            }
+            finally
+            {
+                Volatile.Write(ref this.running, 0);
             }
         }
 
