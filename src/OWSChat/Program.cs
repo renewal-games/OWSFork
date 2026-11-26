@@ -30,6 +30,8 @@ builder.Host.UseSerilog((context, services, configuration) => configuration
 builder.Services.AddDataProtection()
     .PersistKeysToFileSystem(new DirectoryInfo("./temp/DataProtection-Keys"));
 builder.Services.AddMemoryCache();
+OWSShared.Extensions.ServiceCollectionExtensions.AddUserSessionCacheOptions(builder.Services, builder.Configuration);
+builder.Services.AddOptions<ChatSessionOptions>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddControllers();
 builder.Services.AddGrpc();
@@ -55,6 +57,8 @@ if (builder.Configuration.GetValue<string>("OWSStorageConfig:OWSDBBackend") == "
     container.Register<IUsersRepository, OWSData.Repositories.Implementations.Postgres.UsersRepository>(Lifestyle.Transient);
 else
     container.Register<IUsersRepository, OWSData.Repositories.Implementations.MSSQL.UsersRepository>(Lifestyle.Transient);
+container.RegisterSingleton<IUserSessionRepository, OWSData.Repositories.Implementations.ValKey.UserSessionRepository>();
+container.RegisterDecorator<IUsersRepository, OWSData.Repositories.Implementations.CachingUsersRepository>(Lifestyle.Transient);
 // Sanctions and the chat log are Postgres-only.
 container.Register<ISanctionsRepository, OWSData.Repositories.Implementations.Postgres.SanctionsRepository>(Lifestyle.Transient);
 container.Register<IChatMembershipRepository, OWSData.Repositories.Implementations.Postgres.ChatMembershipRepository>(Lifestyle.Transient);
