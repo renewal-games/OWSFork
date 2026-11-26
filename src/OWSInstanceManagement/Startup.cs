@@ -149,6 +149,8 @@ namespace OWSInstanceManagement
                 switch (dbBackend)
                 {
                     case "postgres":
+                        container.Register<IConsoleQueriesRepository, OWSData.Repositories.Implementations.Postgres.ConsoleQueriesRepository>(Lifestyle.Scoped);
+                        services.AddHostedService(_ => new Services.InstanceCleanupWorker(container));
                         container.Register<IInstanceManagementRepository, OWSData.Repositories.Implementations.Postgres.InstanceManagementRepository>(Lifestyle.Scoped);
                         container.Register<ICharactersRepository, OWSData.Repositories.Implementations.Postgres.CharactersRepository>(Lifestyle.Scoped);
                         container.Register<IUsersRepository, OWSData.Repositories.Implementations.Postgres.UsersRepository>(Lifestyle.Scoped);
