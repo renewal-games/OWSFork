@@ -295,6 +295,51 @@ namespace OWSTests.InstanceLauncher
             }
         }
 
+        [Fact]
+        public async Task PersistentRepository_WhenASaveFailsPartway_StillTracksAndStopsTheCommittedServer()
+        {
+            Process server = StartLongRunningProcess();
+            Process laterServer = StartLongRunningProcess();
+            string file = Path.Combine(_serverDirectory, "zone-server-processes.json");
+            new PersistentZoneServerProcessesRepository(file).AddZoneServerProcess(TrackedAs(1, server, ProcessStartStamp.Read(server)));
+            string committed = File.ReadAllText(file);
+
+            //Half the bytes reach the disk, then the write fails, as with a full disk or a crash mid-save.
+            var faulted = new PersistentZoneServerProcessesRepository(file, path => new TornWriteStream(path));
+            faulted.AddZoneServerProcess(TrackedAs(2, laterServer, ProcessStartStamp.Read(laterServer)));
+
+            Assert.Equal(committed, File.ReadAllText(file));
+            await AssertReloadedMapStillStops(file, server);
+        }
+
+        [Fact]
+        public async Task PersistentRepository_WhenTheLiveMapIsTorn_FallsBackToTheBackup()
+        {
+            Process server = StartLongRunningProcess();
+            Process laterServer = StartLongRunningProcess();
+            string file = Path.Combine(_serverDirectory, "zone-server-processes.json");
+            var processes = new PersistentZoneServerProcessesRepository(file);
+            processes.AddZoneServerProcess(TrackedAs(1, server, ProcessStartStamp.Read(server)));
+            processes.AddZoneServerProcess(TrackedAs(2, laterServer, ProcessStartStamp.Read(laterServer)));
+
+            //What an in-place write leaves behind when the box loses power partway through.
+            byte[] live = File.ReadAllBytes(file);
+            File.WriteAllBytes(file, live.Take(live.Length / 2).ToArray());
+
+            await AssertReloadedMapStillStops(file, server);
+        }
+
+        //A launcher restarted on the map still knows the server, so a shutdown stops it rather than leaving it holding its port.
+        private async Task AssertReloadedMapStillStops(string file, Process server)
+        {
+            var reloaded = new PersistentZoneServerProcessesRepository(file);
+            Assert.Equal(server.Id, reloaded.FindZoneServerProcessId(1));
+
+            await Listener(processes: reloaded).HandleServerShutDownMessage(CustomerGuid, 1);
+
+            Assert.True(server.WaitForExit(Timeout));
+        }
+
         public static IEnumerable<object[]> Repositories()
         {
             yield return new object[] { new ZoneServerProcessesRepository() };
@@ -366,7 +411,7 @@ namespace OWSTests.InstanceLauncher
             Assert.DoesNotContain(_http.Calls, path => path.EndsWith("SetZoneInstanceStatus") || path.EndsWith("CompleteZoneInstanceShutdown"));
         }
 
-        private ServerLauncherMQListener Listener(int maxNumberOfInstances = 10)
+        private ServerLauncherMQListener Listener(int maxNumberOfInstances = 10, IZoneServerProcessesRepository processes = null)
         {
             var options = new OWSInstanceLauncherOptions
             {
@@ -379,7 +424,7 @@ namespace OWSTests.InstanceLauncher
             var rabbitMQ = Microsoft.Extensions.Options.Options.Create(new RabbitMQOptions { RabbitMQHostName = "127.0.0.1", RabbitMQPort = 1, RabbitMQUserName = "none", RabbitMQPassword = "none" });
 
             return new ServerLauncherMQListener(new FixedWritableOptions(options), Microsoft.Extensions.Options.Options.Create(new APIPathOptions()), rabbitMQ,
-                new StubHttpClientFactory(_http), _processes, new FixedWorldServerRepository());
+                new StubHttpClientFactory(_http), processes ?? _processes, new FixedWorldServerRepository());
         }
 
         //A dedicated server that ignores its arguments and stays up until it is killed.
@@ -434,6 +479,22 @@ namespace OWSTests.InstanceLauncher
             {
                 Assert.True(DateTime.UtcNow < deadline, "Timed out waiting for the condition.");
                 await Task.Delay(50);
+            }
+        }
+
+        //Writes the first half of a save, then fails.
+        private sealed class TornWriteStream : FileStream
+        {
+            public TornWriteStream(string path)
+                : base(path, FileMode.Create, FileAccess.Write, FileShare.None)
+            {
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                base.Write(buffer, offset, count / 2);
+                base.Flush();
+                throw new IOException("Simulated failure partway through the save.");
             }
         }
 
