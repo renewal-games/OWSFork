@@ -3,7 +3,9 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Threading.Tasks;
+using Dapper;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Npgsql;
 using OWSData.Models.Composites;
 using OWSData.Models.StoredProcs;
 using OWSShared;
@@ -15,8 +17,7 @@ namespace OWSTests.InstanceManagement
 {
     /// <summary>
     /// Hosts OWSInstanceManagement with the process-wide test service key (<see cref="TestServiceKey"/>) and
-    /// OWS_REQUIRE_SERVICE_KEY=false, the Hetzner profile's posture. The global gate then lets keyless callers through,
-    /// so these tests show the per-endpoint [RequireSamsaraServiceKey] still holds on the launcher endpoints.
+    /// both global-gate settings. With the global gate off, the endpoint filters must still reject keyless callers.
     /// </summary>
     public sealed class InstanceManagementHost : IAsyncLifetime
     {
@@ -25,6 +26,8 @@ namespace OWSTests.InstanceManagement
         private readonly PostgresTestDatabases _databases = new();
 
         public WebApplicationFactory<OWSInstanceManagement.Startup> Factory { get; private set; }
+        public WebApplicationFactory<OWSInstanceManagement.Startup> RequiredFactory { get; private set; }
+        public string ConnectionString => _databases.ConnectionString(SchemaSource.Migrated);
 
         public async Task InitializeAsync()
         {
@@ -50,6 +53,9 @@ namespace OWSTests.InstanceManagement
             {
                 Factory = new WebApplicationFactory<OWSInstanceManagement.Startup>();
                 _ = Factory.Server;
+                Environment.SetEnvironmentVariable(ServiceKeyGateSettings.RequireEnvVar, "true");
+                RequiredFactory = new WebApplicationFactory<OWSInstanceManagement.Startup>();
+                _ = RequiredFactory.Server;
             }
             finally
             {
@@ -57,9 +63,9 @@ namespace OWSTests.InstanceManagement
             }
         }
 
-        public HttpClient CreateClient(string serviceKey = null)
+        public HttpClient CreateClient(string serviceKey = null, bool globalGateRequired = false)
         {
-            HttpClient client = Factory.CreateClient();
+            HttpClient client = (globalGateRequired ? RequiredFactory : Factory).CreateClient();
             client.DefaultRequestHeaders.Add("X-CustomerGUID", Guid.NewGuid().ToString());
             if (serviceKey != null)
             {
@@ -71,6 +77,7 @@ namespace OWSTests.InstanceManagement
         public async Task DisposeAsync()
         {
             Factory?.Dispose();
+            RequiredFactory?.Dispose();
             await _databases.DisposeAsync();
         }
     }
@@ -112,16 +119,59 @@ namespace OWSTests.InstanceManagement
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         }
 
-        [Fact]
-        public async Task ZoneServerCall_WithoutServiceKey_PassesTheGate_WhileTheGlobalGateIsOff()
+        [Theory]
+        [InlineData("api/Instance/GetZoneInstance")]
+        [InlineData("api/Instance/GetZoneInstancesForZone")]
+        [InlineData("api/Instance/GetCurrentWorldTime")]
+        [InlineData("api/Instance/GetServerInstanceFromPort")]
+        [InlineData("api/Instance/UpdateNumberOfPlayers")]
+        public async Task ZoneServerCall_WithoutServiceKey_IsUnauthorized(string path)
         {
             using HttpClient client = _host.CreateClient();
+            using var body = new StringContent(path.EndsWith("/GetZoneInstance") ? "1" : "{}",
+                System.Text.Encoding.UTF8, "application/json");
+            using HttpResponseMessage response = await client.PostAsync(path, body);
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        }
 
-            // The UE zone server doesn't send the key on InstanceManagementAPI calls yet; without a database this may
-            // fail further in, but not at either gate.
-            using HttpResponseMessage response = await client.PostAsJsonAsync("api/Instance/GetZoneInstance", new { ZoneInstanceID = 1 });
-
-            Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+        [PostgresTheory]
+        [InlineData(false, 1)]
+        [InlineData(true, 1)]
+        [InlineData(false, 2)]
+        [InlineData(true, 2)]
+        public async Task Heartbeat_RequiresKeyBeforeChangingInstance(bool globalGateRequired, int initialStatus)
+        {
+            Guid customer = Guid.NewGuid();
+            await using var connection = new NpgsqlConnection(_host.ConnectionString);
+            int id = await connection.ExecuteScalarAsync<int>(@"
+                INSERT INTO MapInstances (CustomerGUID, WorldServerID, MapID, Port, Status,
+                    NumberOfReportedPlayers, LastUpdateFromServer)
+                VALUES (@customer, 7, 1, 7777, @initialStatus, 0, '2000-01-01') RETURNING MapInstanceID",
+                new { customer, initialStatus });
+            var body = new { ZoneInstanceId = id, NumberOfConnectedPlayers = 4 };
+            const string read = "SELECT Status, NumberOfReportedPlayers, LastUpdateFromServer FROM MapInstances WHERE CustomerGUID=@customer AND MapInstanceID=@id";
+            var before = await connection.QuerySingleAsync(read, new { customer, id });
+            foreach (string key in new[] { null, "wrong-key" })
+            {
+                using HttpClient client = _host.CreateClient(key, globalGateRequired);
+                client.DefaultRequestHeaders.Remove("X-CustomerGUID");
+                client.DefaultRequestHeaders.Add("X-CustomerGUID", customer.ToString());
+                using var response = await client.PostAsJsonAsync("api/Instance/UpdateNumberOfPlayers", body);
+                Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+                var after = await connection.QuerySingleAsync(read, new { customer, id });
+                Assert.Equal((int)before.status, (int)after.status);
+                Assert.Equal((int)before.numberofreportedplayers, (int)after.numberofreportedplayers);
+                Assert.Equal((DateTime)before.lastupdatefromserver, (DateTime)after.lastupdatefromserver);
+            }
+            using HttpClient authorized = _host.CreateClient(InstanceManagementHost.ServiceKey, globalGateRequired);
+            authorized.DefaultRequestHeaders.Remove("X-CustomerGUID");
+            authorized.DefaultRequestHeaders.Add("X-CustomerGUID", customer.ToString());
+            using var success = await authorized.PostAsJsonAsync("api/Instance/UpdateNumberOfPlayers", body);
+            Assert.Equal(HttpStatusCode.OK, success.StatusCode);
+            var updated = await connection.QuerySingleAsync(read, new { customer, id });
+            Assert.Equal(2, (int)updated.status);
+            Assert.Equal(4, (int)updated.numberofreportedplayers);
+            Assert.True((DateTime)updated.lastupdatefromserver > (DateTime)before.lastupdatefromserver);
         }
 
         [Fact]

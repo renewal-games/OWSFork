@@ -50,6 +50,27 @@ Check the running stack:
 docker compose --env-file .env.hetzner-dev -f docker-compose.hetzner-dev.yml ps
 ```
 
+## Issue #174 deployment is blocked
+
+**BLOCKED on a Perforce caller changelist and rebuilt dedicated server.** The deployed
+Samsara game plugin still omits `X-Samsara-Service-Key` on InstanceManagement requests.
+The plugin edits under this repository's `plugins/` directory do not update that game build.
+Do not deploy this backend change until the caller CL and rebuilt server artifact are named
+in the [issue #174 review handoff](issue-174-review-handoff.md) and its release checks pass.
+That handoff is also the draft PR body; keep the PR blocked until the prerequisite is met.
+
+The required caller changes cover `AOWSGameMode::ProcessOWS2POSTRequest`, both
+`UOWSAPISubsystem` POST/GET helpers, and `AGameStateData::ProcessOWS2POSTRequest`.
+`ASSGameMode` inherits the game-mode helper. Set `OWS_SAMSARA_SERVICE_KEY` in the server
+process environment to the backend's value and restart its launcher/editor so new servers
+inherit it. Never distribute this secret in client config. Existing backend `.env` files
+should explicitly set `OWS_REQUIRE_SERVICE_KEY=true` when deploying the completed change.
+
+An unchanged zone server receives 401s and cannot become ready. Setting
+`OWS_REQUIRE_SERVICE_KEY=false` does **not** restore its heartbeat: endpoint attributes
+require the key independently. If an incompatible backend was deployed, roll back that
+backend or deploy the completed caller build; the global toggle is not a recovery path.
+
 ## Deploy
 
 From `src/`:
@@ -68,18 +89,16 @@ and are only used internally by OWS services in this profile.
 Additional env vars for production hardening (set in `.env.hetzner-dev`):
 
 - `OWS_SAMSARA_SERVICE_KEY` — server-to-server key for every CharacterPersistence `/api`
-  route except `System/Status`, and the InstanceManagement endpoints that spin up, shut down
-  and reap zone instances. **Required outside Development**: the API fails closed (401) when
+  route except `System/Status`, and InstanceManagement routes including zone-server heartbeats. **Required outside Development**: the API fails closed (401) when
   unset. Set the same value in the environment of the machine running the instance launcher
   and the UE dedicated servers (both read the same variable and send it as
   `X-Samsara-Service-Key`). A UE editor or local zone server pointed at this backend through
   the tunnel needs it too, or its character loads and saves get 401s.
-- `OWS_REQUIRE_SERVICE_KEY` — when not `false`, every InstanceManagement `/api` route needs
-  `X-Samsara-Service-Key`; `X-CustomerGUID` only names the tenant. The code default is
-  required outside Development; this profile ships `false` until the UE zone server sends the
-  key on its InstanceManagement calls. A wrong key is rejected in both modes. The endpoints
-  that spin up, shut down and reap zone instances (and `Zones/AddZone`) need the key even when
-  this is `false`. CharacterPersistence doesn't read this setting.
+- `OWS_REQUIRE_SERVICE_KEY` � defaults to `true`; every InstanceManagement `/api` route needs
+  `X-Samsara-Service-Key`. Zone-server routes, including `UpdateNumberOfPlayers`, also enforce
+  the key independently, so setting this to `false` does not reopen heartbeats.
+  CharacterPersistence doesn't read this setting.
+
 - `OWS_PUBLIC_API_DOMAIN` / `OWS_GLOBAL_DATA_DOMAIN` — hostnames for the built-in
   Caddy TLS proxy (e.g. `api.example.com`). Point A records at this host before
   first start; Caddy provisions Let's Encrypt certificates automatically. When

@@ -14,7 +14,8 @@ namespace OWSInstanceManagement.Requests.Instance
     /// UpdateNumberOfPlayersRequest
     /// </summary>
     /// <remarks>
-    /// Update the number of players on a zone instance by matching it to the port and IP
+    /// Update the player count for the authenticated zone server's instance ID.
+    /// The controller requires the server-to-server service key before this handler runs.
     /// </remarks>
     // The server-stat fields arrive flat in the same JSON body.
     public class UpdateNumberOfPlayersRequest : ZoneServerStats
