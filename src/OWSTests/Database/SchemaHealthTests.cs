@@ -89,6 +89,12 @@ namespace OWSTests.Database
                 "CREATE UNIQUE INDEX UX_Characters_CustomerGUID_LowerCharName ON Characters (CustomerGUID, LOWER(CharName))");
             Assert.Equal(HealthStatus.Healthy, (await CheckHealth(connectionString)).Status);
 
+            await Execute(connectionString, "ALTER TABLE PartyMutationReceipt RENAME TO MissingReceipt");
+            HealthReport noReceipt = await CheckHealth(connectionString);
+            Assert.Equal(HealthStatus.Unhealthy, noReceipt.Status);
+            Assert.Contains("partymutationreceipt", noReceipt.Entries["postgres"].Description);
+            await Execute(connectionString, "ALTER TABLE MissingReceipt RENAME TO PartyMutationReceipt");
+
             await Execute(connectionString, "DROP TABLE LoginQueue");
             HealthReport noQueue = await CheckHealth(connectionString);
             Assert.Equal(HealthStatus.Unhealthy, noQueue.Status);

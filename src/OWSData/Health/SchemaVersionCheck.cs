@@ -16,7 +16,7 @@ namespace OWSData.Health
     public static class SchemaVersionCheck
     {
         /// <summary>The last line of migration-manifest.txt. OWSTests fails until this follows a new script.</summary>
-        public const string ExpectedLastScript = "SamsaraUpdates/AddInventorySaveSeq_2026-11-14.sql";
+        public const string ExpectedLastScript = "SamsaraUpdates/PartyMutationReceipts_2026-11-26.sql";
 
         /// <summary>Tables and columns the code reads directly, as (table, column); a null column checks the table only.</summary>
         public static readonly IReadOnlyList<(string Table, string Column)> RequiredObjects = new[]
@@ -26,7 +26,8 @@ namespace OWSData.Health
             ("loginfailures", (string)null),        // LoginBackoff_2026-10-30.sql, read by every password login
             ("worldservers", "lastheartbeat"),      // AddWorldServerHeartbeat_2026-11-09.sql, read by every zone spin-up
             ("characters", "inventorysaveseq"),     // AddInventorySaveSeq_2026-11-14.sql, read by every bag save that sends a SaveSeq
-            ("characters", "inventorysaveseqowner")
+            ("characters", "inventorysaveseqowner"),
+            ("partymutationreceipt", (string)null)
         };
 
         /// <summary>Indexes the code relies on, such as the target of an ON CONFLICT upsert.</summary>

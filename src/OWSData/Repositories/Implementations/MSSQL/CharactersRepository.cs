@@ -824,8 +824,16 @@ namespace OWSData.Repositories.Implementations.MSSQL
 
             return QuestsFromDb;
         }
-        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest)
+        public Task<bool> ResolvePartyMutation(Guid customerGUID, Guid mutationId, string characterName)
+            => throw new NotSupportedException("Party mutation receipts require PostgreSQL.");
+
+        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null)
         {
+            if (mutationId.HasValue)
+            {
+                throw new NotSupportedException("Party mutation receipts require PostgreSQL.");
+            }
+
             try
             {
                 using (Connection)

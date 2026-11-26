@@ -22,9 +22,9 @@ namespace OWSParty.Requests.Party
             _partyRequest = partyRequest;
         }
 
-        public async Task<PartyToSend> Handle()
+        public async Task<PartyToSend> Handle(Guid? mutationId = null)
         {
-            PartyToSend partyInformation = await _charactersRepository.CreatePartyOrAddMember(_customerGUID, _partyRequest);
+            PartyToSend partyInformation = await _charactersRepository.CreatePartyOrAddMember(_customerGUID, _partyRequest, mutationId);
 
             return partyInformation;
         }

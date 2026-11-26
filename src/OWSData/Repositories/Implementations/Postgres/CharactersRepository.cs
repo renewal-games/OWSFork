@@ -183,12 +183,14 @@ namespace OWSData.Repositories.Implementations.Postgres
                 transaction);
         }
 
-        private static async Task<int?> GetPartyId(DbConnection connection, IDbTransaction transaction, Guid customerGUID, Guid partyGuid)
+        // Lock before reading party state so the checks see the previous writer's commit at READ COMMITTED.
+        private static async Task<int?> LockParty(DbConnection connection, IDbTransaction transaction, Guid customerGUID, Guid partyGuid)
         {
             return await connection.QuerySingleOrDefaultAsync<int?>(
                 @"SELECT PartyID
                 FROM Party
-                WHERE CustomerGUID = @CustomerGUID AND PartyGuid = @PartyGuid",
+                WHERE CustomerGUID = @CustomerGUID AND PartyGuid = @PartyGuid
+                FOR UPDATE",
                 new { CustomerGUID = customerGUID, PartyGuid = partyGuid },
                 transaction);
         }
@@ -1662,7 +1664,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 }
             });
 
-        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest)
+        public async Task<PartyToSend> CreatePartyOrAddMember(Guid customerGUID, PartyToSend partyRequest, Guid? mutationId = null)
         {
             if (partyRequest == null)
             {
@@ -1683,10 +1685,41 @@ namespace OWSData.Repositories.Implementations.Postgres
             {
                 Guid partyGuid;
                 string actorName = actor.CharName;
-                int? actorCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(actor.CharGuid), actor.CharName);
+                int? actorCharacterId = await GetCharacterId(connection, transaction, customerGUID, mutationId.HasValue ? null : TryParseGuid(actor.CharGuid), actor.CharName);
                 if (actorCharacterId == null)
                 {
                     throw new InvalidOperationException("Party actor character was not found.");
+                }
+
+                PartyMemberInfo[] targets = partyRequest.PartyMembers.Where(member =>
+                    !string.Equals(member.CharName, actorName, StringComparison.OrdinalIgnoreCase)).ToArray();
+                var memberIds = new List<int> { actorCharacterId.Value };
+                if (mutationId.HasValue)
+                {
+                    foreach (PartyMemberInfo member in targets)
+                    {
+                        int? memberId = await GetCharacterId(connection, transaction, customerGUID, null, member.CharName);
+                        if (!memberId.HasValue)
+                        {
+                            throw new InvalidOperationException("Party member character was not found.");
+                        }
+                        memberIds.Add(memberId.Value);
+                    }
+
+                    await LockPartyMutation(connection, transaction, customerGUID, mutationId.Value);
+                    foreach (int memberId in memberIds)
+                    {
+                        bool? committed = await GetPartyMutationReceipt(connection, transaction, customerGUID, mutationId.Value, memberId);
+                        if (committed == true)
+                        {
+                            transaction.Commit();
+                            return null;
+                        }
+                        if (committed == false)
+                        {
+                            throw new InvalidOperationException("Party mutation was canceled.");
+                        }
+                    }
                 }
 
                 if (partyRequest.PartyAction == PartyAction.MessageTypeCreate)
@@ -1743,14 +1776,17 @@ namespace OWSData.Repositories.Implementations.Postgres
                         new { CustomerGUID = customerGUID, PartyID = partyId, CharacterID = actorCharacterId.Value },
                         transaction);
 
-                    foreach (PartyMemberInfo member in partyRequest.PartyMembers.Where(member => !string.Equals(member.CharName, actorName, StringComparison.OrdinalIgnoreCase)))
+                    for (int i = 0; i < targets.Length; ++i)
                     {
-                        await AddPartyMember(connection, transaction, customerGUID, partyId, member);
+                        await AddPartyMember(connection, transaction, customerGUID, partyId, targets[i],
+                            mutationId.HasValue ? memberIds[i + 1] : null);
                     }
 
                     IEnumerable<PartyStateRow> createRows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
+                    PartyToSend created = BuildPartyToSend(customerGUID, partyRequest.PartyAction, createRows);
+                    await RecordPartyMutationCommit(connection, transaction, customerGUID, mutationId, memberIds);
                     transaction.Commit();
-                    return BuildPartyToSend(customerGUID, partyRequest.PartyAction, createRows);
+                    return created;
                 }
 
                 if (partyRequest.PartyInfo == null || !Guid.TryParse(partyRequest.PartyInfo.PartyGuid, out partyGuid))
@@ -1758,7 +1794,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                     throw new InvalidOperationException("A valid party GUID is required.");
                 }
 
-                int? existingPartyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? existingPartyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (existingPartyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
@@ -1776,14 +1812,17 @@ namespace OWSData.Repositories.Implementations.Postgres
                     throw new InvalidOperationException("Only the party leader can add members.");
                 }
 
-                foreach (PartyMemberInfo member in partyRequest.PartyMembers.Where(member => !string.Equals(member.CharName, actorName, StringComparison.OrdinalIgnoreCase)))
+                for (int i = 0; i < targets.Length; ++i)
                 {
-                    await AddPartyMember(connection, transaction, customerGUID, existingPartyId.Value, member);
+                    await AddPartyMember(connection, transaction, customerGUID, existingPartyId.Value, targets[i],
+                        mutationId.HasValue ? memberIds[i + 1] : null);
                 }
 
                 IEnumerable<PartyStateRow> addRows = await GetPartyState(connection, transaction, customerGUID, partyGuid);
+                PartyToSend response = BuildPartyToSend(customerGUID, partyRequest.PartyAction, addRows);
+                await RecordPartyMutationCommit(connection, transaction, customerGUID, mutationId, memberIds);
                 transaction.Commit();
-                return BuildPartyToSend(customerGUID, partyRequest.PartyAction, addRows);
+                return response;
             }
             catch
             {
@@ -1792,9 +1831,9 @@ namespace OWSData.Repositories.Implementations.Postgres
             }
         }
 
-        private static async Task AddPartyMember(DbConnection connection, IDbTransaction transaction, Guid customerGUID, int partyId, PartyMemberInfo member)
+        private static async Task AddPartyMember(DbConnection connection, IDbTransaction transaction, Guid customerGUID, int partyId, PartyMemberInfo member, int? resolvedMemberId)
         {
-            int? memberCharacterId = await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(member.CharGuid), member.CharName);
+            int? memberCharacterId = resolvedMemberId ?? await GetCharacterId(connection, transaction, customerGUID, TryParseGuid(member.CharGuid), member.CharName);
             if (memberCharacterId == null)
             {
                 throw new InvalidOperationException("Party member character was not found.");
@@ -1835,6 +1874,58 @@ namespace OWSData.Repositories.Implementations.Postgres
                 VALUES (@CustomerGUID, @PartyID, @CharacterID, FALSE, 0)",
                 new { CustomerGUID = customerGUID, PartyID = partyId, CharacterID = memberCharacterId.Value },
                 transaction);
+        }
+
+        public async Task<bool> ResolvePartyMutation(Guid customerGUID, Guid mutationId, string characterName)
+        {
+            using DbConnection connection = CreateConnection();
+            await connection.OpenAsync();
+            using IDbTransaction transaction = connection.BeginTransaction();
+            int? characterId = await GetCharacterId(connection, transaction, customerGUID, null, characterName);
+            if (!characterId.HasValue)
+            {
+                throw new InvalidOperationException("Party character was not found.");
+            }
+
+            await LockPartyMutation(connection, transaction, customerGUID, mutationId);
+            bool? committed = await GetPartyMutationReceipt(connection, transaction, customerGUID, mutationId, characterId.Value);
+            if (!committed.HasValue)
+            {
+                await RecordPartyMutationReceipt(connection, transaction, customerGUID, mutationId, characterId.Value, false);
+            }
+
+            transaction.Commit();
+            return committed == true;
+        }
+
+        private static Task LockPartyMutation(DbConnection connection, IDbTransaction transaction, Guid customerGUID, Guid mutationId)
+            => connection.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtextextended(@LockKey, 0))",
+                new { LockKey = $"party-mutation:{customerGUID:D}:{mutationId:D}" }, transaction);
+
+        private static Task<bool?> GetPartyMutationReceipt(DbConnection connection, IDbTransaction transaction,
+            Guid customerGUID, Guid mutationId, int characterId)
+            => connection.QuerySingleOrDefaultAsync<bool?>(
+                @"SELECT Committed FROM PartyMutationReceipt
+                  WHERE CustomerGUID = @CustomerGUID AND MutationId = @MutationId AND CharacterID = @CharacterID",
+                new { CustomerGUID = customerGUID, MutationId = mutationId, CharacterID = characterId }, transaction);
+
+        private static Task RecordPartyMutationReceipt(DbConnection connection, IDbTransaction transaction,
+            Guid customerGUID, Guid mutationId, int characterId, bool committed)
+            => connection.ExecuteAsync(
+                @"INSERT INTO PartyMutationReceipt (CustomerGUID, MutationId, CharacterID, Committed)
+                  VALUES (@CustomerGUID, @MutationId, @CharacterID, @Committed)",
+                new { CustomerGUID = customerGUID, MutationId = mutationId, CharacterID = characterId, Committed = committed }, transaction);
+
+        private static async Task RecordPartyMutationCommit(DbConnection connection, IDbTransaction transaction,
+            Guid customerGUID, Guid? mutationId, IEnumerable<int> memberIds)
+        {
+            if (mutationId.HasValue)
+            {
+                foreach (int memberId in memberIds)
+                {
+                    await RecordPartyMutationReceipt(connection, transaction, customerGUID, mutationId.Value, memberId, true);
+                }
+            }
         }
 
         public async Task<PartyToSend> GetInitialPartySettings(Guid customerGUID, string charName)
@@ -1899,7 +1990,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? partyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (partyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
@@ -2047,7 +2138,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? partyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (partyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
@@ -2144,7 +2235,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? partyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (partyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
@@ -2215,7 +2306,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? partyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (partyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
@@ -2290,7 +2381,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? partyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (partyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");
@@ -2361,7 +2452,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
             try
             {
-                int? partyId = await GetPartyId(connection, transaction, customerGUID, partyGuid);
+                int? partyId = await LockParty(connection, transaction, customerGUID, partyGuid);
                 if (partyId == null)
                 {
                     throw new InvalidOperationException("Party was not found.");

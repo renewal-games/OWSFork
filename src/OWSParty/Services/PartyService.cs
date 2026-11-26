@@ -20,6 +20,9 @@ namespace OWSParty.Service
     {
         public static ConcurrentDictionary<string, ClientInfo> _partyClients = new ConcurrentDictionary<string, ClientInfo>(StringComparer.OrdinalIgnoreCase);
 
+        private const string SnapshotHeader = "party-snapshot-v1";
+        private const string MutationIdHeader = "party-mutation-id";
+
         private readonly ICharactersRepository _charactersRepository;
         private readonly IUsersRepository _usersRepository;
         private readonly IHeaderCustomerGUID _customerGuid;
@@ -58,37 +61,62 @@ namespace OWSParty.Service
                 return;
             }
 
-            // Session auth is on unless OWS_GRPC_REQUIRE_SESSION_AUTH=false. Require valid
-            // customerguid/usersessionguid metadata, the session must exist, and it must belong to
-            // the character being registered — so a client cannot register the stream as someone else.
-            if (GrpcSessionAuth.IsRequired && !await IsSessionAuthorized(context, parsedCustomerGuid, userName))
+            Guid? mutationId = ReadMutationId(context);
+            bool usesSnapshots = context.RequestHeaders.FirstOrDefault(entry => entry.Key == SnapshotHeader)?.Value == "1";
+            if (mutationId.HasValue && !usesSnapshots)
             {
-                GrpcSessionAuth.LogRejected(context, "party");
-                throw new RpcException(new Status(StatusCode.Unauthenticated, "Invalid session for party registration."));
+                ThrowInvalidArgument("Party mutation recovery requires snapshot support.");
             }
 
-            ClientInfo clientInfo = new ClientInfo
+            if (GrpcSessionAuth.IsRequired || mutationId.HasValue)
+            {
+                userName = await GetAuthorizedCharacter(context, parsedCustomerGuid, userName);
+                if (userName == null)
+                {
+                    GrpcSessionAuth.LogRejected(context, "party");
+                    throw new RpcException(new Status(StatusCode.Unauthenticated, "Invalid session for party registration."));
+                }
+            }
+
+            var clientInfo = new ClientInfo
             {
                 Id = id,
                 UserName = userName,
-                ServerStreamWriter = responseStream
+                ServerStreamWriter = responseStream,
+                ReadCurrentRoster = usesSnapshots ? () => _charactersRepository.GetInitialPartySettings(parsedCustomerGuid, userName) : null
             };
-
-            _partyClients.AddOrUpdate(userName, clientInfo, (_, _) => clientInfo);
+            context.CancellationToken.ThrowIfCancellationRequested();
+            _partyClients[userName] = clientInfo;
 
             try
             {
-                _customerGuid.CustomerGUID = parsedCustomerGuid;
-                GetInitialPartySettingsRequest getInitalPartySettings = new GetInitialPartySettingsRequest();
-                getInitalPartySettings.SetData(_charactersRepository, _customerGuid, userName);
-
-                PartyToSend partyInformation = await getInitalPartySettings.Handle();
-
-                if (partyInformation != null && partyInformation != default && partyInformation.PartyMembers.Count != 0)
+                PartyAction snapshotAction = PartyAction.MessageTypeInitialRestore;
+                if (mutationId.HasValue)
                 {
-                    await responseStream.WriteAsync(partyInformation);
+                    bool committed = await _charactersRepository.ResolvePartyMutation(parsedCustomerGuid, mutationId.Value, userName);
+                    snapshotAction = committed ? PartyAction.MessageTypeMutationCommitted : PartyAction.MessageTypeMutationCanceled;
                 }
 
+                PartyToSend party;
+                do
+                {
+                    context.CancellationToken.ThrowIfCancellationRequested();
+                    party = await _charactersRepository.GetInitialPartySettings(parsedCustomerGuid, userName);
+                }
+                while (!clientInfo.TryFinishSnapshot());
+
+                if (usesSnapshots)
+                {
+                    party ??= new PartyToSend { CustomerGuid = parsedCustomerGuid.ToString() };
+                    party.PartyAction = snapshotAction;
+                    await responseStream.WriteAsync(party);
+                }
+                else if (party != null && party.PartyMembers.Count != 0)
+                {
+                    await responseStream.WriteAsync(party);
+                }
+
+                clientInfo.ReleaseSnapshotWriter();
                 await Task.Delay(Timeout.Infinite, context.CancellationToken);
             }
             catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
@@ -96,35 +124,48 @@ namespace OWSParty.Service
             }
             finally
             {
-                if (_partyClients.TryGetValue(userName, out ClientInfo registeredClient) && ReferenceEquals(registeredClient, clientInfo))
-                {
-                    _partyClients.TryRemove(userName, out _);
-                }
+                ((ICollection<KeyValuePair<string, ClientInfo>>)_partyClients).Remove(new(userName, clientInfo));
+                clientInfo.ReleaseSnapshotWriter();
             }
         }
 
-        private async Task<bool> IsSessionAuthorized(ServerCallContext context, Guid requestCustomerGuid, string userName)
+        private async Task<string> GetAuthorizedCharacter(ServerCallContext context, Guid requestCustomerGuid, string userName)
         {
             if (!GrpcSessionAuth.TryReadCredentials(context, out Guid metaCustomerGuid, out Guid userSessionGuid))
             {
-                return false;
+                return null;
             }
 
             // The credential's customer must match the one the registration claims.
             if (metaCustomerGuid != requestCustomerGuid)
             {
-                return false;
+                return null;
             }
 
             var session = await _usersRepository.GetUserSession(metaCustomerGuid, userSessionGuid);
             if (session == null || !session.UserGuid.HasValue)
             {
-                return false;
+                return null;
             }
 
             // Bind the stream identity to the session: the registering character must be the
             // session's selected character, so a valid session can't register as someone else.
-            return string.Equals(session.SelectedCharacterName?.Trim(), userName, StringComparison.OrdinalIgnoreCase);
+            string selectedName = session.SelectedCharacterName?.Trim();
+            return string.Equals(selectedName, userName, StringComparison.OrdinalIgnoreCase) ? selectedName : null;
+        }
+
+        private static Guid? ReadMutationId(ServerCallContext context)
+        {
+            string value = context.RequestHeaders.FirstOrDefault(entry => entry.Key == MutationIdHeader)?.Value;
+            if (value == null)
+            {
+                return null;
+            }
+            if (!Guid.TryParse(value, out Guid id) || id == Guid.Empty)
+            {
+                ThrowInvalidArgument("A valid party mutation ID is required.");
+            }
+            return id;
         }
 
         public override async Task<Empty> SendPartyMsg(PartyToSend request, ServerCallContext context)
@@ -137,14 +178,28 @@ namespace OWSParty.Service
             // Same gate as RegisterParty: when session auth is on, the character acting in the request
             // body must be the session's selected character, so a caller can't kick, dismiss or invite
             // on someone else's behalf by naming them.
-            if (GrpcSessionAuth.IsRequired)
+            Guid? mutationId = ReadMutationId(context);
+            if (mutationId.HasValue && request.PartyAction is not (PartyAction.MessageTypeCreate or PartyAction.MessageTypeAdd))
+            {
+                ThrowInvalidArgument("Party mutation IDs apply to create and add.");
+            }
+
+            if (GrpcSessionAuth.IsRequired || mutationId.HasValue)
             {
                 Guid.TryParse(request.CustomerGuid, out Guid requestCustomerGuid);
                 string actorName = GetActingCharacter(request)?.CharName?.Trim();
-                if (string.IsNullOrWhiteSpace(actorName) || !await IsSessionAuthorized(context, requestCustomerGuid, actorName))
+                string authorizedName = string.IsNullOrWhiteSpace(actorName)
+                    ? null
+                    : await GetAuthorizedCharacter(context, requestCustomerGuid, actorName);
+                if (authorizedName == null)
                 {
                     GrpcSessionAuth.LogRejected(context, "party");
                     throw new RpcException(new Status(StatusCode.Unauthenticated, "Invalid session for party action."));
+                }
+
+                if (mutationId.HasValue)
+                {
+                    GetActingCharacter(request).CharName = authorizedName;
                 }
             }
 
@@ -156,7 +211,7 @@ namespace OWSParty.Service
 
                 case PartyAction.MessageTypeCreate:
                 case PartyAction.MessageTypeAdd:
-                    await ExecutePartyAction(request.PartyAction, () => HandleCreateOrAdd(request));
+                    await ExecutePartyAction(request.PartyAction, () => HandleCreateOrAdd(request, mutationId));
                     break;
 
                 case PartyAction.MessageTypeKick:
@@ -199,10 +254,10 @@ namespace OWSParty.Service
                 return;
             }
 
-            await client.ServerStreamWriter.WriteAsync(request);
+            await client.WriteAsync(request);
         }
 
-        private async Task HandleCreateOrAdd(PartyToSend request)
+        private async Task HandleCreateOrAdd(PartyToSend request, Guid? mutationId)
         {
             Guid customerGuid = ValidateCustomerGuid(request);
 
@@ -219,8 +274,11 @@ namespace OWSParty.Service
             CreatePartyOrAddMemberRequest createPartyOrAddMemberRequest = new CreatePartyOrAddMemberRequest();
             createPartyOrAddMemberRequest.SetData(_charactersRepository, _customerGuid, request);
 
-            PartyToSend partyInformation = await createPartyOrAddMemberRequest.Handle();
-            await BroadcastToMembers(partyInformation.PartyMembers, partyInformation);
+            PartyToSend partyInformation = await createPartyOrAddMemberRequest.Handle(mutationId);
+            if (partyInformation != null)
+            {
+                await BroadcastToMembers(partyInformation.PartyMembers, partyInformation);
+            }
         }
 
         private async Task HandleRemoveOrDismiss(PartyToSend request)
@@ -351,7 +409,7 @@ namespace OWSParty.Service
                     continue;
                 }
 
-                partyTasks.Add(client.ServerStreamWriter.WriteAsync(message));
+                partyTasks.Add(client.WriteAsync(message, rosterUpdate: true));
             }
 
             if (unreachableMembers.Count > 0)
@@ -627,5 +685,78 @@ namespace OWSParty.Service
         public string Id { get; set; }
         public string UserName { get; set; }
         public IServerStreamWriter<PartyToSend> ServerStreamWriter { get; set; }
+        public Func<Task<PartyToSend>> ReadCurrentRoster { get; init; }
+
+        private readonly SemaphoreSlim _writer = new SemaphoreSlim(0, 1);
+        private readonly object _snapshotLock = new object();
+        private bool _snapshotDirty;
+        private bool _snapshotFinished;
+        private int _snapshotWriterReleased;
+
+        public bool TryFinishSnapshot()
+        {
+            lock (_snapshotLock)
+            {
+                if (_snapshotDirty)
+                {
+                    _snapshotDirty = false;
+                    return false;
+                }
+                _snapshotFinished = true;
+                return true;
+            }
+        }
+
+        public void ReleaseSnapshotWriter()
+        {
+            if (Interlocked.Exchange(ref _snapshotWriterReleased, 1) == 0)
+            {
+                _writer.Release();
+            }
+        }
+
+        public async Task WriteAsync(PartyToSend message, bool rosterUpdate = false)
+        {
+            lock (_snapshotLock)
+            {
+                if (rosterUpdate && !_snapshotFinished)
+                {
+                    _snapshotDirty = true;
+                    return;
+                }
+            }
+
+            await _writer.WaitAsync();
+            try
+            {
+                // Party writes commit in database order, but their broadcasts can arrive out of order.
+                if (rosterUpdate && ReadCurrentRoster != null)
+                {
+                    PartyToSend current = await ReadCurrentRoster();
+                    if (current == null || current.PartyMembers.Count == 0)
+                    {
+                        message = new PartyToSend { CustomerGuid = message.CustomerGuid, PartyAction = PartyAction.MessageTypeLeave };
+                    }
+                    else
+                    {
+                        if (current.PartyInfo.PartyGuid != message.PartyInfo?.PartyGuid)
+                        {
+                            return;
+                        }
+
+                        current.PartyAction = message.PartyAction == PartyAction.MessageTypeCreate
+                            ? PartyAction.MessageTypeCreate
+                            : PartyAction.MessageTypeAdd;
+                        message = current;
+                    }
+                }
+
+                await ServerStreamWriter.WriteAsync(message);
+            }
+            finally
+            {
+                _writer.Release();
+            }
+        }
     }
 }

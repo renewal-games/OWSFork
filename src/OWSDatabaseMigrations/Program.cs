@@ -178,6 +178,9 @@ namespace OWSDatabaseMigrations
         // List only scripts that are safe to run on a database that has the rest of the schema.
         private static readonly IReadOnlyDictionary<string, string> BaselineChecks = new Dictionary<string, string>
         {
+            ["SamsaraUpdates/PartyMutationReceipts_2026-11-26.sql"] =
+                "SELECT to_regclass('public.partymutationreceipt') IS NOT NULL",
+
             // Every custom character data save is an upsert on this index; without it each one fails.
             ["SamsaraUpdates/CustomCharacterDataUniqueField_2026-11-01.sql"] =
                 "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ak_customcharacterdata_characterfield')",
