@@ -294,7 +294,7 @@ namespace OWSTests.Database
         [PostgresTheory]
         [InlineData(SchemaSource.SetupSql)]
         [InlineData(SchemaSource.Migrated)]
-        public async Task GetZoneInstanceForSpinUp_MatchesTheRow_ForItsCustomerOnly(SchemaSource source)
+        public async Task GetZoneInstanceForSpinUp_MatchesTheRow_ForItsCustomerOnly_UnlessShuttingDown(SchemaSource source)
         {
             Guid customerGUID = Guid.NewGuid();
             await using var connection = new NpgsqlConnection(_databases.ConnectionString(source));
@@ -317,6 +317,17 @@ namespace OWSTests.Database
             Assert.False(row.MatchesSpinUp(7, zoneInstanceID, "/Game/Maps/L_Other", 7777));
             Assert.False(row.MatchesSpinUp(7, zoneInstanceID, "/Game/Maps/L_SpinUp", 7778));
             Assert.Null(await Repository(source).GetZoneInstanceForSpinUp(Guid.NewGuid(), zoneInstanceID));
+
+            //A delayed command must stop resolving once shutdown has claimed this otherwise matching row.
+            await connection.ExecuteAsync(
+                "UPDATE MapInstances SET Status = @Status WHERE CustomerGUID = @CustomerGUID AND MapInstanceID = @MapInstanceID",
+                new { Status = ShuttingDownStatus, CustomerGUID = customerGUID, MapInstanceID = zoneInstanceID });
+            Assert.Null(await Repository(source).GetZoneInstanceForSpinUp(customerGUID, zoneInstanceID));
+
+            await connection.ExecuteAsync(
+                "DELETE FROM MapInstances WHERE CustomerGUID = @CustomerGUID AND MapInstanceID = @MapInstanceID",
+                new { CustomerGUID = customerGUID, MapInstanceID = zoneInstanceID });
+            Assert.Null(await Repository(source).GetZoneInstanceForSpinUp(customerGUID, zoneInstanceID));
         }
 
         private async Task<SuccessAndErrorMessage> Handle(RecordingShutDownRequest request, SchemaSource source, Guid customerGUID)
