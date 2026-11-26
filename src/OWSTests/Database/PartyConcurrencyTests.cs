@@ -76,6 +76,52 @@ namespace OWSTests.Database
             Assert.Single(grouped);
         }
 
+        [PostgresFact]
+        public async Task MutationRecovery_WaitsForTheCommitAndReportsItToBothParticipants()
+        {
+            Guid customer = Guid.NewGuid();
+            Guid mutation = Guid.NewGuid();
+            await SeedCharacters(customer, null, "Leader", "Target");
+            Guid partyGuid = await CreateParty(customer, "Leader");
+            CharactersRepository characters = Characters();
+
+            await using var gate = new NpgsqlConnection(Db);
+            await gate.OpenAsync();
+            await using NpgsqlTransaction gateTx = await gate.BeginTransactionAsync();
+            await gate.ExecuteAsync("LOCK TABLE PartyMember IN SHARE MODE", transaction: gateTx);
+
+            PartyToSend request = AddRequest(partyGuid, "Leader", "Target");
+            Task<PartyToSend> add = characters.CreatePartyOrAddMember(customer, request, mutation);
+            await WaitForLockWaiters(1, add);
+            Task<bool> recover = characters.ResolvePartyMutation(customer, mutation, "Target");
+            await WaitForLockWaiters(2, add, recover);
+            await gateTx.CommitAsync();
+
+            await add;
+            Assert.True(await recover);
+            Assert.True(await characters.ResolvePartyMutation(customer, mutation, "Leader"));
+            Assert.Null(await characters.CreatePartyOrAddMember(customer, request, mutation));
+            Assert.Equal(2, await MemberCount(customer, partyGuid));
+        }
+
+        [PostgresFact]
+        public async Task MutationRecovery_CancelsAnAddThatHasNotReachedTheDatabase()
+        {
+            Guid customer = Guid.NewGuid();
+            Guid mutation = Guid.NewGuid();
+            await SeedCharacters(customer, null, "Leader", "Target");
+            Guid partyGuid = await CreateParty(customer, "Leader");
+            CharactersRepository characters = Characters();
+
+            Assert.False(await characters.ResolvePartyMutation(customer, mutation, "Target"));
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                characters.CreatePartyOrAddMember(customer, AddRequest(partyGuid, "Leader", "Target"), mutation));
+
+            Assert.Equal("Party mutation was canceled.", error.Message);
+            Assert.False(await characters.ResolvePartyMutation(customer, mutation, "Leader"));
+            Assert.Equal(1, await MemberCount(customer, partyGuid));
+        }
+
         // An add holds the party lock and has inserted its member but not committed when the leader disbands. Without
         // the lock the disband deletes the members it can see, then deletes the party once the add commits, leaving the
         // added member in a party that no longer exists. With it the disband waits and removes that member too.
