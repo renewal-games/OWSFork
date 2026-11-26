@@ -127,6 +127,30 @@ namespace OWSTests.Grpc
             Assert.Equal(type == ChatType.MessageTypeWhisper ? 0 : 1, c.Written.Count);
         }
 
+        [Theory]
+        [InlineData(ChatType.MessageTypeGeneral)]
+        [InlineData(ChatType.MessageTypeTrade)]
+        [InlineData(ChatType.MessageTypeWhisper)]
+        public async Task OverLengthText_IsRejectedBeforeFanOut_AndMaxLengthStillArrives(ChatType type)
+        {
+            await using var chat = new ChatHarness();
+            var a = await chat.Connect("A");
+            var b = await chat.Connect("B");
+            string atLimit = new string('x', ChatService.MaxMessageLength);
+            string overLimit = new string('y', ChatService.MaxMessageLength + 1);
+
+            await a.Send(type, "  " + atLimit + "  ", "B"); // the limit applies after trimming
+            await a.Send(type, overLimit, "B");
+            await chat.Finish();
+
+            Assert.Equal(atLimit, Assert.Single(b.Written).Chat.Text);
+            Assert.Equal(2, a.Written.Count);
+            Assert.Equal(atLimit, a.Written[0].Chat.Text);
+            Assert.Equal("[Server]", a.Written[1].PlayerName);
+            Assert.Contains(ChatService.MaxMessageLength.ToString(), a.Written[1].Chat.Text);
+            Assert.DoesNotContain(a.Written.Concat(b.Written), m => m.Chat.Text.Contains(overLimit));
+        }
+
         private sealed class ChatHarness : IAsyncDisposable
         {
             public Guid Customer { get; } = Guid.NewGuid();
