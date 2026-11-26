@@ -9,6 +9,9 @@ launcher. Phases 3 and 4 below address those. Effort estimates assume one engine
 The ordering is deliberate: Phase 3 removes the ceilings that stop you reaching thousands of CCU at all;
 Phase 4 makes running at that scale safe, observable, and multi-replica. Do Phase 3 first.
 
+Measured numbers (players per zone server, database load per player, projected hosting cost) are in
+[capacity-measurements.md](capacity-measurements.md).
+
 ---
 
 ## Phase 3 — Capacity (reach thousands of CCU)
@@ -25,6 +28,8 @@ Phase 4 makes running at that scale safe, observable, and multi-replica. Do Phas
   home-hosting workarounds.
 - **Effort:** ~2-3 days (infra + config + one packaged Linux/Windows server build per host). Pure ops.
 - **Unlocks:** CCU now scales with (number of launcher hosts × instances × HardPlayerCap).
+- **Measured:** a CCX13 holds one busy map of about 99 real players at 30 Hz; see
+  [capacity-measurements.md](capacity-measurements.md).
 
 ### 3.2 Move Postgres and RabbitMQ off the app host
 - **Problem:** Postgres, RabbitMQ, six services, Caddy, and Valkey share one 4 GB box; the docs recommend a
@@ -34,6 +39,8 @@ Phase 4 makes running at that scale safe, observable, and multi-replica. Do Phas
   to ~25% RAM, `work_mem`, `max_connections`). Move RabbitMQ to its own node. Keep app services on the app
   host(s).
 - **Effort:** ~2 days. Ops + connection-string/env changes.
+- **Measured:** about 1 commit/s per real player and row-lock waits as the main database cost; see
+  [capacity-measurements.md](capacity-measurements.md).
 - **Depends on:** nothing; do alongside 3.1.
 
 ### 3.3 PgBouncer in front of Postgres (raise the connection ceiling properly)
