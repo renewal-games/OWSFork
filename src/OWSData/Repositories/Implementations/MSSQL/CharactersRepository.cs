@@ -609,7 +609,7 @@ namespace OWSData.Repositories.Implementations.MSSQL
         }
         public Task<UpdateCharacterDataResponse> UpdateCharacterData(Guid customerGUID, string characterName, IEnumerable<UpdateCharacterQuest> updateCharacterQuests,
             IEnumerable<UpdateCharacterInventory> updateCharacterInventory, IEnumerable<UpdateCharacterStats> updateCharacterStats, Guid? ownerToken,
-            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false)
+            int? callerZoneInstanceId = null, long? expectedRevision = null, bool requireExpectedRevision = false, long? saveSeq = null)
         {
             throw new NotSupportedException("UpdateCharacterData's single-transaction save is only implemented for Postgres.");
         }
@@ -618,9 +618,10 @@ namespace OWSData.Repositories.Implementations.MSSQL
         // transaction so a failure mid-loop cannot leave a truncated bag. The economy-revision
         // protocol is Postgres-only (Characters.EconomyRevision ships in the PlayerShops migration),
         // so expectedRevision is rejected here rather than silently ignored — a caller that thinks
-        // it has optimistic protection must not be told the write succeeded without it.
+        // it has optimistic protection must not be told the write succeeded without it. The same goes
+        // for saveSeq: Characters.InventorySaveSeq is Postgres-only too.
         public async Task<UpdateCharacterInventoryResponse> UpdateCharacterInventory(Guid customerGUID, string characterName,
-            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, Guid? ownerToken, long? expectedRevision = null)
+            IEnumerable<UpdateCharacterInventory> updateCharacterInventory, Guid? ownerToken, long? expectedRevision = null, long? saveSeq = null)
         {
             if (expectedRevision.HasValue)
             {
@@ -629,6 +630,16 @@ namespace OWSData.Repositories.Implementations.MSSQL
                     Success = false,
                     ErrorMessage = "revision_unsupported",
                     ReasonCode = "revision_unsupported"
+                };
+            }
+
+            if (saveSeq.HasValue)
+            {
+                return new UpdateCharacterInventoryResponse
+                {
+                    Success = false,
+                    ErrorMessage = "save_seq_unsupported",
+                    ReasonCode = "save_seq_unsupported"
                 };
             }
 

@@ -12,6 +12,11 @@
         // "bad_request" when a section is missing or the character does not exist, "no_inventory" when the
         // character has no CharInventory row (nothing was written). "stale_revision" / "revision_required"
         // when the economy revision guard refused the bag: quests and stats were still saved.
+        // "superseded", with Success true, when the request sent a SaveSeq and a newer bag is already stored
+        // (see UpdateCharacterInventoryResponse), so the bag was skipped; quests and stats were still saved.
         public string ReasonCode { get; set; } = "";
+
+        // As UpdateCharacterInventoryResponse.InventorySaveSeq, for the bag half.
+        public long InventorySaveSeq { get; set; }
     }
 }
