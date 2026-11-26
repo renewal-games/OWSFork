@@ -183,11 +183,7 @@ namespace OWSData.Repositories.Implementations.Postgres
                 transaction);
         }
 
-        // Every party write locks its Party row first and holds it to commit, so two writes to one party run one after the
-        // other. Under READ COMMITTED each later statement reads afresh, so the leader, membership and capacity checks that
-        // follow see what the previous write committed: two adds cannot both take the last slot, and an add cannot slip into
-        // a party that a leave or disband is deleting. A party deleted while we waited reads as not found.
-        // UsersRepository.RemoveCharacter takes the same lock before it touches the character's membership.
+        // Lock before reading party state so the checks see the previous writer's commit at READ COMMITTED.
         private static async Task<int?> LockParty(DbConnection connection, IDbTransaction transaction, Guid customerGUID, Guid partyGuid)
         {
             return await connection.QuerySingleOrDefaultAsync<int?>(

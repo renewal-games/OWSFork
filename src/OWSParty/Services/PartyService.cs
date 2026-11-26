@@ -78,7 +78,13 @@ namespace OWSParty.Service
                 }
             }
 
-            var clientInfo = new ClientInfo { Id = id, UserName = userName, ServerStreamWriter = responseStream };
+            var clientInfo = new ClientInfo
+            {
+                Id = id,
+                UserName = userName,
+                ServerStreamWriter = responseStream,
+                ReadCurrentRoster = usesSnapshots ? () => _charactersRepository.GetInitialPartySettings(parsedCustomerGuid, userName) : null
+            };
             context.CancellationToken.ThrowIfCancellationRequested();
             _partyClients[userName] = clientInfo;
 
@@ -679,6 +685,7 @@ namespace OWSParty.Service
         public string Id { get; set; }
         public string UserName { get; set; }
         public IServerStreamWriter<PartyToSend> ServerStreamWriter { get; set; }
+        public Func<Task<PartyToSend>> ReadCurrentRoster { get; init; }
 
         private readonly SemaphoreSlim _writer = new SemaphoreSlim(0, 1);
         private readonly object _snapshotLock = new object();
@@ -722,6 +729,28 @@ namespace OWSParty.Service
             await _writer.WaitAsync();
             try
             {
+                // Party writes commit in database order, but their broadcasts can arrive out of order.
+                if (rosterUpdate && ReadCurrentRoster != null)
+                {
+                    PartyToSend current = await ReadCurrentRoster();
+                    if (current == null || current.PartyMembers.Count == 0)
+                    {
+                        message = new PartyToSend { CustomerGuid = message.CustomerGuid, PartyAction = PartyAction.MessageTypeLeave };
+                    }
+                    else
+                    {
+                        if (current.PartyInfo.PartyGuid != message.PartyInfo?.PartyGuid)
+                        {
+                            return;
+                        }
+
+                        current.PartyAction = message.PartyAction == PartyAction.MessageTypeCreate
+                            ? PartyAction.MessageTypeCreate
+                            : PartyAction.MessageTypeAdd;
+                        message = current;
+                    }
+                }
+
                 await ServerStreamWriter.WriteAsync(message);
             }
             finally

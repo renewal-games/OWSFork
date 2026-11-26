@@ -80,6 +80,32 @@ namespace OWSTests.Grpc
             Assert.False(PartyService._partyClients.ContainsKey("Victim"));
         }
 
+        [Fact]
+        public async Task Party_LateAddDoesNotOverwriteSoloRecovery()
+        {
+            var writer = new RecordingStreamWriter<PartyToSend>();
+            var client = new ClientInfo
+            {
+                ServerStreamWriter = writer,
+                ReadCurrentRoster = () => Task.FromResult<PartyToSend>(null)
+            };
+            await writer.WriteAsync(new PartyToSend { PartyAction = PartyAction.MessageTypeMutationCommitted });
+            Assert.True(client.TryFinishSnapshot());
+            client.ReleaseSnapshotWriter();
+
+            await client.WriteAsync(new PartyToSend
+            {
+                PartyAction = PartyAction.MessageTypeAdd,
+                PartyInfo = new PartyInfo { PartyGuid = Guid.NewGuid().ToString() },
+                PartyMembers = { new PartyMemberInfo { CharName = "Leader", PartyLeader = true } }
+            }, rosterUpdate: true);
+
+            Assert.Equal(2, writer.Written.Count);
+            Assert.Equal(PartyAction.MessageTypeMutationCommitted, writer.Written[0].PartyAction);
+            Assert.Equal(PartyAction.MessageTypeLeave, writer.Written[1].PartyAction);
+            Assert.Empty(writer.Written[1].PartyMembers);
+        }
+
         private static ChatService NewChatService() => new ChatService(null, null, new ChatLogWriter(null), null);
 
         /// <summary>A first frame claiming another player's name, then one general chat line.</summary>

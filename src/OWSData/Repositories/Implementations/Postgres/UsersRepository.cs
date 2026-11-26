@@ -548,10 +548,7 @@ namespace OWSData.Repositories.Implementations.Postgres
 
                     if (characterId != null)
                     {
-                        // Lock the character's party rows first, as every party write in CharactersRepository does
-                        // (LockParty), then read the membership again: a party add, leave or leader change running now
-                        // finishes first, so the leader handover and the empty-party delete below see its result. If the
-                        // character moved party while we waited, lock the new one too. Ascending PartyID order.
+                        // Re-read membership after locking because the character may have moved to another party.
                         var lockedPartyIds = new HashSet<int>();
                         IEnumerable<dynamic> partyMemberships;
                         while (true)

@@ -13,12 +13,6 @@ using Xunit;
 
 namespace OWSTests.Database
 {
-    /// <summary>
-    /// Party writes on one party run one after the other: each locks the Party row before it checks leader, membership or
-    /// capacity. Each test makes the two writes overlap at a fixed point, on independent connections at READ COMMITTED,
-    /// so the result does not depend on timing. Party capacity and roles come from the migrations, so only the migrated
-    /// schema runs these.
-    /// </summary>
     public class PartyConcurrencyTests : IClassFixture<PostgresTestDatabases>
     {
         private readonly PostgresTestDatabases _databases;
