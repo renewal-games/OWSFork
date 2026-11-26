@@ -26,6 +26,10 @@ namespace OWSInstanceLauncher.Services
         private const int CompleteZoneInstanceShutdownAttempts = 5;
         private static readonly TimeSpan CompleteZoneInstanceShutdownRetryDelay = TimeSpan.FromMilliseconds(500);
 
+        //Serializes the last stopping check, process creation and tracking with disposal.
+        private readonly object _processLifecycleGate = new object();
+        private bool _stopping;
+
         private IConnection connection;
         private IModel serverSpinUpChannel;
         private IModel serverShutDownChannel;
@@ -334,6 +338,28 @@ namespace OWSInstanceLauncher.Services
                 serverArguments += " " + ExpandCustomFlags(_owsInstanceLauncherOptions.Value.OtherCustomFlags, zoneInstanceID, port);
             }
 
+            bool started;
+            lock (_processLifecycleGate)
+            {
+                //A lookup may have completed before shutdown and resumed afterwards. Starting and registering
+                //must be indivisible with respect to stopping, so disposal's snapshot includes every start.
+                if (_stopping)
+                {
+                    return;
+                }
+
+                started = TryStartZoneServer(customerGUID, worldServerID, zoneInstanceID, mapName, port, serverArguments);
+            }
+
+            if (!started)
+            {
+                await CleanUpFailedSpinUp(zoneInstanceID, "start failure");
+            }
+        }
+
+        //Called only while holding _processLifecycleGate; no HTTP waits belong inside the gate.
+        private bool TryStartZoneServer(Guid customerGUID, int worldServerID, int zoneInstanceID, string mapName, int port, string serverArguments)
+        {
             System.Diagnostics.Process proc = new System.Diagnostics.Process
             {
                 StartInfo = new System.Diagnostics.ProcessStartInfo
@@ -357,8 +383,7 @@ namespace OWSInstanceLauncher.Services
                 //For example a wrong PathToDedicatedServer. No process will ever heartbeat for this row, so remove it now.
                 Log.Error(ex, $"HandleServerSpinUpMessage - Could not start {_owsInstanceLauncherOptions.Value.PathToDedicatedServer} for Zone Instance {zoneInstanceID}. Aborting spin up.");
                 proc.Dispose();
-                await CleanUpFailedSpinUp(zoneInstanceID, "start failure");
-                return;
+                return false;
             }
             //proc.WaitForInputIdle();
 
@@ -396,6 +421,7 @@ namespace OWSInstanceLauncher.Services
             }
 
             //Readiness (Status = 2) is now reported by the dedicated server itself via UpdateNumberOfPlayers (see AOWSGameMode::StartPlay).
+            return true;
         }
 
         //A failed lookup throws, so the command is requeued once: an Instance Management restart must not lose a spin-up.
@@ -767,6 +793,13 @@ namespace OWSInstanceLauncher.Services
 
         public void Dispose()
         {
+            lock (_processLifecycleGate)
+            {
+                _stopping = true;
+            }
+
+            //Any start that won the gate is already tracked; all later starts are refused. The shutdown
+            //snapshot is therefore stable even if channel close does not drain outstanding HTTP callbacks.
             Log.Information("Shutting Down OWS Instance Launcher...");
 
             if (_worldServerId > 0)

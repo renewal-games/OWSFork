@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -17,6 +18,7 @@ using OWSInstanceLauncher.Services;
 using OWSShared;
 using OWSShared.Interfaces;
 using OWSShared.Options;
+using RabbitMQ.Client;
 using Xunit;
 
 namespace OWSTests.InstanceLauncher
@@ -106,6 +108,57 @@ namespace OWSTests.InstanceLauncher
             listener.Dispose();
 
             Assert.True(server.WaitForExit(Timeout));
+        }
+
+        [Fact]
+        public async Task Dispose_DoesNotStartAServer_FromAnInFlightSpinUp()
+        {
+            ServerLauncherMQListener listener = Listener();
+            _http.SpinUpResponseReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _http.ReleaseSpinUpResponse = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task spinUp = SpinUp(listener, 1, FreeUdpPort());
+            await _http.SpinUpResponseReady.Task.WaitAsync(Timeout);
+
+            //Close waits for the handler, so disposal cannot rely on RabbitMQ abandoning callbacks.
+            var closing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            IModel channel = DispatchProxy.Create<IModel, ClosingChannel>();
+            ((ClosingChannel)channel).CloseAction = () =>
+            {
+                closing.TrySetResult();
+                spinUp.WaitAsync(Timeout).GetAwaiter().GetResult();
+            };
+            typeof(ServerLauncherMQListener).GetField("serverSpinUpChannel", BindingFlags.Instance | BindingFlags.NonPublic)
+                .SetValue(listener, channel);
+
+            Task disposal = Task.Run(listener.Dispose);
+            try
+            {
+                //In the original code this is after the shutdown snapshot, while the response is still held.
+                await closing.Task.WaitAsync(Timeout);
+            }
+            finally
+            {
+                _http.ReleaseSpinUpResponse.TrySetResult();
+                await Task.WhenAll(spinUp, disposal).WaitAsync(Timeout);
+            }
+
+            Assert.Empty(_processes.GetZoneServerProcesses());
+        }
+
+        public class ClosingChannel : DispatchProxy
+        {
+            public Action CloseAction { get; set; }
+
+            protected override object Invoke(MethodInfo targetMethod, object[] args)
+            {
+                if (targetMethod.Name == nameof(IModel.Close))
+                {
+                    CloseAction();
+                    return null;
+                }
+
+                throw new NotSupportedException(targetMethod.Name);
+            }
         }
 
         [Fact]
@@ -513,6 +566,8 @@ namespace OWSTests.InstanceLauncher
             public Dictionary<int, object> Rows { get; } = new();
 
             public string FailPathsEndingWith { get; set; }
+            public TaskCompletionSource SpinUpResponseReady { get; set; }
+            public TaskCompletionSource ReleaseSpinUpResponse { get; set; }
 
             public List<string> Calls
             {
@@ -541,6 +596,12 @@ namespace OWSTests.InstanceLauncher
                 if (path.EndsWith("GetZoneInstanceForSpinUp"))
                 {
                     Rows.TryGetValue(int.Parse(await request.Content.ReadAsStringAsync(cancellationToken)), out object row);
+
+                    if (SpinUpResponseReady != null)
+                    {
+                        SpinUpResponseReady.TrySetResult();
+                        await ReleaseSpinUpResponse.Task.WaitAsync(cancellationToken);
+                    }
 
                     return new HttpResponseMessage(HttpStatusCode.OK)
                     {
